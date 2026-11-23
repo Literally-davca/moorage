@@ -348,6 +348,16 @@ func TestAuditListAPI(t *testing.T) {
 	if p := get("?action=st%25"); len(p.Entries) != 0 {
 		t.Fatalf("prefix must be literal, got %d", len(p.Entries))
 	}
+	// Several actions or hosts match any of them (repeated or comma-separated).
+	if p := get("?action=stack.stop,check."); len(p.Entries) != 2 {
+		t.Fatalf("two action prefixes: %d", len(p.Entries))
+	}
+	if p := get("?action=stack.stop&action=image."); len(p.Entries) != 2 {
+		t.Fatalf("repeated action: %d", len(p.Entries))
+	}
+	if p := get("?host=local,other"); len(p.Entries) != 7 {
+		t.Fatalf("two hosts: %d", len(p.Entries))
+	}
 	p1 := get("?limit=3")
 	if len(p1.Entries) != 3 || !p1.More {
 		t.Fatalf("page 1: %d more=%v", len(p1.Entries), p1.More)

@@ -15,7 +15,27 @@ const (
 	labelProject    = "com.docker.compose.project"
 	labelService    = "com.docker.compose.service"
 	labelWorkingDir = "com.docker.compose.project.working_dir"
+
+	// LabelRole and RoleUpdater mark temporary Moorage helper containers created for
+	// container self-updates so stack discovery, stats, logs, and dependencies ignore them.
+	LabelRole           = "moorage.role"
+	RoleUpdater         = "updater"
+	PrevContainerSuffix = "-moorage-prev"
 )
+
+// IsInternalContainer reports whether s is a temporary updater helper or a kept
+// rollback container created by Moorage self-update.
+func IsInternalContainer(s container.Summary) bool {
+	if s.Labels[LabelRole] == RoleUpdater {
+		return true
+	}
+	for _, n := range s.Names {
+		if strings.HasSuffix(strings.TrimPrefix(n, "/"), PrevContainerSuffix) {
+			return true
+		}
+	}
+	return false
+}
 
 // Container is the UI view of one container.
 type Container struct {
@@ -88,6 +108,9 @@ func (e *Engine) projectContainers(ctx context.Context, project string) (map[str
 	byProject := map[string][]Container{}
 	dirs := map[string]string{}
 	for _, s := range res.Items {
+		if IsInternalContainer(s) {
+			continue
+		}
 		p := s.Labels[labelProject]
 		byProject[p] = append(byProject[p], toContainer(s))
 		if d := s.Labels[labelWorkingDir]; d != "" {

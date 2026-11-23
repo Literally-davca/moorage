@@ -3,6 +3,7 @@
   import { api, type Check, type HostEntry, type MaintenanceInput, type MaintenanceStack, type MaintenanceWindow } from '../lib/api';
   import { isAdmin } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import MultiSelect from '../lib/MultiSelect.svelte';
   import Confirm from '../lib/Confirm.svelte';
   import { fmtMinutes, fmtRange, stateText, weekdayShort, weekOrder } from '../lib/maintenance';
 
@@ -30,8 +31,6 @@
   let checkIds = $state<number[]>([]);
   let enabled = $state(true);
 
-  let pickStack = $state('');
-  let pickCheck = $state(0);
   let saving = $state(false);
   let error = $state('');
   let confirmDelete = $state(false);
@@ -125,17 +124,14 @@
     for (const c of checks) if (c.hostId && c.stack) add({ hostId: c.hostId, stack: c.stack });
     return out;
   });
-  const checkChoices = $derived(checks.filter((c) => !checkIds.includes(c.id)));
-
-  function addStack() {
-    const s = stackChoices.find((x) => stackKey(x) === pickStack);
-    if (s) stacks = [...stacks, s];
-    pickStack = '';
+  // The pickers list the chosen stacks too, so they can be unticked there.
+  const allStacks = $derived([...stacks, ...stackChoices]);
+  const stackItems = $derived(allStacks.map((s) => ({ value: stackKey(s), label: s.stack, meta: 'on ' + hostName(s.hostId) })));
+  function setStacks(keys: string[]) {
+    const byKey = new Map(allStacks.map((s) => [stackKey(s), s]));
+    stacks = keys.map((k) => byKey.get(k)).filter((s): s is MaintenanceStack => !!s);
   }
-  function addCheck() {
-    if (pickCheck && !checkIds.includes(pickCheck)) checkIds = [...checkIds, pickCheck];
-    pickCheck = 0;
-  }
+  const checkItems = $derived(checks.map((c) => ({ value: String(c.id), label: c.name })));
   function toggleDay(d: number) {
     weekdays = weekdays.includes(d) ? weekdays.filter((x) => x !== d) : [...weekdays, d];
   }
@@ -298,13 +294,8 @@
           <div>
             <span class="label">Stacks <span class="opt">all checks of the stack</span></span>
             {#if !readOnly}
-              <div class="adder">
-                <select class="field grow" bind:value={pickStack} aria-label="Pick a stack">
-                  <option value="">Pick a stack…</option>
-                  {#each stackChoices as s (stackKey(s))}<option value={stackKey(s)}>{s.stack} on {hostName(s.hostId)}</option>{/each}
-                </select>
-                <button type="button" class="btn" onclick={addStack} disabled={!pickStack}><Icon name="plus" /> Add</button>
-              </div>
+              <MultiSelect label="Stacks in scope" placeholder="Pick stacks" items={stackItems}
+                selected={stacks.map(stackKey)} onchange={setStacks} />
             {/if}
             <ul class="chips" aria-label="Stacks in scope">
               {#each stacks as s (stackKey(s))}
@@ -323,13 +314,8 @@
           <div>
             <span class="label">Checks</span>
             {#if !readOnly}
-              <div class="adder">
-                <select class="field grow" bind:value={pickCheck} aria-label="Pick a check">
-                  <option value={0}>Pick a check…</option>
-                  {#each checkChoices as c (c.id)}<option value={c.id}>{c.name}</option>{/each}
-                </select>
-                <button type="button" class="btn" onclick={addCheck} disabled={!pickCheck}><Icon name="plus" /> Add</button>
-              </div>
+              <MultiSelect label="Checks in scope" placeholder="Pick checks" items={checkItems}
+                selected={checkIds.map(String)} onchange={(v) => (checkIds = v.map(Number))} />
             {/if}
             <ul class="chips" aria-label="Checks in scope">
               {#each checkIds as cid (cid)}
@@ -507,14 +493,12 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
   }
-  .adder {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 8px;
-  }
   .grow {
     flex: 1;
     min-width: 0;
+  }
+  .pickers :global(.ms) {
+    margin-bottom: 8px;
   }
   .chips {
     list-style: none;

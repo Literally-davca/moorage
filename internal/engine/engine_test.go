@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"moorage/internal/config"
+
+	"github.com/moby/moby/api/types/container"
 )
 
 // newTestEngine builds an Engine without a Docker connection, enough for file and validation logic.
@@ -130,5 +132,17 @@ func TestLogFilter(t *testing.T) {
 	reSensitive, err := (LogFilter{Pattern: `^FATAL`, Regex: true, CaseSensitive: true}).Compile()
 	if err != nil || !reSensitive("FATAL: disk") || reSensitive("fatal: disk") || reSensitive("not FATAL") {
 		t.Fatalf("case-sensitive regex failed: %v", err)
+	}
+}
+
+func TestIsInternalContainerExcluded(t *testing.T) {
+	if !IsInternalContainer(container.Summary{Labels: map[string]string{LabelRole: RoleUpdater}, Names: []string{"/moorage-updater"}}) {
+		t.Fatal("expected moorage.role=updater container to be treated as internal")
+	}
+	if !IsInternalContainer(container.Summary{Labels: map[string]string{"com.docker.compose.project": "moorage"}, Names: []string{"/moorage-moorage-prev"}}) {
+		t.Fatal("expected -moorage-prev container to be treated as internal")
+	}
+	if IsInternalContainer(container.Summary{Labels: map[string]string{"com.docker.compose.project": "moorage"}, Names: []string{"/moorage"}}) {
+		t.Fatal("normal compose service container must not be treated as internal")
 	}
 }

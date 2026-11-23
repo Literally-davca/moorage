@@ -29,17 +29,25 @@ Plan and decisions: [PLAN.md](PLAN.md) · ideas: [ROADMAP.md](ROADMAP.md) · UI 
 - **Stack timeline:** the History tab merges versions, deploys and other events, incidents, image updates and (for admins) audit and terminal entries. Each incident has **Show what changed before** – the changes in the 2 hours before it.
 - **Dependencies:** Moorage finds which stacks depend on which (shared external networks, host names in links and env) and you can add your own. When a database stack goes down, the apps that depend on it arrive in **one** alert naming the probable cause.
 - **Checks from several places:** run an HTTP, TCP, ping or DNS check from the hub and chosen agents and count it as down only when most of them agree, so a blip in one network doesn't page you.
+- **Users and single sign-on:** invite local users by a one-time link (you never see their password), roles `admin` / `viewer`, sign in with **OIDC** (Authentik, Keycloak, Zitadel…) or a trusted reverse-proxy header, and manage your own password, two-factor and sessions.
+- **Update Moorage from the browser:** see which version the hub and every agent run and update them in one click; each node checks the release signature itself and rolls back on its own if the new version doesn't come up.
+- **New stack from an image:** type an image name and Moorage offers a matching template, the compose file from the image's source repository, or one generated from the image's ports and volumes.
+- **`.env` editor** with a Variables view (a key/value table that keeps comments and formatting, masks secrets and offers the variables the compose file still needs) and a Raw view.
+- **Moorage's own stack is protected:** when Moorage runs from a compose stack, that stack can't be stopped, taken down or deleted from the UI; changes go through **Apply & restart**, which rolls back if Moorage doesn't come back.
 - **Stack templates** and **Prometheus metrics**, see below.
 - The check strip shows every result with deploys as anchors, so you see what changed before something broke.
 - Dark and light theme, works at phone width.
 
 ## Run with Docker
 
+Use the example [compose.yaml](compose.yaml) (image `ghcr.io/literally-davca/moorage`, multi-arch: amd64, arm64, arm/v7):
+
 ```sh
-docker build -t moorage:dev .
 docker compose up -d
 docker compose logs moorage | grep setup_token   # first run only
 ```
+
+To build from source instead: `docker build -t moorage:dev .` and set `image: moorage:dev`.
 
 Open http://localhost:5080, enter the setup token, create the admin and scan the QR code with an authenticator app.
 
@@ -116,6 +124,43 @@ Open an interactive shell in a running stack container directly from the stack's
 - **What is logged (and what never is):** every session is recorded at start and end in the 1-year audit log (visible on **Hosts → Terminal sessions** and in the stack's **History** Logbook) and in the server log, with the username, client IP, host, stack, container, shell, start time, duration, end reason (`exit`, `closed`, `idle`, `limit`, `revoked`, `error`, `hub-stopped`), and exit code. **Nothing typed or printed in the terminal is ever recorded**, because commands and output often contain passwords and secrets.
 - **Limits:** at most 4 concurrent terminal sessions per hub, 15-minute idle timeout (measured on keyboard input, not output), 8-hour maximum session duration, and automatic termination within 30 seconds if the admin signs out, loses the admin role or the session expires.
 - **Ending a session ends the shell:** closing the tab, **Disconnect**, a timeout, a stopped hub or agent all end the shell and everything started from it (HUP, then KILL a second later). Docker can't do this by itself: closing a terminal's connection leaves the shell running. Moorage finds the processes by a variable it sets in the shell (`MOORAGE_TERMINAL_SESSION`), so a process started with a cleared environment (`env -i …`), or any shell when the agent is killed with `SIGKILL`, can outlive the session.
+
+### Users and sign-in
+
+- **Users** (sidebar, admins): **Create invite link** gives a one-time link valid 48 h. The new user picks a password and adds an authenticator app; every local user needs two-factor sign-in. **Reset link** replaces the password and two-factor when the user finishes it; their sessions end then. Role changes, disabling and deleting end the user's sessions right away.
+- There is always at least one active **local admin** with two-factor, so you can get in when the identity provider is down. Moorage refuses anything that would remove the last one, and admins can't demote, disable or delete themselves from the list.
+- **Account** (click your name): change your password, add a new authenticator, see where you're signed in and sign out other sessions.
+- **OIDC:** set `MOORAGE_PUBLIC_URL` and the `MOORAGE_OIDC_*` variables below. Register the redirect URI `<public URL>/api/auth/oidc/callback` at the identity provider; the Users page shows it with a copy button, plus the status of the connection. Roles come from groups at every sign-in (admin groups, then viewer groups, then `MOORAGE_OIDC_DEFAULT_ROLE`); a user in none of them is refused. An OIDC sign-in lasts 12 hours and signing out at the provider doesn't end it; disable the user in Moorage to cut access at once. Accounts are matched by issuer and subject, never by name or e-mail, so an SSO user can't take over a local account.
+  - *Authentik:* OAuth2/OpenID provider with an RS256 signing key, issuer `https://<authentik>/application/o/<slug>/`, `MOORAGE_OIDC_SCOPES="openid profile email"` (groups come with `profile`).
+  - *Keycloak:* client with standard flow and PKCE S256, issuer `https://<keycloak>/realms/<realm>`, a *Group Membership* mapper named `groups` (or `MOORAGE_OIDC_GROUPS_CLAIM=realm_access.roles`), `MOORAGE_OIDC_SCOPES="openid profile email"`.
+- **Forward-auth** (Authelia, oauth2-proxy, Authentik outpost): set `MOORAGE_TRUSTED_PROXIES` to the proxy's address and `MOORAGE_PROXY_USER_HEADER` (e.g. `Remote-User`). The header counts only when the TCP connection comes from a trusted address; `X-Forwarded-For` is never used. Make sure Moorage's port can't be reached around the proxy.
+
+### New stacks and `.env`
+
+- **New stack → Start from an image:** enter e.g. `vaultwarden/server` or `ghcr.io/owner/app:1.2`. The hub reads the image's metadata from its registry (anonymously; private images aren't found, paste their compose instead) and offers:
+  - a matching **template**;
+  - the **compose file of the source repository** named in the image's `org.opencontainers.image.source` label (GitHub, GitLab.com and Codeberg only; a service that builds from source gets the image instead, and missing files are pointed out);
+  - a **generated** compose file with the image's ports, volumes and settings.
+
+  Nothing runs before you review it and press Create.
+- **`.env` editor:** **Variables** shows a table; pasting several `KEY=value` lines into a name field adds them all. Values of keys that look secret (`PASSWORD`, `TOKEN`, `KEY`…) are hidden until you show them. Variables the compose file needs without a default are offered with one click, and unused ones are marked. **Raw** is the plain file. Comments and formatting of lines you don't touch stay as they are.
+
+### Moorage's own stack
+
+When Moorage itself runs from a compose stack it manages (for example `/opt/stacks/moorage`), that stack page has **Restart** and **Apply & restart** only:
+- Stop, Down, Delete, Deploy and image auto-update are refused by the node itself, not just hidden.
+- **Apply & restart** saves the files and starts a short-lived helper container that runs `docker compose up -d` for the stack from outside Moorage. If Moorage isn't back within 2 minutes, the helper puts the previous compose and `.env` back and runs `up` again. The stack page shows the outcome.
+- Saving is refused when the change would cut Moorage off: its service, the Docker socket mount and the data mount must stay.
+- To update Moorage itself, use **Moorage updates**.
+
+### Moorage updates
+
+**Hosts → Moorage updates** lists the hub and every agent with their version and how they run (container or binary). **Update all** updates the agents one by one and the hub last, stopping at the first failure.
+- Releases are signed with an Ed25519 key. Every node checks the signature with the key built into its own binary before installing, so even a compromised hub can't install anything else.
+- Container mode: a short-lived helper container from the new image recreates the Moorage container with the same settings. Binary mode: the binary is swapped in place and restarted.
+- A node that doesn't come back healthy within 2 minutes rolls back by itself. The previous version is kept for 24 hours for **Roll back**.
+- `MOORAGE_SELF_UPDATE=false` on a node refuses updates there. Only the hub asks GitHub for new releases (once a day or on **Check now**), sending nothing but its version in the User-Agent.
+- If you run Moorage with Compose, set the new image tag in your compose file too; otherwise the next `docker compose up` goes back to the old tag.
 
 ### Audit log, maintenance and dependencies
 
@@ -197,6 +242,21 @@ Moorage detects Podman's Docker-compatible API and adapts stats, logs, health an
 | `MOORAGE_TEMPLATES_DIR` | `<data dir>/templates` | hub / all-in-one: local folder with stack templates (one subfolder each); not created by Moorage |
 | `MOORAGE_TERMINAL` | `false` | agent / all-in-one: allow admins to open an interactive container shell (`sh`, `bash`, `ash`) on this host; ignored when `MOORAGE_READ_ONLY=true` |
 | `MOORAGE_WATCHDOG_LISTEN` | – | agent: peer mTLS listen address for the hub watchdog (e.g. `:5082`), needed when 2+ agents watch the hub |
+| `MOORAGE_OIDC_ISSUER` | – | OIDC issuer URL (https; http only for localhost) |
+| `MOORAGE_OIDC_CLIENT_ID` | – | OIDC client id |
+| `MOORAGE_OIDC_CLIENT_SECRET` / `_FILE` | – | client secret, or a file holding it; empty = public client with PKCE |
+| `MOORAGE_OIDC_SCOPES` | `openid profile email groups` | space-separated |
+| `MOORAGE_OIDC_GROUPS_CLAIM` | `groups` | claim name or dotted path (`realm_access.roles`) |
+| `MOORAGE_OIDC_ADMIN_GROUPS` / `_VIEWER_GROUPS` | – | comma lists |
+| `MOORAGE_OIDC_DEFAULT_ROLE` | `none` | role for users in no listed group: `none` (refuse) or `viewer` |
+| `MOORAGE_OIDC_LABEL` | `Sign in with SSO` | button text |
+| `MOORAGE_OIDC_LOCAL_LOGIN` | `true` | `false` hides the password form (still at `/#/login?local=1`, and shown while SSO is broken) |
+| `MOORAGE_TRUSTED_PROXIES` | – | forward-auth: proxy IPs/CIDRs (TCP peer); empty = off |
+| `MOORAGE_PROXY_USER_HEADER` / `_GROUPS_HEADER` | – | forward-auth headers, e.g. `Remote-User`, `Remote-Groups` (comma-separated) |
+| `MOORAGE_PROXY_ADMIN_GROUPS` / `_VIEWER_GROUPS` / `_DEFAULT_ROLE` | – / – / `none` | forward-auth role mapping |
+| `MOORAGE_SELF_UPDATE` | `true` | every node: allow updates of Moorage itself from the UI |
+| `MOORAGE_UPDATE_URL` | GitHub releases API of this repo | hub: where to look for releases (forks, mirrors) |
+| `MOORAGE_UPDATE_CHANNEL` | `stable` | hub: `stable` or `pre` (include pre-releases) |
 | `MOORAGE_WATCHDOG_ADDR` | – | agent: `host:port` other watching agents dial to reach this agent's watchdog listener |
 | `GOMEMLIMIT` | `48MiB` | soft memory limit of the Go runtime; the default keeps the garbage from start-up from piling up (more only means more frequent collections) |
 
@@ -212,6 +272,8 @@ Moorage detects Podman's Docker-compatible API and adapts stats, logs, health an
 - An agent exposes only stack operations, never the Docker API. Removing a host on the hub disconnects it and its certificate stops working.
 - The container web terminal is off by default (`MOORAGE_TERMINAL=false`), can only be switched on via the agent's or all-in-one environment (never from the UI), is always refused by read-only agents, runs only `/bin/sh`, `/bin/bash`, or `/bin/ash` inside a verified stack container, and records who opened it and when without ever logging typed commands or terminal output.
 - Checks and notifications never connect to link-local or cloud metadata addresses (169.254.169.254 and friends), checked on the actual IP, so DNS rebinding doesn't get around it. A check can opt in. Notifications run no external programs and use fixed wording, no user templates. Channel secrets are never shown again after saving.
+- Sign-in with OIDC uses the authorization code flow with PKCE, state and nonce; ID tokens are checked for signature (RS256/ES256/PS256 only), issuer, audience, expiry and nonce. Client secrets stay in the environment, never in the database or UI.
+- Self-update installs only releases signed with the project's Ed25519 key, checked on the node that installs them; there is no downgrade except rollback to the kept previous version.
 - No telemetry. Fonts and icons are bundled, the UI loads nothing from the internet.
 
 ## Develop

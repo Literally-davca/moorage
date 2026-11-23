@@ -4,7 +4,7 @@ Nápady mimo MVP. Pořadí v sekci = priorita.
 Stav: `v1.0 (M11)` / `v1.1` / `v1.2` (zařazeno do verze) · `líbí se` (uživatel chce, kandidát na první verzi po MVP) · `nápad` · `odloženo` · `zamítnuto`.
 
 ## Plán verzí (rozhodnuto 2026-11-22)
-- **v1.0:** M10 OIDC / forward-auth; M11 audit log všech akcí, export/import konfigurace, hodinové agregace kontrol.
+- **v1.0:** M10 OIDC / forward-auth a správa uživatelů (hotovo); M12 aktualizace Moorage z UI (hotovo); M11 audit log všech akcí, export/import konfigurace, hodinové agregace kontrol.
 - **v1.1 – napojení na okolí:** `/metrics` pro Prometheus/Grafanu, plánovaná údržbová okna, automatický rollback po selhání kontrol.
 - **v1.2 – co Kuma ani Dockge neumí:** kontroly z více míst s hlasováním agentů, graf závislostí mezi stacky, časová osa stacku.
 - Ostatní zůstává v pořadí níže.
@@ -37,6 +37,9 @@ Stav: `v1.0 (M11)` / `v1.1` / `v1.2` (zařazeno do verze) · `líbí se` (uživa
 | Restic zálohy volume per stack | Dockhand to má; záloha patří ke stacku. | Střední; externí binárka → bezpečnostní posouzení. | agent | nápad |
 | Záložní hub (pasivní standby) | Žádný jediný bod selhání: standby hub přebírá replikovanou SQLite (např. Litestream), agenti se při výpadku primárního hubu přepnou. Alternativa k zamítnuté mesh síti (viz PLAN, Watchdog hubu). | Střední–velká: replikace, přepnutí agentů, ochrana proti dvěma aktivním hubům (fencing). | uživatel + agent | nápad |
 | Hodinové agregace výsledků kontrol (1 rok) | Dlouhodobý uptime bez růstu DB; plán počítal s 1 rokem agregací, M4 drží jen 30 dní surových dat. | Malá. | agent | v1.0 (M11) |
+| Sdílené proměnné mezi stacky | Jedna hodnota (např. heslo k DB, doména) pro víc stacků, změna na jednom místě. Coolify to má. | Střední: nové úložiště, propsání do `.env` při nasazení, historie. | agent | nápad |
+| Šifrování `.env` v historii | `history.git` obsahuje hesla v čitelné podobě; šifrování klíčem hubu by zmenšilo dopad úniku zálohy. | Střední; diff tajných hodnot by se zobrazoval maskovaně. | agent | nápad |
+| Vyhledávání image při zakládání stacku | Našeptávač názvů image z Docker Hubu/GHCR místo psaní přesného jména. | Malá–střední; rate limity registrů. | agent | nápad |
 | Export/import konfigurace Moorage | Záloha hubu (uživatelé, sondy, kanály) a přesun na jiný stroj. | Malá. | agent | v1.0 (M11) |
 | Automatický rollback při selhání kontrol po auto-update | Když po automatické aktualizaci image přejde kontrola stacku do stavu DOWN, automaticky vrátit předchozí digest (rollback z M8) a přepnout politiku na `notify`. | Malá–střední; navazuje na `image_updates` a rollback v M8. | agent | v1.1 |
 | Automatické povyšování tagů verzí podle pravidel | Volitelné automatické přepsání tagu v `compose.yaml` (např. jen patch/minor ve stejné major řadě) uvnitř časového okna, s git commitem. | Malá–střední; M8 už tagy rozpoznává a přepisuje na kliknutí. | agent | nápad |

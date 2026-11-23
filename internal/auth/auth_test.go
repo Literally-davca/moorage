@@ -63,3 +63,19 @@ func TestLimiter(t *testing.T) {
 		t.Fatal("other keys are independent")
 	}
 }
+
+// Invite links count only wrong attempts, on the same key as password sign-in.
+func TestLimiterFailures(t *testing.T) {
+	l := newLimiter(2, time.Minute)
+	if l.blocked("ip:a") {
+		t.Fatal("fresh key blocked")
+	}
+	l.fail("ip:a")
+	if l.blocked("ip:a") {
+		t.Fatal("one failure of two blocked")
+	}
+	l.fail("ip:a")
+	if !l.blocked("ip:a") || l.allow("ip:a") {
+		t.Fatal("two failures must block, also allow()")
+	}
+}

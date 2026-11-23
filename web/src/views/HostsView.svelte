@@ -4,6 +4,8 @@
   import { app, isAdmin, setHost } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
+  import SystemUpdates from '../lib/SystemUpdates.svelte';
+  import MultiSelect from '../lib/MultiSelect.svelte';
 
   let { onChanged }: { onChanged: () => void } = $props();
 
@@ -48,6 +50,7 @@
 
   // terminal audit log
   let termSessions = $state<TerminalAuditRow[]>([]);
+  let sysUpdateAvail = $state(false);
 
   async function load() {
     try {
@@ -132,11 +135,14 @@
     }
   }
 
+  // Agents should run the hub's release; a dev build of the hub falls back to :latest.
+  const agentTag = $derived(/^\d+\.\d+\.\d+$/.test(app.version ?? '') ? app.version : 'latest');
+
   const composeSnippet = $derived(
     joined
       ? `services:
   moorage-agent:
-    image: moorage:dev
+    image: ghcr.io/literally-davca/moorage:${agentTag}
     command: agent
     restart: unless-stopped
     volumes:
@@ -324,6 +330,8 @@ volumes:
   </section>
 
   {#if isAdmin()}
+    <SystemUpdates primaryBusy={wdDirty || editing !== null} onUpdateAvail={(v) => (sysUpdateAvail = v)} />
+
     <section class="card card-pad add">
       <h2 class="section-title">Add a host</h2>
       {#if !acceptsAgents}
@@ -333,7 +341,7 @@ volumes:
           <label class="lbl" for="hname">Name</label>
           <div class="addrow">
             <input id="hname" class="field" bind:value={newName} maxlength="40" placeholder="Raspberry Pi" autocomplete="off" />
-            <button class="btn btn-primary" disabled={!newName.trim() || adding} aria-busy={adding}><Icon name="plug" /> Create join token</button>
+            <button class="btn {sysUpdateAvail || wdDirty || editing !== null ? '' : 'btn-primary'}" disabled={!newName.trim() || adding} aria-busy={adding}><Icon name="plug" /> Create join token</button>
           </div>
           <p class="meta">The token pairs one agent, works once and expires in 24 hours.</p>
           {#if addError}<p class="error-text" role="alert">{addError}</p>{/if}
@@ -424,24 +432,16 @@ volumes:
         {#if wdAgents.length === 0}
           <p class="meta">Pair at least one agent above to watch this hub.</p>
         {:else}
-          <div class="wd-agent-list">
-            {#each wdAgents as a (a.id)}
-              {@const info = agentWatchdogNote(a)}
-              <label class="wd-agent" class:off={!info.canToggle && !wdSelected[a.id]}>
-                <input
-                  type="checkbox"
-                  checked={!!wdSelected[a.id]}
-                  disabled={!info.canToggle && !wdSelected[a.id]}
-                  onchange={(e) => {
-                    wdSelected = { ...wdSelected, [a.id]: e.currentTarget.checked };
-                    wdDirty = true;
-                  }}
-                />
-                <span class="wd-aname">{a.name}</span>
-                <span class="meta mono">{info.note}</span>
-              </label>
-            {/each}
-          </div>
+          <MultiSelect label="Watching agents" placeholder="No agent watches"
+            items={wdAgents.map((a) => {
+              const info = agentWatchdogNote(a);
+              return { value: a.id, label: a.name, meta: info.canToggle ? info.note : undefined, disabled: info.canToggle ? undefined : info.note };
+            })}
+            selected={wdAgents.filter((a) => wdSelected[a.id]).map((a) => a.id)}
+            onchange={(ids) => {
+              wdSelected = Object.fromEntries(wdAgents.map((a) => [a.id, ids.includes(a.id)]));
+              wdDirty = true;
+            }} />
         {/if}
       </div>
 
@@ -736,35 +736,6 @@ volumes:
   }
   .grace-in {
     width: 88px;
-  }
-  .wd-agent-list {
-    display: grid;
-    gap: 6px;
-  }
-  .wd-agent {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    padding: 8px 12px;
-    border-radius: var(--r-md);
-    background: var(--well);
-    box-shadow: inset 0 0 0 1px var(--rope);
-    cursor: pointer;
-    font-size: 13px;
-  }
-  .wd-agent.off {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  .wd-agent input {
-    accent-color: var(--buoy);
-    width: 16px;
-    height: 16px;
-  }
-  .wd-aname {
-    font-weight: 500;
-    color: var(--foam);
   }
   .wd-maint-row {
     display: flex;

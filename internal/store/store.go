@@ -28,12 +28,25 @@ type User struct {
 	TOTPSecret      string
 	TOTPLastCounter int64
 	Active          bool // false until TOTP enrolment is confirmed
+
+	AuthSource  string // "local", "oidc" or "proxy"
+	Disabled    bool   // set by an admin; wins over the IdP and the proxy
+	CreatedBy   string // username of the admin who invited them, "" for setup and external users
+	LastLoginAt time.Time
+	DisplayName string // informational (OIDC claims or the invite)
+	Email       string // informational (OIDC claims)
+	CreatedAt   time.Time
 }
 
 // Session is a signed-in browser.
 type Session struct {
-	UserID    int64
-	ExpiresAt time.Time
+	ID         int64 // rowid, shown to the owner to sign one session out
+	UserID     int64
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	LastSeenAt time.Time
+	IP         string
+	UserAgent  string
 }
 
 var migrations = []string{
@@ -316,6 +329,61 @@ var migrations = []string{
 		error TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (source_id, tpl_id)
 	);`,
+	// M10: user management, OIDC and forward-auth sign-in. auth_source says who owns the
+	// credentials (local password+TOTP, an OIDC provider, or a trusted proxy). External
+	// accounts are found only by (issuer, subject), never by name or e-mail; forward-auth
+	// users use the issuer "proxy". user_tokens are one-time invite and reset links, stored
+	// hashed; the password and TOTP secret chosen while finishing wait on the token row, so
+	// a reset replaces nothing until it is finished. Sessions learn when and from where
+	// they were used, for the Account page.
+	`ALTER TABLE users ADD COLUMN auth_source TEXT NOT NULL DEFAULT 'local' CHECK (auth_source IN ('local', 'oidc', 'proxy'));
+	ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE users ADD COLUMN created_by TEXT NOT NULL DEFAULT '';
+	ALTER TABLE users ADD COLUMN last_login_at INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+	ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT '';
+	CREATE UNIQUE INDEX users_username_nocase ON users(username COLLATE NOCASE);
+	CREATE TABLE user_identities (
+		issuer TEXT NOT NULL,
+		subject TEXT NOT NULL,
+		user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (issuer, subject)
+	);
+	CREATE TABLE user_tokens (
+		token_hash TEXT PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL CHECK (kind IN ('invite', 'reset')),
+		created_by TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		expires_at INTEGER NOT NULL,
+		pending_password_hash TEXT NOT NULL DEFAULT '',
+		pending_totp_secret TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX user_tokens_user ON user_tokens(user_id);
+	ALTER TABLE sessions ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE sessions ADD COLUMN ip TEXT NOT NULL DEFAULT '';
+	ALTER TABLE sessions ADD COLUMN user_agent TEXT NOT NULL DEFAULT '';
+	CREATE INDEX sessions_user ON sessions(user_id);`,
+	// M12: Moorage self-update job state persisted across hub restarts so an in-progress
+	// hub update can reconcile its outcome ("updated to X" / "rolled back") and write
+	// the delayed audit row once the restarted process comes back.
+	`CREATE TABLE system_updates (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		node_id      TEXT    NOT NULL,
+		node_name    TEXT    NOT NULL,
+		action       TEXT    NOT NULL,
+		from_version TEXT    NOT NULL,
+		to_version   TEXT    NOT NULL,
+		mode         TEXT    NOT NULL DEFAULT '',
+		status       TEXT    NOT NULL,
+		message      TEXT    NOT NULL DEFAULT '',
+		actor        TEXT    NOT NULL DEFAULT '',
+		ip           TEXT    NOT NULL DEFAULT '',
+		started_at   INTEGER NOT NULL,
+		finished_at  INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX idx_system_updates_node ON system_updates(node_id, started_at DESC);`,
 }
 
 // Open opens (and migrates) moorage.db in dataDir.
@@ -401,91 +469,4 @@ func (s *Store) UpsertPendingUser(ctx context.Context, u User) error {
 		return err
 	}
 	return tx.Commit()
-}
-
-// UserByName loads a user by username.
-func (s *Store) UserByName(ctx context.Context, username string) (User, error) {
-	return s.scanUser(s.db.QueryRowContext(ctx, userCols+` WHERE username = ?`, username))
-}
-
-// UserByID loads a user by id.
-func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
-	return s.scanUser(s.db.QueryRowContext(ctx, userCols+` WHERE id = ?`, id))
-}
-
-const userCols = `SELECT id, username, password_hash, role, totp_secret, totp_last_counter, active FROM users`
-
-func (s *Store) scanUser(row *sql.Row) (User, error) {
-	var u User
-	var active int
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TOTPSecret, &u.TOTPLastCounter, &active)
-	if errors.Is(err, sql.ErrNoRows) {
-		return u, ErrNotFound
-	}
-	u.Active = active == 1
-	return u, err
-}
-
-// ActivateUser marks enrolment as finished.
-func (s *Store) ActivateUser(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET active = 1 WHERE id = ?`, id)
-	return err
-}
-
-// UseTOTPCounter stores the last accepted TOTP time step. It only succeeds when
-// counter is newer than the stored one, which blocks code reuse.
-func (s *Store) UseTOTPCounter(ctx context.Context, id, counter int64) (bool, error) {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE users SET totp_last_counter = ? WHERE id = ? AND totp_last_counter < ?`, counter, id, counter)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n == 1, err
-}
-
-// CreateSession stores a session by the hash of its token.
-func (s *Store) CreateSession(ctx context.Context, tokenHash string, userID int64, expires time.Time) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?,?,?,?)`,
-		tokenHash, userID, time.Now().Unix(), expires.Unix())
-	return err
-}
-
-// SessionByHash returns a non-expired session.
-func (s *Store) SessionByHash(ctx context.Context, tokenHash string) (Session, error) {
-	var sess Session
-	var exp int64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT user_id, expires_at FROM sessions WHERE token_hash = ? AND expires_at > ?`,
-		tokenHash, time.Now().Unix()).Scan(&sess.UserID, &exp)
-	if errors.Is(err, sql.ErrNoRows) {
-		return sess, ErrNotFound
-	}
-	sess.ExpiresAt = time.Unix(exp, 0)
-	return sess, err
-}
-
-// DeleteSession removes a session (logout).
-func (s *Store) DeleteSession(ctx context.Context, tokenHash string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE token_hash = ?`, tokenHash)
-	return err
-}
-
-// UpdateUserRole changes the role of a user (e.g. from admin to viewer).
-func (s *Store) UpdateUserRole(ctx context.Context, id int64, role string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE users SET role = ? WHERE id = ?`, role, id)
-	return err
-}
-
-// DeleteUser removes a user account and cascades its sessions.
-func (s *Store) DeleteUser(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
-	return err
-}
-
-// PruneSessions deletes expired sessions.
-func (s *Store) PruneSessions(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at <= ?`, time.Now().Unix())
-	return err
 }

@@ -442,6 +442,7 @@ func TestWatchdogIntegrationThreeAgentsHubOutageAndRecovery(t *testing.T) {
 
 	// Pair and start 3 agents with fast watchdog timings.
 	const numAgents = 3
+	var agentsWG sync.WaitGroup
 	for i := range numAgents {
 		tok, _, err := hub.NewJoinToken(ctx, "node-"+string(rune('a'+i)))
 		if err != nil {
@@ -468,8 +469,19 @@ func TestWatchdogIntegrationThreeAgentsHubOutageAndRecovery(t *testing.T) {
 			WatchdogAddr:   peerAddr,
 			Watchdog:       wd,
 		}
-		go ag.Run(ctx) //nolint:errcheck
+		agentsWG.Add(1)
+		go func() {
+			defer agentsWG.Done()
+			_ = ag.Run(ctx)
+		}()
 	}
+	// Agents write state files into their TempDirs until they stop. Cleanups run last
+	// registered first, so this stops them before the TempDirs are removed (the test
+	// flaked with "directory not empty" otherwise).
+	t.Cleanup(func() {
+		cancel()
+		agentsWG.Wait()
+	})
 
 	// Wait for all 3 agents to connect.
 	deadline := time.Now().Add(8 * time.Second)

@@ -4,6 +4,7 @@
   import { app } from '../lib/state.svelte';
   import { auditGroups } from '../lib/audit';
   import AuditList from '../lib/AuditList.svelte';
+  import MultiSelect from '../lib/MultiSelect.svelte';
 
   const pageSize = 100;
 
@@ -15,14 +16,14 @@
   // Filters. Text fields apply on submit, the selects right away.
   let actor = $state('');
   let stack = $state('');
-  let group = $state('');
-  let hostId = $state('');
+  let groups = $state<string[]>([]);
+  let hostIds = $state<string[]>([]);
 
   const filter = () => ({
-    host: hostId,
+    host: hostIds.join(','),
     stack: stack.trim(),
     actor: actor.trim(),
-    action: group,
+    action: groups.join(','),
     limit: pageSize,
   });
 
@@ -54,7 +55,9 @@
   }
 
   function clear() {
-    actor = stack = group = hostId = '';
+    actor = stack = '';
+    groups = [];
+    hostIds = [];
     load();
   }
 
@@ -62,7 +65,7 @@
     untrack(load);
   });
 
-  const filtered = $derived(!!(actor.trim() || stack.trim() || group || hostId));
+  const filtered = $derived(!!(actor.trim() || stack.trim() || groups.length || hostIds.length));
 </script>
 
 <div class="page">
@@ -86,21 +89,17 @@
       <input class="field" bind:value={stack} placeholder="Any stack" spellcheck="false" autocomplete="off" />
     </label>
     {#if app.hosts.length > 1}
-      <label>
-        <span class="label">Host</span>
-        <select class="field" bind:value={hostId} onchange={load}>
-          <option value="">All hosts</option>
-          {#each app.hosts as h (h.id)}<option value={h.id}>{h.name}</option>{/each}
-        </select>
-      </label>
+      <div>
+        <span class="label">Hosts</span>
+        <MultiSelect label="Hosts" placeholder="All hosts" bind:selected={hostIds} onchange={load}
+          items={app.hosts.map((h) => ({ value: h.id, label: h.name }))} />
+      </div>
     {/if}
-    <label>
-      <span class="label">Action</span>
-      <select class="field" bind:value={group} onchange={load}>
-        <option value="">All actions</option>
-        {#each auditGroups as g (g.prefix)}<option value={g.prefix}>{g.name}</option>{/each}
-      </select>
-    </label>
+    <div>
+      <span class="label">Actions</span>
+      <MultiSelect label="Actions" placeholder="All actions" bind:selected={groups} onchange={load}
+        items={auditGroups.map((g) => ({ value: g.prefix, label: g.name }))} />
+    </div>
     <div class="fbtns">
       <button class="btn">Filter</button>
       {#if filtered}<button type="button" class="btn btn-ghost" onclick={clear}>Clear</button>{/if}

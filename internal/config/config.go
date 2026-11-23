@@ -3,9 +3,12 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 )
 
 // Config holds runtime settings. All fields come from MOORAGE_* variables.
@@ -33,7 +36,55 @@ type Config struct {
 	// Probes is MOORAGE_PROBES (default true): run HTTP/TCP/ping/DNS checks for the hub from
 	// this host's network. Allowed on a read-only agent, because a probe changes nothing here.
 	Probes bool
+
+	// Self-update (MOORAGE_UPDATE_URL, MOORAGE_UPDATE_CHANNEL, MOORAGE_SELF_UPDATE).
+	UpdateURL     string // MOORAGE_UPDATE_URL, default GitHub releases API of Literally-davca/moorage
+	UpdateChannel string // MOORAGE_UPDATE_CHANNEL: "stable" (default) or "pre"
+	SelfUpdate    bool   // MOORAGE_SELF_UPDATE (default true), enforced on each node
+
+	// OIDC sign-in (MOORAGE_OIDC_*). A broken setting never stops Moorage: it is kept in
+	// OIDC.Err, logged, and shown to admins, and the SSO button stays hidden.
+	OIDC OIDCConfig
+	// Forward-auth from a trusted reverse proxy (MOORAGE_TRUSTED_PROXIES, MOORAGE_PROXY_*).
+	// Off when Trusted is empty. A broken setting stops Moorage, because guessing what a
+	// security setting meant would be worse than not starting.
+	Proxy ProxyConfig
 }
+
+// RoleMapping turns external groups into a Moorage role: admin groups win over viewer
+// groups, then the default role ("none" refuses the sign-in, or "viewer").
+type RoleMapping struct {
+	AdminGroups  []string
+	ViewerGroups []string
+	DefaultRole  string // "none" or "viewer"
+}
+
+// OIDCConfig is MOORAGE_OIDC_* as read; the sso package validates it.
+type OIDCConfig struct {
+	Issuer       string   // MOORAGE_OIDC_ISSUER
+	ClientID     string   // MOORAGE_OIDC_CLIENT_ID
+	ClientSecret string   // MOORAGE_OIDC_CLIENT_SECRET or the file in MOORAGE_OIDC_CLIENT_SECRET_FILE
+	Scopes       []string // MOORAGE_OIDC_SCOPES, default "openid profile email groups"
+	GroupsClaim  string   // MOORAGE_OIDC_GROUPS_CLAIM, default "groups"; a dotted path for nested claims
+	Roles        RoleMapping
+	Label        string // MOORAGE_OIDC_LABEL, default "Sign in with SSO"
+	LocalLogin   bool   // MOORAGE_OIDC_LOCAL_LOGIN, default true
+	Err          string // why the settings can't be used, "" when fine
+}
+
+// Configured reports whether any OIDC setting is present.
+func (c OIDCConfig) Configured() bool { return c.Issuer != "" || c.ClientID != "" }
+
+// ProxyConfig is the forward-auth setup.
+type ProxyConfig struct {
+	Trusted      []netip.Prefix // MOORAGE_TRUSTED_PROXIES
+	UserHeader   string         // MOORAGE_PROXY_USER_HEADER
+	GroupsHeader string         // MOORAGE_PROXY_GROUPS_HEADER, optional
+	Roles        RoleMapping    // MOORAGE_PROXY_ADMIN_GROUPS / _VIEWER_GROUPS / _DEFAULT_ROLE
+}
+
+// DefaultUpdateURL points at the upstream Moorage GitHub releases API.
+const DefaultUpdateURL = "https://api.github.com/repos/Literally-davca/moorage/releases"
 
 // FromEnv builds a Config and checks that the directories are usable.
 func FromEnv() (Config, error) {
@@ -51,6 +102,11 @@ func FromEnv() (Config, error) {
 		JoinToken:      os.Getenv("MOORAGE_JOIN_TOKEN"),
 		WatchdogListen: os.Getenv("MOORAGE_WATCHDOG_LISTEN"),
 		WatchdogAddr:   os.Getenv("MOORAGE_WATCHDOG_ADDR"),
+		UpdateURL:      strings.TrimRight(env("MOORAGE_UPDATE_URL", DefaultUpdateURL), "/"),
+		UpdateChannel:  strings.ToLower(strings.TrimSpace(env("MOORAGE_UPDATE_CHANNEL", "stable"))),
+	}
+	if c.UpdateChannel != "stable" && c.UpdateChannel != "pre" {
+		return c, fmt.Errorf("MOORAGE_UPDATE_CHANNEL must be stable or pre, not %q", c.UpdateChannel)
 	}
 	if c.AgentListen == "off" {
 		c.AgentListen = ""
@@ -68,6 +124,9 @@ func FromEnv() (Config, error) {
 	if c.Probes, err = boolEnvDefault("MOORAGE_PROBES", true); err != nil {
 		return c, err
 	}
+	if c.SelfUpdate, err = boolEnvDefault("MOORAGE_SELF_UPDATE", true); err != nil {
+		return c, err
+	}
 	if c.PUID, err = intEnv("MOORAGE_PUID", -1); err != nil {
 		return c, err
 	}
@@ -78,6 +137,10 @@ func FromEnv() (Config, error) {
 		return c, fmt.Errorf("MOORAGE_PUID and MOORAGE_PGID must be set together")
 	}
 	if c.MetricsToken, err = metricsToken(os.Getenv("MOORAGE_METRICS_TOKEN")); err != nil {
+		return c, err
+	}
+	c.OIDC = oidcFromEnv()
+	if c.Proxy, err = proxyFromEnv(); err != nil {
 		return c, err
 	}
 
@@ -120,6 +183,104 @@ func metricsToken(v string) (string, error) {
 		}
 	}
 	return v, nil
+}
+
+// oidcFromEnv reads MOORAGE_OIDC_*. Problems go to Err instead of failing the start.
+func oidcFromEnv() OIDCConfig {
+	c := OIDCConfig{
+		Issuer:       strings.TrimSpace(os.Getenv("MOORAGE_OIDC_ISSUER")),
+		ClientID:     strings.TrimSpace(os.Getenv("MOORAGE_OIDC_CLIENT_ID")),
+		ClientSecret: os.Getenv("MOORAGE_OIDC_CLIENT_SECRET"),
+		Scopes:       strings.Fields(env("MOORAGE_OIDC_SCOPES", "openid profile email groups")),
+		GroupsClaim:  strings.TrimSpace(env("MOORAGE_OIDC_GROUPS_CLAIM", "groups")),
+		Label:        strings.TrimSpace(env("MOORAGE_OIDC_LABEL", "Sign in with SSO")),
+		LocalLogin:   true,
+	}
+	var errs []string
+	if f := os.Getenv("MOORAGE_OIDC_CLIENT_SECRET_FILE"); f != "" {
+		if c.ClientSecret != "" {
+			errs = append(errs, "set MOORAGE_OIDC_CLIENT_SECRET or MOORAGE_OIDC_CLIENT_SECRET_FILE, not both")
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("MOORAGE_OIDC_CLIENT_SECRET_FILE: %v", err))
+		}
+		c.ClientSecret = strings.TrimSpace(string(b))
+	}
+	if !slices.Contains(c.Scopes, "openid") {
+		c.Scopes = append([]string{"openid"}, c.Scopes...)
+	}
+	var err error
+	if c.Roles, err = roleMapping("MOORAGE_OIDC"); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if c.LocalLogin, err = boolEnvDefault("MOORAGE_OIDC_LOCAL_LOGIN", true); err != nil {
+		c.LocalLogin = true // the safe reading of a typo: keep the password form
+		errs = append(errs, err.Error())
+	}
+	c.Err = strings.Join(errs, "; ")
+	return c
+}
+
+// proxyFromEnv reads the forward-auth settings.
+func proxyFromEnv() (ProxyConfig, error) {
+	var c ProxyConfig
+	for _, f := range strings.FieldsFunc(os.Getenv("MOORAGE_TRUSTED_PROXIES"), func(r rune) bool { return r == ',' || r == ' ' }) {
+		p, err := parsePrefix(f)
+		if err != nil {
+			return c, fmt.Errorf("MOORAGE_TRUSTED_PROXIES: %q is not an IP address or CIDR range", f)
+		}
+		c.Trusted = append(c.Trusted, p)
+	}
+	c.UserHeader = strings.TrimSpace(os.Getenv("MOORAGE_PROXY_USER_HEADER"))
+	c.GroupsHeader = strings.TrimSpace(os.Getenv("MOORAGE_PROXY_GROUPS_HEADER"))
+	var err error
+	if c.Roles, err = roleMapping("MOORAGE_PROXY"); err != nil {
+		return c, err
+	}
+	if len(c.Trusted) > 0 && c.UserHeader == "" {
+		return c, fmt.Errorf("MOORAGE_TRUSTED_PROXIES is set: also set MOORAGE_PROXY_USER_HEADER, for example Remote-User")
+	}
+	return c, nil
+}
+
+// parsePrefix accepts a CIDR range or a single address.
+func parsePrefix(s string) (netip.Prefix, error) {
+	if strings.Contains(s, "/") {
+		p, err := netip.ParsePrefix(s)
+		return p.Masked(), err
+	}
+	a, err := netip.ParseAddr(s)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	a = a.Unmap()
+	return netip.PrefixFrom(a, a.BitLen()), nil
+}
+
+// roleMapping reads <prefix>_ADMIN_GROUPS, _VIEWER_GROUPS and _DEFAULT_ROLE.
+func roleMapping(prefix string) (RoleMapping, error) {
+	m := RoleMapping{
+		AdminGroups:  splitList(os.Getenv(prefix + "_ADMIN_GROUPS")),
+		ViewerGroups: splitList(os.Getenv(prefix + "_VIEWER_GROUPS")),
+		DefaultRole:  strings.ToLower(strings.TrimSpace(env(prefix+"_DEFAULT_ROLE", "none"))),
+	}
+	if m.DefaultRole != "none" && m.DefaultRole != "viewer" {
+		bad := m.DefaultRole
+		m.DefaultRole = "none"
+		return m, fmt.Errorf("%s_DEFAULT_ROLE must be none or viewer, not %q", prefix, bad)
+	}
+	return m, nil
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func env(key, def string) string {

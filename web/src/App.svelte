@@ -1,23 +1,36 @@
 <script lang="ts">
-  import { api, setUnauthorizedHandler } from './lib/api';
-  import { app } from './lib/state.svelte';
+  import { api, setUnauthorizedHandler, type LoginInfo } from './lib/api';
+  import { app, inviteToken } from './lib/state.svelte';
   import Setup from './views/Setup.svelte';
   import Login from './views/Login.svelte';
+  import Invite from './views/Invite.svelte';
   import Shell from './views/Shell.svelte';
 
-  let phase = $state<'loading' | 'setup' | 'login' | 'app' | 'offline'>('loading');
+  let phase = $state<'loading' | 'setup' | 'login' | 'invite' | 'app' | 'offline'>('loading');
   let offlineMsg = $state('');
+  let login = $state<LoginInfo>({ sso: false, localLogin: true, proxy: false });
+  let proxyError = $state('');
 
   async function load() {
     try {
       const s = await api.session();
       app.version = s.version;
       app.user = s.user;
-      phase = s.user ? 'app' : s.setupRequired ? 'setup' : 'login';
+      if (s.login) login = s.login;
+      proxyError = s.proxyError ?? '';
+      // An invite or reset link wins over an existing session: the link is for someone else
+      // or for a fresh password, and finishing it signs in as that user.
+      if (inviteToken() && !s.setupRequired) phase = 'invite';
+      else phase = s.user ? 'app' : s.setupRequired ? 'setup' : 'login';
     } catch (e) {
       offlineMsg = (e as Error).message;
       phase = 'offline';
     }
+  }
+
+  function enterApp() {
+    if (inviteToken() || location.hash.startsWith('#/login')) location.hash = '#/';
+    phase = 'app';
   }
 
   setUnauthorizedHandler(() => {
@@ -27,6 +40,12 @@
 
   $effect(() => {
     document.documentElement.dataset.theme = app.theme;
+  });
+
+  // An invite link pasted into a tab that already shows Moorage only changes the hash, so
+  // the phase chosen at load would stay (the login page or the app). Re-check on hash change.
+  window.addEventListener('hashchange', () => {
+    if (inviteToken() && phase !== 'invite' && phase !== 'setup') load();
   });
 
   load();
@@ -43,9 +62,11 @@
     </div>
   </div>
 {:else if phase === 'setup'}
-  <Setup onDone={() => (phase = 'app')} />
+  <Setup onDone={enterApp} />
+{:else if phase === 'invite'}
+  <Invite token={inviteToken()} onDone={enterApp} />
 {:else if phase === 'login'}
-  <Login onDone={() => (phase = 'app')} />
+  <Login {login} {proxyError} onDone={enterApp} />
 {:else}
   <Shell onSignedOut={() => (phase = 'login')} />
 {/if}

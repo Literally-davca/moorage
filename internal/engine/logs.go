@@ -65,8 +65,19 @@ func (f LogFilter) Compile() (func(string) bool, error) {
 	return func(s string) bool { return strings.Contains(strings.ToLower(s), needle) }, nil
 }
 
+// matchesContainer reports whether c is wanted: empty means every container, otherwise
+// want is one id, name or service, or several separated by commas (Docker names can't
+// contain a comma), so the log view can follow a chosen set of containers.
 func matchesContainer(c Container, want string) bool {
-	return want == "" || c.ID == want || c.Name == want || c.Service == want
+	if want == "" {
+		return true
+	}
+	for _, w := range strings.Split(want, ",") {
+		if w = strings.TrimSpace(w); w != "" && (c.ID == w || c.Name == w || c.Service == w) {
+			return true
+		}
+	}
+	return false
 }
 
 // StreamLogs follows the logs of every container of a stack (or one container)

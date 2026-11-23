@@ -519,6 +519,39 @@ func TestWatchdogHostOfflineAndRecoveryAlert(t *testing.T) {
 	}
 }
 
+func TestWatchdogHostSilenceDuringSelfUpdate(t *testing.T) {
+	m, st, sent := newTestMonitor(t)
+	m.reg = host.NewRegistry(nil, "", false, st)
+	ctx := context.Background()
+	chID, err := st.SaveChannel(ctx, store.Channel{Name: "wd", Kind: "ntfy", Config: `{"url":"https://ntfy.sh/x"}`, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.CreateJoinToken(ctx, "hash2", "Agent One", time.Now().Add(time.Hour))
+	if _, err := st.RedeemJoinToken(ctx, "hash2", "ag_silenced", "agent1"); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Now()
+	_ = st.TouchAgent(ctx, "ag_silenced", "agent1", t0.Add(-10*time.Second))
+	_ = st.SaveWatchdog(ctx, store.WatchdogSettings{Enabled: true, ChannelID: chID, Grace: 1}, map[string]bool{"ag_silenced": true})
+
+	// Silencing host suppresses offline alert even past grace.
+	m.SilenceHost("ag_silenced", 3*time.Minute)
+	m.CheckWatchdogAgents(ctx, t0.Add(2*time.Minute))
+	m.flush("hosts")
+	if len(*sent) != 0 {
+		t.Fatalf("expected offline alert suppressed during SilenceHost, got %+v", *sent)
+	}
+
+	// Clearing silence and checking after grace triggers offline alert cleanly.
+	m.ClearHostSilence("ag_silenced")
+	m.CheckWatchdogAgents(ctx, t0.Add(2*time.Minute))
+	m.flush("hosts")
+	if len(*sent) != 1 || !strings.Contains((*sent)[0].Title, "Host Agent One is offline since") {
+		t.Fatalf("expected offline alert once silence ends, got %+v", *sent)
+	}
+}
+
 func TestAlertCountsPerChannelKind(t *testing.T) {
 	m, st, _ := newTestMonitor(t)
 	ctx := context.Background()

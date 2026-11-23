@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { api } from '../lib/api';
+  import { api, type ImageLookup, type ImageCandidate } from '../lib/api';
   import { link } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import CodeEditor from '../lib/CodeEditor.svelte';
+  import EnvEditor from '../lib/EnvEditor.svelte';
 
   let { onCreated }: { onCreated: (name: string) => void } = $props();
 
@@ -30,6 +31,41 @@
   let convService = $state('');
 
   const nameOk = $derived(/^[a-z0-9][a-z0-9_-]{0,62}$/.test(name));
+
+  // Start from an image: Moorage looks for a template, the compose file of the image's
+  // source repository, and generates one from the image's metadata.
+  let image = $state('');
+  let finding = $state(false);
+  let found = $state<ImageLookup | null>(null);
+  let findError = $state('');
+  let picked = $state<ImageCandidate | null>(null);
+  const sourceLabel: Record<ImageCandidate['source'], string> = {
+    template: 'Template',
+    repo: 'Source repository',
+    generated: 'Generated',
+  };
+  async function find() {
+    if (!image.trim()) return;
+    finding = true;
+    findError = '';
+    found = null;
+    picked = null;
+    try {
+      found = await api.imageLookup(image.trim());
+    } catch (err) {
+      findError = (err as Error).message;
+    } finally {
+      finding = false;
+    }
+  }
+  function use(c: ImageCandidate) {
+    compose = c.compose ?? compose;
+    env = c.env ?? '';
+    picked = c;
+    if (!name && found && /^[a-z0-9][a-z0-9_-]{0,62}$/.test(found.name)) name = found.name;
+  }
+  const templateHref = (c: ImageCandidate) =>
+    link(`templates/${encodeURIComponent(c.templateSource ?? '')}/${encodeURIComponent(c.templateId ?? '')}`);
 
   $effect(() => {
     const c = compose;
@@ -91,6 +127,41 @@
     </div>
   </div>
 
+  <section class="from-image" aria-label="Start from an image">
+    <label class="label" for="simage">Start from an image <span class="meta">optional</span></label>
+    <div class="find-row">
+      <input id="simage" class="field mono" bind:value={image} placeholder="vaultwarden/server or ghcr.io/owner/app:1.2"
+        spellcheck="false" autocomplete="off" onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void find(); } }} />
+      <button type="button" class="btn" onclick={find} disabled={!image.trim() || finding} aria-busy={finding}><Icon name="search" /> Find compose</button>
+    </div>
+    <p class="hint">Moorage looks for a template, the compose file in the image's source repository, and builds one from the image's ports and volumes. You review everything before the stack is created.</p>
+    {#if findError}<p class="error-text" role="alert">{findError}</p>{/if}
+    {#if found}
+      {#if found.problems?.length}
+        <ul class="problems meta">{#each found.problems as p (p)}<li>{p}</li>{/each}</ul>
+      {/if}
+      <ul class="cands">
+        {#each found.candidates as c, i (i)}
+          <li class="cand" class:on={picked === c}>
+            <div class="cand-head">
+              <span class="tag">{sourceLabel[c.source]}</span>
+              <strong>{c.title}</strong>
+            </div>
+            {#if c.detail}<p class="meta">{c.detail}{#if c.url} · <a href={c.url} target="_blank" rel="noopener noreferrer">open</a>{/if}</p>{/if}
+            {#if c.warnings?.length}
+              <ul class="warns">{#each c.warnings as w (w)}<li><Icon name="alert" /> {w}</li>{/each}</ul>
+            {/if}
+            {#if c.source === 'template'}
+              <a class="btn" href={templateHref(c)}>Open template</a>
+            {:else}
+              <button type="button" class="btn" onclick={() => use(c)}>{picked === c ? 'In the editor below' : 'Use this'}</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
   <div class="name">
     <label class="label" for="sname">Name</label>
     <input id="sname" class="field" bind:value={name} placeholder="paperless" spellcheck="false" autocomplete="off" required />
@@ -109,7 +180,7 @@
 
   <div>
     <span class="label">.env <span class="meta">(optional)</span></span>
-    <CodeEditor bind:value={env} language="plain" label=".env file" minHeight={80} />
+    <EnvEditor bind:value={env} {compose} />
   </div>
 
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
@@ -224,5 +295,74 @@
   .warns li {
     display: flex;
     gap: 8px;
+  }
+  .from-image {
+    display: grid;
+    gap: 8px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rope);
+  }
+  .find-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .find-row .field {
+    flex: 1;
+    min-width: 220px;
+  }
+  .problems {
+    margin: 0;
+    padding-left: 18px;
+  }
+  .cands {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 8px;
+  }
+  .cand {
+    display: grid;
+    gap: 6px;
+    align-content: start;
+    justify-items: start;
+    padding: 12px;
+    border-radius: var(--r-md);
+    box-shadow: inset 0 0 0 1px var(--rope);
+  }
+  .cand.on {
+    box-shadow: inset 0 0 0 2px var(--buoy);
+  }
+  .tag {
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--rope);
+    color: var(--mist);
+  }
+  .cand-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .cand .meta {
+    overflow-wrap: anywhere;
+  }
+  .warns {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--adrift-text);
+  }
+  .warns li {
+    display: flex;
+    gap: 6px;
   }
 </style>

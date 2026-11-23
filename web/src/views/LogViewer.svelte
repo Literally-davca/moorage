@@ -1,6 +1,7 @@
 <script lang="ts">
   import { hostPath, wsURL, type Container } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
+  import MultiSelect from '../lib/MultiSelect.svelte';
 
   let { stack, containers }: { stack: string; containers: Container[] } = $props();
 
@@ -14,7 +15,9 @@
   const MAX = 5000;
 
   let lines = $state<Line[]>([]);
-  let container = $state('');
+  // Chosen container names; empty = all of the stack.
+  let picked = $state<string[]>([]);
+  const container = $derived([...picked].sort().join(','));
   let query = $state('');
   let useRegex = $state(true);
   let wrap = $state(true);
@@ -24,7 +27,7 @@
   let box: HTMLDivElement;
   let seq = 0;
 
-  const multi = $derived(new Set(containers.map((c) => c.name)).size > 1 && !container);
+  const multi = $derived(new Set(containers.map((c) => c.name)).size > 1 && picked.length !== 1);
 
   const matcher = $derived.by(() => {
     const q = query.trim();
@@ -112,10 +115,10 @@
 
 <div class="viewer">
   <div class="bar">
-    <select class="field sel" bind:value={container} aria-label="Container">
-      <option value="">All containers</option>
-      {#each containers as c (c.id)}<option value={c.name}>{c.service || c.name}</option>{/each}
-    </select>
+    <div class="sel">
+      <MultiSelect label="Containers" placeholder="All containers" bind:selected={picked}
+        items={containers.map((c) => ({ value: c.name, label: c.service || c.name, meta: c.service ? c.name : undefined }))} />
+    </div>
     <label class="find" class:bad={matcher === 'invalid'}>
       <Icon name="search" />
       <span class="sr-only">Search logs</span>
@@ -159,8 +162,10 @@
     flex-wrap: wrap;
   }
   .sel {
-    width: auto;
-    min-width: 160px;
+    width: 200px;
+    max-width: 100%;
+  }
+  .sel :global(.trigger) {
     height: 32px;
     font-size: 13px;
   }

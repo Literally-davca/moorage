@@ -143,6 +143,9 @@ func (e *Engine) RunAction(name, action string) (*Op, error) {
 	if !Actions[action] {
 		return nil, fmt.Errorf("unknown action %q", action)
 	}
+	if selfBlocked[action] && e.IsSelf(name) {
+		return nil, ErrSelfStack
+	}
 	dir, err := e.stackDir(name)
 	if err != nil {
 		return nil, err

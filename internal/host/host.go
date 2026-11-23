@@ -58,14 +58,25 @@ type NotedCreator interface {
 	CreateNoted(ctx context.Context, name, compose, env, author, note string) error
 }
 
+// SelfApplier is implemented by hosts that can apply changes to the stack Moorage itself
+// runs from (Local and Remote): save, then a helper container runs compose up and rolls
+// back if Moorage doesn't come back. An older agent answers 404 (IsUnsupported).
+type SelfApplier interface {
+	SelfApply(ctx context.Context, name, compose, env, author string) error
+}
+
 // Errors specific to hosts (engine errors pass through unchanged).
 var (
-	ErrOffline          = errors.New("this host is offline")
-	ErrHostReadOnly     = errors.New("this host's agent runs read-only, changes are disabled")
-	ErrTerminalDisabled = errors.New("the web terminal is disabled on this host")
-	ErrUnknownHost      = errors.New("host not found")
-	ErrOpNotFound       = errors.New("operation not found")
-	ErrProbesDisabled   = errors.New("probing from this agent is turned off (MOORAGE_PROBES=false)")
+	ErrOffline               = errors.New("this host is offline")
+	ErrHostReadOnly          = errors.New("this host's agent runs read-only, changes are disabled")
+	ErrTerminalDisabled      = errors.New("the web terminal is disabled on this host")
+	ErrUnknownHost           = errors.New("host not found")
+	ErrOpNotFound            = errors.New("operation not found")
+	ErrProbesDisabled        = errors.New("probing from this agent is turned off (MOORAGE_PROBES=false)")
+	ErrSelfUpdateDisabled    = errors.New("self-update is disabled on this host (MOORAGE_SELF_UPDATE=false)")
+	ErrSelfUpdateBusy        = errors.New("a self-update is already running on this host")
+	ErrSelfUpdateInvalid     = errors.New("invalid or unverified self-update")
+	ErrSelfUpdateUnsupported = errors.New("self-update is not supported in this runtime mode")
 )
 
 // Error codes carry sentinel errors across the agent tunnel.
@@ -91,6 +102,11 @@ var codes = []struct {
 	{"not_running", engine.ErrContainerNotRunning, http.StatusConflict},
 	{"not_in_stack", engine.ErrContainerNotInStack, http.StatusNotFound},
 	{"probes_disabled", ErrProbesDisabled, http.StatusForbidden},
+	{"self_stack", engine.ErrSelfStack, http.StatusConflict},
+	{"self_update_disabled", ErrSelfUpdateDisabled, http.StatusForbidden},
+	{"self_update_busy", ErrSelfUpdateBusy, http.StatusConflict},
+	{"self_update_invalid", ErrSelfUpdateInvalid, http.StatusBadRequest},
+	{"self_update_unsupported", ErrSelfUpdateUnsupported, http.StatusUnprocessableEntity},
 }
 
 // ErrorCode returns the wire code and HTTP status for err.
@@ -114,11 +130,30 @@ func FromCode(code, msg string) error {
 	}
 	for _, c := range codes {
 		if c.code == code {
+			if msg != "" && msg != c.err.Error() && isSelfUpdateCode(code) {
+				return codedError{sentinel: c.err, msg: msg}
+			}
 			return c.err
 		}
 	}
 	return remoteError(msg)
 }
+
+func isSelfUpdateCode(code string) bool {
+	switch code {
+	case "self_update_disabled", "self_update_busy", "self_update_invalid", "self_update_unsupported":
+		return true
+	}
+	return false
+}
+
+type codedError struct {
+	sentinel error
+	msg      string
+}
+
+func (e codedError) Error() string { return e.msg }
+func (e codedError) Unwrap() error { return e.sentinel }
 
 type remoteError string
 

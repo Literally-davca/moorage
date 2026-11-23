@@ -20,8 +20,11 @@ import (
 	"moorage/internal/deps"
 	"moorage/internal/engine"
 	"moorage/internal/host"
+	"moorage/internal/imagefind"
 	"moorage/internal/metrics"
 	"moorage/internal/monitor"
+	"moorage/internal/selfupdate"
+	"moorage/internal/sso"
 	"moorage/internal/status"
 	"moorage/internal/store"
 	"moorage/internal/templates"
@@ -38,19 +41,24 @@ const csrfHeader = "X-Moorage"
 
 // Server wires the HTTP layer.
 type Server struct {
-	cfg     config.Config
-	auth    *auth.Service
-	store   *store.Store
-	reg     *host.Registry
-	hub     *tunnel.Hub // nil when the agent port is off
-	mon     *monitor.Monitor
-	upd     *updater.Updater
-	status  *status.Service
-	metrics *metrics.Collector
-	deps    *deps.Service
-	tpl     *templates.Service
-	log     *slog.Logger
-	version string
+	cfg        config.Config
+	auth       *auth.Service
+	store      *store.Store
+	reg        *host.Registry
+	hub        *tunnel.Hub // nil when the agent port is off
+	mon        *monitor.Monitor
+	upd        *updater.Updater
+	status     *status.Service
+	metrics    *metrics.Collector
+	deps       *deps.Service
+	tpl        *templates.Service
+	finder     *imagefind.Finder
+	finderOnce sync.Once
+	sysUpd     *selfupdate.Service
+	oidc       *sso.OIDC
+	proxy      *sso.Proxy
+	log        *slog.Logger
+	version    string
 
 	termSem chan struct{}
 	termCfg TerminalLimits
@@ -77,6 +85,8 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 		metrics: metrics.New(st, reg, mon, version),
 		deps:    deps.New(st, reg, log),
 		tpl:     templates.New(st, cfg.TemplatesDir, log),
+		oidc:    sso.NewOIDC(cfg.OIDC, cfg.PublicURL, log, sso.Options{}),
+		proxy:   sso.NewProxy(cfg.Proxy),
 		log:     log,
 		version: version,
 		termSem: make(chan struct{}, 4),
@@ -137,6 +147,11 @@ func (s *Server) Updater() *updater.Updater {
 	return s.upd
 }
 
+// SetSelfUpdate wires the Moorage self-update coordinator into the API server.
+func (s *Server) SetSelfUpdate(su *selfupdate.Service) {
+	s.sysUpd = su
+}
+
 // StatusHandler returns an HTTP handler that serves only public status pages
 // (by path and by custom domain), never the admin UI or API. Used for MOORAGE_STATUS_LISTEN.
 func (s *Server) StatusHandler() http.Handler {
@@ -160,6 +175,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup/finish", s.setupFinish)
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("POST /api/invite/inspect", s.inviteInspect)
+	mux.HandleFunc("POST /api/invite/start", s.inviteStart)
+	mux.HandleFunc("POST /api/invite/finish", s.inviteFinish)
+	mux.HandleFunc("GET /api/auth/oidc/start", s.oidcStart)
+	mux.HandleFunc("GET "+sso.CallbackPath, s.oidcCallback)
 
 	// signed in
 	mux.Handle("GET /api/hosts", s.user(s.listHosts))
@@ -174,6 +194,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/hosts/{host}/ws/logs", s.user(s.wsLogs))
 	mux.Handle("GET /api/hosts/{host}/ws/ops/{id}", s.user(s.wsOp))
 	mux.Handle("POST /api/convert", s.user(s.convert))
+	mux.Handle("POST /api/image-lookup", s.admin(s.imageLookup))
 	mux.Handle("GET /api/checks", s.user(s.listChecks))
 	mux.Handle("GET /api/checks/{id}", s.user(s.getCheck))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/health", s.user(s.stackHealth))
@@ -188,11 +209,18 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/hosts/{host}/deps", s.user(s.hostDeps))
 	mux.Handle("GET /api/templates", s.user(s.listTemplates))
 	mux.Handle("GET /api/templates/{source}/{id}", s.user(s.getTemplate))
+	mux.Handle("GET /api/account", s.user(s.getAccount))
+	mux.Handle("PUT /api/account/password", s.user(s.changePassword))
+	mux.Handle("POST /api/account/totp/start", s.user(s.totpStart))
+	mux.Handle("PUT /api/account/totp", s.user(s.totpFinish))
+	mux.Handle("DELETE /api/account/sessions", s.user(s.revokeOtherSessions))
+	mux.Handle("DELETE /api/account/sessions/{id}", s.user(s.revokeOwnSession))
 
 	// admin only
 	mux.Handle("POST /api/hosts/{host}/stacks", s.admin(s.createStack))
 	mux.Handle("PUT /api/hosts/{host}/stacks/{name}", s.admin(s.updateStack))
 	mux.Handle("DELETE /api/hosts/{host}/stacks/{name}", s.admin(s.deleteStack))
+	mux.Handle("POST /api/hosts/{host}/stacks/{name}/self-apply", s.admin(s.selfApply))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/actions/{action}", s.admin(s.runAction))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/restore", s.admin(s.restore))
 	mux.Handle("POST /api/agents", s.admin(s.addAgent))
@@ -226,6 +254,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/terminal/sessions", s.admin(s.listStackTerminals))
 	mux.Handle("GET /api/terminal/sessions", s.admin(s.listTerminalSessions))
 	mux.Handle("GET /api/audit", s.admin(s.listAudit))
+	mux.Handle("GET /api/system/updates", s.admin(s.systemUpdates))
+	mux.Handle("POST /api/system/updates/check", s.admin(s.checkSystemUpdates))
+	mux.Handle("POST /api/system/updates/apply", s.admin(s.applySystemUpdates))
+	mux.Handle("POST /api/system/updates/{node}/rollback", s.admin(s.rollbackSystemUpdate))
 	mux.Handle("POST /api/maintenance", s.admin(s.saveMaintenance))
 	mux.Handle("PUT /api/maintenance/{id}", s.admin(s.saveMaintenance))
 	mux.Handle("DELETE /api/maintenance/{id}", s.admin(s.deleteMaintenance))
@@ -239,6 +271,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/templates/sources/{id}", s.admin(s.updateTemplateSource))
 	mux.Handle("DELETE /api/templates/sources/{id}", s.admin(s.deleteTemplateSource))
 	mux.Handle("POST /api/templates/sources/{id}/refresh", s.admin(s.refreshTemplateSource))
+	mux.Handle("GET /api/users", s.admin(s.listUsers))
+	mux.Handle("POST /api/users", s.admin(s.createUser))
+	mux.Handle("PUT /api/users/{id}/role", s.admin(s.setUserRole))
+	mux.Handle("POST /api/users/{id}/disable", s.admin(s.disableUser))
+	mux.Handle("POST /api/users/{id}/enable", s.admin(s.enableUser))
+	mux.Handle("DELETE /api/users/{id}", s.admin(s.deleteUser))
+	mux.Handle("POST /api/users/{id}/reset", s.admin(s.resetUser))
+	mux.Handle("DELETE /api/users/{id}/sessions", s.admin(s.revokeUserSessions))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "Unknown API endpoint.")
@@ -267,6 +307,11 @@ func (s *Server) Handler() http.Handler {
 			s.status.ServeSlugRoute(w, r)
 			return
 		}
+		// Forward-auth headers count only from a trusted proxy; from anyone else they are
+		// removed here, before any handler could read them.
+		if !s.proxy.Trusted(r) {
+			s.proxy.Strip(r)
+		}
 		adminHandler.ServeHTTP(w, r)
 	})
 }
@@ -294,18 +339,23 @@ func (s *Server) admin(h http.HandlerFunc) http.Handler { return s.requireRole(h
 
 func (s *Server) requireRole(h http.HandlerFunc, admin bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(cookieName)
+		tok, err := s.sessionToken(w, r)
 		if err != nil {
+			_, msg := externalRefusal(err)
+			writeErr(w, http.StatusForbidden, msg)
+			return
+		}
+		if tok == "" {
 			writeErr(w, http.StatusUnauthorized, "Sign in to continue.")
 			return
 		}
-		u, err := s.auth.SessionUser(r.Context(), c.Value)
+		u, err := s.auth.SessionUser(r.Context(), tok)
 		if err != nil {
 			writeErr(w, http.StatusUnauthorized, "Your session expired. Sign in again.")
 			return
 		}
 		if admin && u.Role != "admin" {
-			writeErr(w, http.StatusForbidden, "Only admins can change stacks.")
+			writeErr(w, http.StatusForbidden, "Only admins can do this.")
 			return
 		}
 		// The audit middleware sits outside the mux, so it learns the actor and the matched
@@ -314,7 +364,8 @@ func (s *Server) requireRole(h http.HandlerFunc, admin bool) http.Handler {
 			st.actor = u.Username
 			st.req = r
 		}
-		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, u)))
+		ctx := context.WithValue(context.WithValue(r.Context(), ctxKey{}, u), tokenKey{}, tok)
+		h(w, r.WithContext(ctx))
 	})
 }
 
@@ -329,12 +380,18 @@ type sessionResp struct {
 	SetupRequired bool       `json:"setupRequired"`
 	User          *auth.User `json:"user"`
 	Version       string     `json:"version"`
+	Login         loginInfo  `json:"login"`
+	// ProxyError is why a user named by the trusted proxy was refused.
+	ProxyError string `json:"proxyError,omitempty"`
 }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	resp := sessionResp{SetupRequired: s.auth.SetupRequired(), Version: s.version}
-	if c, err := r.Cookie(cookieName); err == nil {
-		if u, err := s.auth.SessionUser(r.Context(), c.Value); err == nil {
+	resp := sessionResp{SetupRequired: s.auth.SetupRequired(), Version: s.version, Login: s.loginInfo()}
+	tok, err := s.sessionToken(w, r)
+	if err != nil {
+		_, resp.ProxyError = externalRefusal(err)
+	} else if tok != "" {
+		if u, err := s.auth.SessionUser(r.Context(), tok); err == nil {
 			resp.User = &u
 		}
 	}
@@ -359,7 +416,7 @@ func (s *Server) setupFinish(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	tok, u, err := s.auth.SetupFinish(r.Context(), clientIP(r), strings.TrimSpace(req.Token), strings.TrimSpace(req.Username), req.Code)
+	tok, u, err := s.auth.SetupFinish(r.Context(), clientOf(r), strings.TrimSpace(req.Token), strings.TrimSpace(req.Username), req.Code)
 	if err != nil {
 		s.authErr(w, err)
 		return
@@ -375,7 +432,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := strings.TrimSpace(req.Username)
-	tok, u, err := s.auth.Login(r.Context(), clientIP(r), name, req.Password, req.Code)
+	tok, u, err := s.auth.Login(r.Context(), clientOf(r), name, req.Password, req.Code)
 	if err != nil {
 		// Only a real wrong-credentials answer is a failed sign-in. Rate-limited and
 		// malformed attempts never reached the check (and the limiter bounds the rows).
@@ -399,14 +456,20 @@ func triedName(name string) string {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	redirect := ""
 	if c, err := r.Cookie(cookieName); err == nil {
 		// Only a live session is a sign-out; a stale cookie changes nothing.
 		if u, err := s.auth.SessionUser(r.Context(), c.Value); err == nil {
 			s.audit(r.Context(), store.AuditEntry{Actor: u.Username, IP: clientIP(r), Action: auditLogout})
+			redirect = s.endSessionURL(u)
 		}
 		s.auth.Logout(r.Context(), c.Value) //nolint:errcheck // best effort
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: s.secureCookie(r)})
+	if redirect != "" { // OIDC user: the UI may continue to the provider's logout
+		writeJSON(w, http.StatusOK, map[string]string{"redirect": redirect})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -421,9 +484,20 @@ func (s *Server) secureCookie(r *http.Request) bool { return s.cfg.SecureCookies
 
 func (s *Server) authErr(w http.ResponseWriter, err error) {
 	var ve auth.ValidationError
+	var re auth.RefusedError
 	switch {
 	case errors.As(err, &ve):
 		writeErr(w, http.StatusBadRequest, ve.Msg)
+	case errors.As(err, &re):
+		writeErr(w, http.StatusConflict, re.Msg)
+	case errors.Is(err, auth.ErrBadLink):
+		writeErr(w, http.StatusBadRequest, sentence(err))
+	case errors.Is(err, auth.ErrUserNotFound):
+		writeErr(w, http.StatusNotFound, "User not found.")
+	case errors.Is(err, auth.ErrSessionNotFound):
+		writeErr(w, http.StatusNotFound, "Session not found.")
+	case errors.Is(err, auth.ErrNoSession):
+		writeErr(w, http.StatusUnauthorized, "Your session expired. Sign in again.")
 	case errors.Is(err, auth.ErrRateLimited):
 		writeErr(w, http.StatusTooManyRequests, err.Error())
 	case errors.Is(err, auth.ErrInvalidCredentials), errors.Is(err, auth.ErrBadSetupToken):
@@ -725,6 +799,36 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// selfApply saves the stack Moorage runs from and hands `compose up` to a helper
+// container, which restarts Moorage and rolls back if it doesn't come back.
+func (s *Server) selfApply(w http.ResponseWriter, r *http.Request) {
+	h, ok := s.hostOf(w, r, true)
+	if !ok {
+		return
+	}
+	sa, ok := h.(host.SelfApplier)
+	if !ok {
+		writeErr(w, http.StatusNotImplemented, "This host can't apply changes to Moorage's own stack.")
+		return
+	}
+	var req stackFiles
+	if !readJSON(w, r, &req) {
+		return
+	}
+	name := r.PathValue("name")
+	if err := sa.SelfApply(r.Context(), name, req.Compose, req.Env, currentUser(r).Username); err != nil {
+		if host.IsUnsupported(err) {
+			writeErr(w, http.StatusNotImplemented, "Update the agent to apply changes to the stack it runs from.")
+			return
+		}
+		s.engErr(w, err)
+		return
+	}
+	s.log.Info("self stack apply started", "host", r.PathValue("host"), "stack", name, "user", currentUser(r).Username)
+	s.stackEvent(r, name, "up", "Apply & restart")
+	w.WriteHeader(http.StatusAccepted)
+}
+
 func (s *Server) deleteStack(w http.ResponseWriter, r *http.Request) {
 	h, ok := s.hostOf(w, r, true)
 	if !ok {
@@ -859,6 +963,8 @@ func (s *Server) errStatus(err error) (int, string) {
 	case errors.Is(err, engine.ErrInvalidName):
 		return http.StatusBadRequest, "Stack name: " + err.Error() + "."
 	case errors.Is(err, engine.ErrBusy), errors.Is(err, engine.ErrExists), errors.Is(err, engine.ErrHasRunning):
+		return http.StatusConflict, sentence(err)
+	case errors.Is(err, engine.ErrSelfStack):
 		return http.StatusConflict, sentence(err)
 	case errors.Is(err, engine.ErrHistoryOff), errors.Is(err, host.ErrOffline):
 		return http.StatusServiceUnavailable, sentence(err)

@@ -30,12 +30,14 @@ var auditActions = map[string]string{
 
 	"POST /api/hosts/{host}/stacks/{name}/validate": auditSkip,
 	"POST /api/convert":                             auditSkip,
+	"POST /api/image-lookup":                        auditSkip, // reads registries, changes nothing
 	"POST /api/checks/test":                         auditSkip, // a one-off probe, nothing is stored
 	"POST /api/status-pages/preview":                auditSkip,
 	"POST /api/templates/render":                    auditSkip, // fills variables, writes nothing; the create is audited
 
 	"POST /api/hosts/{host}/stacks":                          "stack.create",
 	"PUT /api/hosts/{host}/stacks/{name}":                    "stack.save",
+	"POST /api/hosts/{host}/stacks/{name}/self-apply":        "stack.self_apply",
 	"DELETE /api/hosts/{host}/stacks/{name}":                 "stack.delete",
 	"POST /api/hosts/{host}/stacks/{name}/actions/{action}":  "stack.{action}",
 	"POST /api/hosts/{host}/stacks/{name}/restore":           "stack.restore",
@@ -57,6 +59,9 @@ var auditActions = map[string]string{
 	"DELETE /api/status-pages/{id}":                          "statuspage.delete",
 	"PUT /api/updates/settings":                              "updates.settings",
 	"POST /api/updates/check":                                "updates.check",
+	"POST /api/system/updates/check":                         "update.check",
+	"POST /api/system/updates/apply":                         "update.apply",
+	"POST /api/system/updates/{node}/rollback":               "update.rollback",
 	"PUT /api/hosts/{host}/stacks/{name}/images/policy":      "image.policy",
 	"POST /api/hosts/{host}/stacks/{name}/images/check":      "image.check",
 	"POST /api/hosts/{host}/stacks/{name}/images/update":     "image.update",
@@ -73,6 +78,24 @@ var auditActions = map[string]string{
 	"PUT /api/templates/sources/{id}":                        "template_source.save",
 	"DELETE /api/templates/sources/{id}":                     "template_source.delete",
 	"POST /api/templates/sources/{id}/refresh":               "template_source.refresh",
+
+	// M10: invite links are public (the handler records auth.invite_accept); the OIDC
+	// routes are GETs and record auth.oidc_login / auth.oidc_denied themselves.
+	"POST /api/invite/inspect":          auditSkip, // reads the link, changes nothing
+	"POST /api/invite/start":            auditSkip, // pending only; finish records the change
+	"POST /api/invite/finish":           auditByHandler,
+	"PUT /api/account/password":         "account.password",
+	"POST /api/account/totp/start":      auditSkip, // pending only; PUT /api/account/totp records it
+	"PUT /api/account/totp":             "account.totp",
+	"DELETE /api/account/sessions":      "account.session_revoke",
+	"DELETE /api/account/sessions/{id}": "account.session_revoke",
+	"POST /api/users":                   "user.create",
+	"PUT /api/users/{id}/role":          "user.role",
+	"POST /api/users/{id}/disable":      "user.disable",
+	"POST /api/users/{id}/enable":       "user.enable",
+	"DELETE /api/users/{id}":            "user.delete",
+	"POST /api/users/{id}/reset":        "user.reset",
+	"DELETE /api/users/{id}/sessions":   "user.sessions_revoke",
 }
 
 // Actions written outside the middleware.
@@ -113,9 +136,10 @@ type auditKey struct{}
 // auditState travels in the request context. requireRole fills it in with the signed-in
 // user and the request the mux matched (which carries r.Pattern and the path values).
 type auditState struct {
-	actor string
-	req   *http.Request
-	stack string // set by a handler when the stack isn't in the path (create)
+	actor  string
+	req    *http.Request
+	stack  string // set by a handler when the stack isn't in the path (create)
+	target string // set by a handler to name the target (a username) instead of the path id
 }
 
 func auditStateOf(r *http.Request) *auditState {
@@ -221,6 +245,9 @@ func (s *Server) auditEntryFor(st *auditState) (store.AuditEntry, bool) {
 	if e.Stack == "" {
 		e.Stack = st.stack
 	}
+	if st.target != "" {
+		e.Target = st.target
+	}
 	return e, true
 }
 
@@ -244,10 +271,15 @@ type auditEntryDTO struct {
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := store.AuditFilter{
-		HostID:       strings.TrimSpace(q.Get("host")),
-		Stack:        strings.TrimSpace(q.Get("stack")),
-		Actor:        strings.TrimSpace(q.Get("actor")),
-		ActionPrefix: strings.TrimSpace(q.Get("action")),
+		Stack: strings.TrimSpace(q.Get("stack")),
+		Actor: strings.TrimSpace(q.Get("actor")),
+		// host and action take several values, repeated or comma-separated.
+		HostIDs:        listParam(q["host"]),
+		ActionPrefixes: listParam(q["action"]),
+	}
+	if len(f.HostIDs) > 20 || len(f.ActionPrefixes) > 30 {
+		writeErr(w, http.StatusBadRequest, "Too many filter values.")
+		return
 	}
 	if v := q.Get("before"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
@@ -297,4 +329,17 @@ func (s *Server) hostNames(ctx context.Context) map[string]string {
 		}
 	}
 	return names
+}
+
+// listParam splits repeated and comma-separated query values, dropping empties.
+func listParam(vals []string) []string {
+	var out []string
+	for _, v := range vals {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }

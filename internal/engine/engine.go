@@ -65,6 +65,9 @@ type Engine struct {
 	termMu sync.Mutex
 	terms  map[*mobyTerminalSession]struct{} // open container shells, ended on Close
 
+	selfMu sync.Mutex
+	self   *SelfStack // the stack Moorage runs from, nil for binary installs (self.go)
+
 	engMu    sync.Mutex
 	eng      engineIdent // Docker or Podman, from /version (see podman.go)
 	engKnown bool
@@ -101,6 +104,11 @@ func New(ctx context.Context, cfg config.Config, log *slog.Logger) (*Engine, err
 func (e *Engine) Close() error {
 	e.closeTerminals()
 	return e.api.Close()
+}
+
+// RawClient exposes the underlying moby client for self-update container inspection/replacement.
+func (e *Engine) RawClient() client.APIClient {
+	return e.api
 }
 
 // HostInfo describes the Docker host for the UI header.

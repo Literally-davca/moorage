@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { dismiss, menuKeys } from '../lib/dismiss';
   import { untrack } from 'svelte';
   import { api, engineLabel, statusLabel, type HostEntry, type HostInfo, type StackSummary } from '../lib/api';
   import { app, canEdit, currentHost, go, isAdmin, link, setHost, toggleTheme } from '../lib/state.svelte';
-  import Icon from '../lib/Icon.svelte';
+  import Icon, { type IconName } from '../lib/Icon.svelte';
   import StackDetail from './StackDetail.svelte';
   import NewStack from './NewStack.svelte';
   import Home from './Home.svelte';
@@ -21,6 +22,8 @@
   import TemplatesView from './TemplatesView.svelte';
   import TemplateDeploy from './TemplateDeploy.svelte';
   import TemplateSources from './TemplateSources.svelte';
+  import UsersView from './UsersView.svelte';
+  import AccountView from './AccountView.svelte';
 
   let { onSignedOut }: { onSignedOut: () => void } = $props();
 
@@ -34,9 +37,68 @@
 
   const cur = $derived(currentHost());
   let checksDown = $state(0);
+  let availUpdateVer = $state('');
+  let dismissedUpdateVer = $state('');
+  try {
+    dismissedUpdateVer = localStorage.getItem('moorage-dismissed-update') || '';
+  } catch {
+    /* ignore */
+  }
   const onChecks = $derived(['checks', 'check', 'checkForm'].includes(app.route.page));
   const onStatusPages = $derived(['statusPages', 'statusPageForm'].includes(app.route.page));
   const onMaintenance = $derived(['maintenance', 'maintenanceForm'].includes(app.route.page));
+
+  // Pages live in the top bar (the sidebar is for hosts and stacks). Links that don't fit
+  // the bar's width fold into "More" from the end (priority+), measured, not by breakpoint.
+  type PageLink = { href: string; label: string; icon: IconName; current: boolean; badge?: number };
+  const pages = $derived<PageLink[]>([
+    { href: '#/checks', label: 'Checks', icon: 'pulse', current: onChecks, badge: checksDown },
+    { href: '#/status-pages', label: 'Status pages', icon: 'world', current: onStatusPages },
+    { href: '#/maintenance', label: 'Maintenance', icon: 'tool', current: onMaintenance },
+    { href: link('templates'), label: 'Templates', icon: 'template', current: ['templates', 'template', 'templateSources'].includes(app.route.page) },
+    { href: link('deps'), label: 'Dependencies', icon: 'hierarchy', current: app.route.page === 'deps' },
+    { href: '#/updates', label: 'Image updates', icon: 'cloudDown', current: app.route.page === 'updates' },
+    { href: '#/hosts', label: 'Hosts', icon: 'server', current: app.route.page === 'hosts' },
+    ...(isAdmin()
+      ? <PageLink[]>[
+          { href: '#/notifications', label: 'Notifications', icon: 'bell', current: app.route.page === 'notifications' },
+          { href: '#/audit', label: 'Audit log', icon: 'clipboardList', current: app.route.page === 'audit' },
+          { href: '#/users', label: 'Users', icon: 'users', current: app.route.page === 'users' },
+        ]
+      : []),
+  ]);
+  let barWidth = $state(0);
+  let measureEl = $state<HTMLElement | null>(null);
+  let linkWidths = $state<number[]>([]);
+  let moreMenu = $state(false);
+  let userMenu = $state(false);
+  const MORE_W = 96; // room for the "More" button
+  const GAP = 2;
+  // Re-measure whenever the set of links (labels, badges) changes.
+  $effect(() => {
+    void pages.map((p) => p.label + (p.badge ?? '')).join();
+    const el = measureEl;
+    if (!el) return;
+    queueMicrotask(() => {
+      linkWidths = Array.from(el.children).map((c) => (c as HTMLElement).offsetWidth);
+    });
+  });
+  const visibleCount = $derived.by(() => {
+    if (!barWidth || linkWidths.length !== pages.length) return pages.length;
+    const total = linkWidths.reduce((a, w) => a + w + GAP, 0);
+    if (total <= barWidth) return pages.length;
+    let used = MORE_W;
+    let n = 0;
+    for (const w of linkWidths) {
+      if (used + w + GAP > barWidth) break;
+      used += w + GAP;
+      n++;
+    }
+    return n;
+  });
+  const shown = $derived(pages.slice(0, visibleCount));
+  const overflow = $derived(pages.slice(visibleCount));
+  const overflowCurrent = $derived(overflow.find((p) => p.current));
 
   async function loadCheckCount() {
     try {
@@ -45,11 +107,146 @@
       /* not important */
     }
   }
+  async function loadAvailUpdate() {
+    if (!isAdmin()) {
+      availUpdateVer = '';
+      return;
+    }
+    try {
+      const ov = await api.systemUpdates();
+      const hasUpd = ov.release && ov.nodes.some((n) => n.updateAvailable);
+      availUpdateVer = hasUpd && ov.release ? ov.release.version : '';
+    } catch {
+      /* optional */
+    }
+  }
+  function dismissUpdateBanner() {
+    if (!availUpdateVer) return;
+    dismissedUpdateVer = availUpdateVer;
+    try {
+      localStorage.setItem('moorage-dismissed-update', availUpdateVer);
+    } catch {
+      /* ignore */
+    }
+  }
   $effect(() => {
     untrack(loadCheckCount);
     const t = setInterval(() => !document.hidden && loadCheckCount(), 15000);
     return () => clearInterval(t);
   });
+  const adminRole = $derived(isAdmin());
+  $effect(() => {
+    void adminRole;
+    untrack(() => {
+      void loadAvailUpdate();
+    });
+    const t = setInterval(() => {
+      if (!document.hidden && adminRole) void loadAvailUpdate();
+    }, 60000);
+    return () => clearInterval(t);
+  });
+
+  // Hub self-update: "waiting" while the job runs other steps (agents first in "Update
+  // all"), so the page stays usable; the overlay shows from "restarting" on, and turns
+  // into "failed" with the job's message after RESTART_TIMEOUT_MS.
+  const RESTART_TIMEOUT_MS = 4 * 60 * 1000;
+  const restartingActive = $derived(app.restarting !== null);
+  let restartPhase = $state<'waiting' | 'restarting' | 'failed'>('waiting');
+  let restartStatus = $state('');
+  async function hubJob(id: number) {
+    const ov = await api.systemUpdates();
+    const job = ov.nodes.find((n) => n.id === 'hub')?.job;
+    return job && job.id === id ? job : null;
+  }
+  $effect(() => {
+    if (!restartingActive) return;
+    const target = untrack(() => app.restarting);
+    if (!target) return;
+    let stopped = false;
+    let busy = false;
+    let sawDisconnect = false;
+    let restartingSince = 0;
+    restartPhase = 'waiting';
+    restartStatus = '';
+    const enterRestarting = () => {
+      if (restartPhase !== 'waiting') return;
+      restartPhase = 'restarting';
+      restartingSince = Date.now();
+    };
+    const done = () => {
+      stopped = true;
+      app.restarting = null;
+      location.reload();
+    };
+    const fail = (msg: string) => {
+      restartPhase = 'failed';
+      restartStatus = msg;
+    };
+    const check = async () => {
+      if (restartPhase === 'waiting') {
+        try {
+          const job = await hubJob(target.jobId);
+          if (stopped) return;
+          if (!job || job.status === 'running') return;
+          if (job.status === 'restarting') {
+            enterRestarting();
+            return;
+          }
+          // Settled before the hub restarted (e.g. an agent failed and the hub was
+          // skipped): the updates page shows the result, no overlay needed.
+          stopped = true;
+          app.restarting = null;
+        } catch {
+          // The hub went away before we saw "restarting": it is restarting.
+          sawDisconnect = true;
+          enterRestarting();
+        }
+        return;
+      }
+      if (restartPhase !== 'restarting') return;
+      if (Date.now() - restartingSince > RESTART_TIMEOUT_MS) {
+        try {
+          const job = await hubJob(target.jobId);
+          if (stopped) return;
+          fail(
+            job && job.status !== 'restarting' && job.message
+              ? job.message
+              : 'Moorage has not come back within 4 minutes. Check the server and its logs.',
+          );
+        } catch {
+          if (!stopped) fail('Moorage has not come back within 4 minutes. Check the server and its logs.');
+        }
+        return;
+      }
+      try {
+        const s = await api.session();
+        if (stopped) return;
+        if (s.version && s.version !== target.fromVersion) return done();
+        // Same version answering: either not stopped yet, or rolled back. The job tells.
+        const job = await hubJob(target.jobId);
+        if (stopped) return;
+        if (job && job.status !== 'restarting' && job.status !== 'running') {
+          if (sawDisconnect || job.status === 'done' || job.status === 'rolled-back') return done();
+          fail(job.message || 'The hub update failed.');
+        }
+      } catch {
+        sawDisconnect = true;
+        restartStatus = 'Waiting for Moorage to come back online…';
+      }
+    };
+    const t = setInterval(() => {
+      if (stopped || busy || restartPhase === 'failed') return;
+      busy = true;
+      void check().finally(() => (busy = false));
+    }, 2000);
+    return () => {
+      stopped = true;
+      clearInterval(t);
+    };
+  });
+  function closeRestart() {
+    app.restarting = null;
+  }
 
   const filtered = $derived(
     (stacks ?? []).filter((s) => s.name.includes(query.trim().toLowerCase())),
@@ -134,11 +331,18 @@
     app.route;
     navOpen = false;
     hostMenu = false;
+    moreMenu = false;
+    userMenu = false;
   });
 
   async function signOut() {
-    await api.logout().catch(() => {});
+    const r = await api.logout().catch(() => undefined);
     app.user = null;
+    // An SSO user continues to the identity provider's sign-out when it has one.
+    if (r?.redirect) {
+      location.href = r.redirect;
+      return;
+    }
     onSignedOut();
   }
 </script>
@@ -155,7 +359,7 @@
       {/if}
     </div>
 
-    <div class="hostsw">
+    <div class="hostsw" use:dismiss={() => (hostMenu = false)}>
       <button class="host-btn" onclick={() => (hostMenu = !hostMenu)} aria-haspopup="menu" aria-expanded={hostMenu}>
         <span class="dot {hostDot(cur)}"></span>
         <span class="hname">{cur?.name ?? (hostsLoaded && !app.hosts.length ? 'No hosts yet' : 'Host')}</span>
@@ -203,35 +407,14 @@
       {/if}
     </nav>
 
-    <nav class="pages" aria-label="Monitoring">
-      <a class="page-link" href="#/checks" aria-current={onChecks ? 'page' : undefined}>
-        <Icon name="pulse" /> <span class="pname">Checks</span>
-        {#if checksDown}<span class="cnt" title="Checks down">{checksDown}</span>{/if}
-      </a>
-      <a class="page-link" href="#/status-pages" aria-current={onStatusPages ? 'page' : undefined}>
-        <Icon name="world" /> <span class="pname">Status pages</span>
-      </a>
-      <a class="page-link" href="#/maintenance" aria-current={onMaintenance ? 'page' : undefined}>
-        <Icon name="tool" /> <span class="pname">Maintenance</span>
-      </a>
-      <a class="page-link" href={link('templates')}
-        aria-current={['templates', 'template', 'templateSources'].includes(app.route.page) ? 'page' : undefined}>
-        <Icon name="template" /> <span class="pname">Templates</span>
-      </a>
-      <a class="page-link" href={link('deps')} aria-current={app.route.page === 'deps' ? 'page' : undefined}>
-        <Icon name="hierarchy" /> <span class="pname">Dependencies</span>
-      </a>
-      <a class="page-link" href="#/updates" aria-current={app.route.page === 'updates' ? 'page' : undefined}>
-        <Icon name="cloudDown" /> <span class="pname">Updates</span>
-      </a>
-      {#if isAdmin()}
-        <a class="page-link" href="#/notifications" aria-current={app.route.page === 'notifications' ? 'page' : undefined}>
-          <Icon name="bell" /> <span class="pname">Notifications</span>
+    <!-- Phones only: the top bar has no room for page links, so the drawer lists them. -->
+    <nav class="pages" aria-label="Pages">
+      {#each pages as p (p.href)}
+        <a class="page-link" href={p.href} aria-current={p.current ? 'page' : undefined}>
+          <Icon name={p.icon} /> <span class="pname">{p.label}</span>
+          {#if p.badge}<span class="cnt" title="Checks down">{p.badge}</span>{/if}
         </a>
-        <a class="page-link" href="#/audit" aria-current={app.route.page === 'audit' ? 'page' : undefined}>
-          <Icon name="clipboardList" /> <span class="pname">Audit log</span>
-        </a>
-      {/if}
+      {/each}
     </nav>
 
     <div class="side-foot">
@@ -243,22 +426,77 @@
       <div class="foot-row">
         <span class="meta num">{`${stacks?.length ?? 0} stacks · ${counts.up} up`}{#if counts.issues}<span class="issues">{` · ${counts.issues} need attention`}</span>{/if}</span>
       </div>
-      <div class="foot-row">
-        <span class="meta truncate">{app.user?.username}</span>
-        <span class="foot-actions">
-          <button class="btn btn-ghost btn-icon" onclick={toggleTheme} aria-label="Switch theme" title="Switch theme">
-            <Icon name={app.theme === 'dark' ? 'sun' : 'moon'} />
-          </button>
-          <button class="btn btn-ghost btn-icon" onclick={signOut} aria-label="Sign out" title="Sign out"><Icon name="logout" /></button>
-        </span>
-      </div>
     </div>
   </aside>
 
   <main class="main">
-    <button class="btn btn-ghost nav-toggle" onclick={() => (navOpen = !navOpen)}>
-      <Icon name={navOpen ? 'x' : 'menu'} /> Stacks
-    </button>
+    <header class="topbar card">
+      <button class="btn btn-ghost nav-toggle" onclick={() => (navOpen = !navOpen)} aria-expanded={navOpen}>
+        <Icon name={navOpen ? 'x' : 'menu'} /> Menu
+      </button>
+      <nav class="tabs" aria-label="Pages" bind:clientWidth={barWidth}>
+        {#each shown as p (p.href)}
+          <a class="tab" href={p.href} aria-current={p.current ? 'page' : undefined}>
+            <Icon name={p.icon} /> {p.label}
+            {#if p.badge}<span class="cnt" title="Checks down">{p.badge}</span>{/if}
+          </a>
+        {/each}
+        {#if overflow.length}
+          <div class="pop" use:dismiss={() => (moreMenu = false)}>
+            <button class="tab more-btn" class:cur={!!overflowCurrent} onclick={() => (moreMenu = !moreMenu)}
+              aria-haspopup="menu" aria-expanded={moreMenu}>
+              {overflowCurrent ? overflowCurrent.label : 'More'} <Icon name="chevronDown" />
+            </button>
+            {#if moreMenu}
+              <div class="menu card end" role="menu" use:menuKeys>
+                {#each overflow as p (p.href)}
+                  <a role="menuitem" href={p.href} class:on={p.current} onclick={() => (moreMenu = false)}>
+                    <Icon name={p.icon} /> <span class="mname">{p.label}</span>
+                    {#if p.badge}<span class="cnt">{p.badge}</span>{/if}
+                  </a>
+                {/each}
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </nav>
+      <!-- Hidden copy used only to measure each link's natural width. -->
+      <div class="tabs measure" aria-hidden="true" bind:this={measureEl}>
+        {#each pages as p (p.href)}
+          <span class="tab"><Icon name={p.icon} /> {p.label}{#if p.badge}<span class="cnt">{p.badge}</span>{/if}</span>
+        {/each}
+      </div>
+      <div class="pop user" use:dismiss={() => (userMenu = false)}>
+        <button class="tab user-btn" class:cur={app.route.page === 'account'} onclick={() => (userMenu = !userMenu)}
+          aria-haspopup="menu" aria-expanded={userMenu} title="Your account">
+          <Icon name="userCircle" /> <span class="uname">{app.user?.username}</span> <Icon name="chevronDown" />
+        </button>
+        {#if userMenu}
+          <div class="menu card end" role="menu" use:menuKeys>
+            <a role="menuitem" href="#/account" onclick={() => (userMenu = false)}><Icon name="userCircle" /> Account</a>
+            <button role="menuitem" onclick={() => { toggleTheme(); userMenu = false; }}>
+              <Icon name={app.theme === 'dark' ? 'sun' : 'moon'} /> {app.theme === 'dark' ? 'Light theme' : 'Dark theme'}
+            </button>
+            <hr />
+            <button role="menuitem" onclick={signOut}><Icon name="logout" /> Sign out</button>
+          </div>
+        {/if}
+      </div>
+    </header>
+    {#if adminRole && availUpdateVer && dismissedUpdateVer !== availUpdateVer}
+      <div class="card upd-banner" role="status">
+        <span class="upd-msg">
+          <Icon name="cloudDown" />
+          <span>Moorage <strong class="mono">{availUpdateVer}</strong> is available.</span>
+        </span>
+        <span class="upd-actions">
+          <a class="btn btn-ghost" href="#/hosts">View updates</a>
+          <button type="button" class="btn btn-ghost btn-icon" aria-label="Dismiss update notice" onclick={dismissUpdateBanner}>
+            <Icon name="x" />
+          </button>
+        </span>
+      </div>
+    {/if}
     {#if app.route.page === 'hosts'}
       <HostsView onChanged={loadHosts} />
     {:else if app.route.page === 'checks'}
@@ -281,6 +519,10 @@
       <NotificationsView />
     {:else if app.route.page === 'audit' && isAdmin()}
       <AuditView />
+    {:else if app.route.page === 'users' && isAdmin()}
+      <UsersView />
+    {:else if app.route.page === 'account'}
+      <AccountView />
     {:else if app.route.page === 'stack'}
       {#key app.route.name}
         <StackDetail name={app.route.name} onChanged={refresh} />
@@ -308,6 +550,31 @@
     {/if}
   </main>
 </div>
+
+{#if app.restarting && restartPhase !== 'waiting'}
+  <div class="restart-overlay" role="dialog" aria-modal="true" aria-labelledby="restart-title">
+    <div class="card card-pad restart-box">
+      <div class="restart-head">
+        {#if restartPhase === 'restarting'}<span class="busy"></span>{/if}
+        <h2 id="restart-title">
+          {restartPhase === 'failed' ? 'Moorage did not restart' : 'Moorage is restarting, reconnecting…'}
+        </h2>
+      </div>
+      <p class="meta">{app.restarting.label}</p>
+      {#if restartStatus}
+        <p class={restartPhase === 'failed' ? 'error-text' : 'meta'} role={restartPhase === 'failed' ? 'alert' : undefined}>
+          {restartStatus}
+        </p>
+      {/if}
+      {#if restartPhase === 'restarting'}
+        <p class="meta">This page reloads automatically once Moorage answers again.</p>
+      {/if}
+      <div class="restart-actions">
+        <button type="button" class="btn" onclick={closeRestart}>Close</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .shell {
@@ -441,7 +708,7 @@
     padding: 8px 10px;
   }
   .pages {
-    display: grid;
+    display: none;
     gap: 2px;
     padding: 8px 0;
     border-top: 1px solid var(--rope);
@@ -611,14 +878,8 @@
     gap: 8px;
     min-height: 32px;
   }
-  .foot-row + .foot-row {
-    min-height: 0;
-  }
   .foot-row:first-of-type {
     min-height: 0;
-  }
-  .foot-actions {
-    display: flex;
   }
   .issues {
     color: var(--adrift-text);
@@ -640,6 +901,134 @@
   .nav-toggle {
     display: none;
   }
+  .topbar {
+    position: sticky;
+    top: 12px;
+    z-index: 15;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px;
+    margin-bottom: 12px;
+  }
+  .tabs {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  /* zero-size and clipped, so the measuring copy never widens the page */
+  .tabs.measure {
+    position: absolute;
+    visibility: hidden;
+    pointer-events: none;
+    flex: none;
+    left: 0;
+    top: 0;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+  }
+  .tabs.measure > :global(*) {
+    flex: none;
+  }
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--mist);
+    font: 400 13px var(--font);
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .tab:hover {
+    background: var(--rope);
+    color: var(--foam);
+    text-decoration: none;
+  }
+  .tab:focus-visible {
+    outline: 2px solid var(--buoy);
+  }
+  .tab[aria-current='page'],
+  .tab.cur {
+    background: var(--buoy-wash);
+    color: var(--foam);
+    font-weight: 500;
+  }
+  .pop {
+    position: relative;
+  }
+  .pop.user {
+    margin-left: auto;
+  }
+  .uname {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .menu.end {
+    left: auto;
+    right: 0;
+    min-width: 200px;
+  }
+  .upd-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    max-width: 880px;
+    background: var(--buoy-wash);
+    box-shadow: inset 0 0 0 1px var(--rope-strong);
+  }
+  .upd-msg {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--foam);
+  }
+  .upd-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .restart-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: rgba(11, 20, 24, 0.78);
+    display: grid;
+    place-items: center;
+    padding: 16px;
+  }
+  .restart-box {
+    width: min(440px, 100%);
+    display: grid;
+    gap: 8px;
+  }
+  .restart-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .restart-head h2 {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .restart-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
 
   @media (max-width: 767px) {
     .shell {
@@ -655,15 +1044,24 @@
     .nav-open .side {
       display: flex;
     }
-    .nav-open .main > :global(:not(.nav-toggle)) {
+    .nav-open .main > :global(:not(.topbar)) {
       display: none;
+    }
+    .pages {
+      display: grid;
+    }
+    .tabs {
+      display: none;
+    }
+    .topbar {
+      top: 8px;
+      margin-bottom: 8px;
     }
     .nav-open .main {
       order: -1;
     }
     .nav-toggle {
       display: inline-flex;
-      margin-bottom: 8px;
     }
   }
 </style>

@@ -655,6 +655,12 @@ func (u *Updater) applyAutoUpdate(
 	now time.Time,
 ) {
 	rec, err := u.RunUpdate(ctx, he.ID, stack, ActorAuto)
+	if errors.Is(err, engine.ErrSelfStack) {
+		// Moorage's own stack is never recreated from inside: it behaves like Notify, and
+		// Moorage itself is updated through Moorage updates.
+		u.log.Info("auto-update skipped on Moorage's own stack; notify only", "host", he.ID, "stack", stack)
+		return
+	}
 	if err != nil {
 		u.log.Warn("auto-update failed to start", "host", he.ID, "stack", stack, "err", err)
 		return

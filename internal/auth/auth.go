@@ -11,14 +11,26 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"moorage/internal/store"
 )
 
-// SessionTTL is how long a sign-in lasts.
+// SessionTTL is how long a local or forward-auth sign-in lasts. Forward-auth re-checks
+// the proxy's header (user and groups) on every request, so its long session is safe.
 const SessionTTL = 7 * 24 * time.Hour
+
+// OIDCSessionTTL is shorter: an OIDC role comes from the IdP's groups only at sign-in,
+// and signing out at the IdP doesn't end a Moorage session. A user removed from the
+// admin group at the IdP loses the role within this time without anyone in Moorage
+// disabling them.
+const OIDCSessionTTL = 12 * time.Hour
+
+// touchEvery throttles the last-seen write: at most once a minute per session, never on
+// every request.
+const touchEvery = time.Minute
 
 var (
 	ErrInvalidCredentials = errors.New("wrong username, password or code")
@@ -33,13 +45,29 @@ type ValidationError struct{ Msg string }
 
 func (e ValidationError) Error() string { return e.Msg }
 
+// RefusedError is a valid request that the safety rules refuse (last admin, own account,
+// a role owned by the IdP). The API answers 409.
+type RefusedError struct{ Msg string }
+
+func (e RefusedError) Error() string { return e.Msg }
+
 var usernameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,31}$`)
+
+const usernameHelp = "Username needs 3–32 characters: lowercase letters, digits, dot, dash or underscore."
 
 // User is the public view of an account.
 type User struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	ID          int64  `json:"id"`
+	Username    string `json:"username"`
+	Role        string `json:"role"`
+	Source      string `json:"source"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+// Client is where a request comes from, kept on the session for the Account page.
+type Client struct {
+	IP        string
+	UserAgent string
 }
 
 // Service implements authentication.
@@ -50,8 +78,10 @@ type Service struct {
 	mu         sync.Mutex
 	setupToken string // empty once an active user exists
 
-	limiter *limiter
-	dummy   string // hash used when the user does not exist, keeps timing similar
+	limiter   *limiter
+	dummy     string // hash used when the user does not exist, keeps timing similar
+	ticketKey []byte // signs TOTP re-enrolment tickets; per process, a restart only voids open ones
+	now       func() time.Time
 }
 
 // New creates the service and, on first run, prints a one-time setup token to the log.
@@ -61,7 +91,11 @@ func New(db *store.Store, log *slog.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{db: db, log: log, limiter: newLimiter(5, time.Minute), dummy: dummy}
+	s := &Service{db: db, log: log, limiter: newLimiter(5, time.Minute), dummy: dummy, now: time.Now}
+	s.ticketKey = make([]byte, 32)
+	if _, err := rand.Read(s.ticketKey); err != nil {
+		return nil, err
+	}
 	n, err := db.CountActiveUsers(context.Background())
 	if err != nil {
 		return nil, err
@@ -100,11 +134,12 @@ func (s *Service) SetupStart(ctx context.Context, ip, token, username, password 
 	if err := s.checkSetupToken(token); err != nil {
 		return "", "", err
 	}
+	username = strings.ToLower(username)
 	if !usernameRe.MatchString(username) {
-		return "", "", ValidationError{"Username needs 3–32 characters: lowercase letters, digits, dot, dash or underscore."}
+		return "", "", ValidationError{usernameHelp}
 	}
-	if len([]rune(password)) < MinPasswordLen {
-		return "", "", ValidationError{fmt.Sprintf("Password needs at least %d characters.", MinPasswordLen)}
+	if err := checkPassword(password); err != nil {
+		return "", "", err
 	}
 	hash, err := HashPassword(password)
 	if err != nil {
@@ -121,19 +156,29 @@ func (s *Service) SetupStart(ctx context.Context, ip, token, username, password 
 	return secret, TOTPURL(secret, username), nil
 }
 
+func checkPassword(password string) error {
+	if len([]rune(password)) < MinPasswordLen {
+		return ValidationError{fmt.Sprintf("Password needs at least %d characters.", MinPasswordLen)}
+	}
+	if len(password) > 1024 { // argon2 is cheap enough, but don't hash megabytes
+		return ValidationError{"Password is too long."}
+	}
+	return nil
+}
+
 // SetupFinish confirms the TOTP code, activates the admin and signs them in.
-func (s *Service) SetupFinish(ctx context.Context, ip, token, username, code string) (string, User, error) {
-	if !s.limiter.allow("setup:" + ip) {
+func (s *Service) SetupFinish(ctx context.Context, c Client, token, username, code string) (string, User, error) {
+	if !s.limiter.allow("setup:" + c.IP) {
 		return "", User{}, ErrRateLimited
 	}
 	if err := s.checkSetupToken(token); err != nil {
 		return "", User{}, err
 	}
-	u, err := s.db.UserByName(ctx, username)
+	u, err := s.db.UserByName(ctx, strings.ToLower(username))
 	if err != nil || u.Active {
 		return "", User{}, ValidationError{"Start the setup again."}
 	}
-	counter, ok := matchTOTP(u.TOTPSecret, code, time.Now())
+	counter, ok := matchTOTP(u.TOTPSecret, code, s.now())
 	if !ok {
 		return "", User{}, ValidationError{"That code doesn't match. Check the time on your phone and try the next code."}
 	}
@@ -147,13 +192,19 @@ func (s *Service) SetupFinish(ctx context.Context, ip, token, username, code str
 	s.setupToken = ""
 	s.mu.Unlock()
 	s.log.Info("setup finished", "user", u.Username)
-	tok, err := s.newSession(ctx, u.ID)
+	if err := s.db.SetLastLogin(ctx, u.ID); err != nil {
+		s.log.Warn("record sign-in", "err", err)
+	}
+	tok, err := s.newSession(ctx, u.ID, c)
 	return tok, publicUser(u), err
 }
 
-// Login checks password and TOTP code and returns a session token.
-func (s *Service) Login(ctx context.Context, ip, username, password, code string) (string, User, error) {
-	if !s.limiter.allow("ip:"+ip) || !s.limiter.allow("user:"+username) {
+// Login checks password and TOTP code and returns a session token. Only finished,
+// enabled local accounts with TOTP can sign in this way; OIDC and proxy accounts have no
+// password.
+func (s *Service) Login(ctx context.Context, c Client, username, password, code string) (string, User, error) {
+	username = strings.ToLower(username)
+	if !s.limiter.allow("ip:"+c.IP) || !s.limiter.allow("user:"+username) {
 		return "", User{}, ErrRateLimited
 	}
 	u, err := s.db.UserByName(ctx, username)
@@ -164,11 +215,16 @@ func (s *Service) Login(ctx context.Context, ip, username, password, code string
 		}
 		return "", User{}, err
 	}
-	ok, err := VerifyPassword(password, u.PasswordHash)
-	if err != nil || !ok || !u.Active {
+	if u.AuthSource != store.SourceLocal || u.PasswordHash == "" {
+		VerifyPassword(password, s.dummy) //nolint:errcheck // timing only
 		return "", User{}, ErrInvalidCredentials
 	}
-	counter, ok := matchTOTP(u.TOTPSecret, code, time.Now())
+	ok, err := VerifyPassword(password, u.PasswordHash)
+	// An empty TOTP secret would make every code computable; such an account can't sign in.
+	if err != nil || !ok || !u.Active || u.Disabled || u.TOTPSecret == "" {
+		return "", User{}, ErrInvalidCredentials
+	}
+	counter, ok := matchTOTP(u.TOTPSecret, code, s.now())
 	if !ok {
 		return "", User{}, ErrInvalidCredentials
 	}
@@ -179,28 +235,46 @@ func (s *Service) Login(ctx context.Context, ip, username, password, code string
 	if !fresh { // the same code was already used
 		return "", User{}, ErrInvalidCredentials
 	}
-	tok, err := s.newSession(ctx, u.ID)
+	tok, err := s.newSession(ctx, u.ID, c)
 	if err != nil {
 		return "", User{}, err
 	}
-	s.log.Info("signed in", "user", u.Username, "ip", ip)
+	if err := s.db.SetLastLogin(ctx, u.ID); err != nil {
+		s.log.Warn("record sign-in", "err", err)
+	}
+	s.log.Info("signed in", "user", u.Username, "ip", c.IP)
 	return tok, publicUser(u), nil
 }
 
-// SessionUser resolves a session token to its user.
+// SessionUser resolves a session token to its user. The user is read on every request,
+// so a role change or a disable applies at once, never the role from sign-in time.
 func (s *Service) SessionUser(ctx context.Context, token string) (User, error) {
-	if token == "" {
-		return User{}, ErrNoSession
-	}
-	sess, err := s.db.SessionByHash(ctx, hashToken(token))
+	_, u, err := s.sessionAndUser(ctx, token)
 	if err != nil {
-		return User{}, ErrNoSession
-	}
-	u, err := s.db.UserByID(ctx, sess.UserID)
-	if err != nil || !u.Active {
-		return User{}, ErrNoSession
+		return User{}, err
 	}
 	return publicUser(u), nil
+}
+
+func (s *Service) sessionAndUser(ctx context.Context, token string) (store.Session, store.User, error) {
+	if token == "" {
+		return store.Session{}, store.User{}, ErrNoSession
+	}
+	hash := hashToken(token)
+	sess, err := s.db.SessionByHash(ctx, hash)
+	if err != nil {
+		return sess, store.User{}, ErrNoSession
+	}
+	u, err := s.db.UserByID(ctx, sess.UserID)
+	if err != nil || !u.Active || u.Disabled {
+		return sess, store.User{}, ErrNoSession
+	}
+	if s.now().Sub(sess.LastSeenAt) >= touchEvery {
+		if err := s.db.TouchSession(ctx, hash); err != nil {
+			s.log.Warn("touch session", "err", err)
+		}
+	}
+	return sess, u, nil
 }
 
 // Logout ends a session.
@@ -208,15 +282,21 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 	return s.db.DeleteSession(ctx, hashToken(token))
 }
 
-func (s *Service) newSession(ctx context.Context, userID int64) (string, error) {
+func (s *Service) newSession(ctx context.Context, userID int64, c Client) (string, error) {
+	return s.newSessionTTL(ctx, userID, c, SessionTTL)
+}
+
+func (s *Service) newSessionTTL(ctx context.Context, userID int64, c Client, ttl time.Duration) (string, error) {
 	tok := randomHex(32)
 	if err := s.db.PruneSessions(ctx); err != nil {
 		s.log.Warn("prune sessions", "err", err)
 	}
-	return tok, s.db.CreateSession(ctx, hashToken(tok), userID, time.Now().Add(SessionTTL))
+	return tok, s.db.CreateSessionMeta(ctx, hashToken(tok), userID, s.now().Add(ttl), c.IP, c.UserAgent)
 }
 
-func publicUser(u store.User) User { return User{ID: u.ID, Username: u.Username, Role: u.Role} }
+func publicUser(u store.User) User {
+	return User{ID: u.ID, Username: u.Username, Role: u.Role, Source: u.AuthSource, DisplayName: u.DisplayName}
+}
 
 // Only the SHA-256 of a session token is stored, so a leaked database can't be used to sign in.
 func hashToken(tok string) string {
@@ -249,9 +329,32 @@ func newLimiter(max int, w time.Duration) *limiter {
 	return &limiter{max: max, window: w, hits: map[string]*window{}}
 }
 
+// allow counts an attempt and reports whether it is within the limit.
 func (l *limiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	w := l.current(key)
+	w.n++
+	return w.n <= l.max
+}
+
+// blocked reports whether key used up its attempts, without counting one. Invite links
+// use it with fail, so only wrong attempts count and an honest invitee clicking through
+// the steps isn't locked out.
+func (l *limiter) blocked(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.current(key).n >= l.max
+}
+
+// fail counts one wrong attempt.
+func (l *limiter) fail(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.current(key).n++
+}
+
+func (l *limiter) current(key string) *window {
 	now := time.Now()
 	if len(l.hits) > 10_000 { // bound memory under a flood
 		for k, w := range l.hits {
@@ -262,9 +365,8 @@ func (l *limiter) allow(key string) bool {
 	}
 	w, ok := l.hits[key]
 	if !ok || now.Sub(w.start) > l.window {
-		l.hits[key] = &window{start: now, n: 1}
-		return true
+		w = &window{start: now}
+		l.hits[key] = w
 	}
-	w.n++
-	return w.n <= l.max
+	return w
 }

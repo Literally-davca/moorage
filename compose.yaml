@@ -1,7 +1,7 @@
 # Example deployment of Moorage on one host (all-in-one mode).
 services:
   moorage:
-    image: moorage:dev # build locally: docker build -t moorage:dev .
+    image: ghcr.io/literally-davca/moorage:latest # or build locally: docker build -t moorage:dev .
     restart: unless-stopped
     ports:
       - "127.0.0.1:5080:5080" # put a reverse proxy with HTTPS in front, then set MOORAGE_SECURE_COOKIES=true

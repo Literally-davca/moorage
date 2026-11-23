@@ -93,6 +93,8 @@ type AgentOptions struct {
 	Terminal bool
 	// Prober runs checks for the hub (POST /probe); nil means MOORAGE_PROBES=false.
 	Prober Prober
+	// SelfUpdate handles Moorage binary/container self-update endpoints.
+	SelfUpdate AgentSelfUpdater
 }
 
 // NewAgentHandler is AgentHandler with all options, including remote probes.
@@ -110,8 +112,39 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 		}
 	}
 	mux.HandleFunc("GET /info", func(w http.ResponseWriter, r *http.Request) {
+		if o.SelfUpdate != nil {
+			o.SelfUpdate.ConfirmHealthy(version)
+		}
 		agentJSON(w, AgentInfo{HostInfo: h.Info(r.Context()), ReadOnly: readOnly, Terminal: allowTerm, Version: version, Probes: o.Prober != nil})
 	})
+	if o.SelfUpdate != nil {
+		// Self-update is governed by MOORAGE_SELF_UPDATE and Ed25519 signature checks
+		// rather than MOORAGE_READ_ONLY (an update changes Moorage itself, never user stacks).
+		mux.HandleFunc("GET /system/update/status", func(w http.ResponseWriter, r *http.Request) {
+			reply(w)(o.SelfUpdate.Status(r.Context()))
+		})
+		mux.HandleFunc("POST /system/update/apply-binary", func(w http.ResponseWriter, r *http.Request) {
+			handleAgentApplyBinary(w, r, o.SelfUpdate)
+		})
+		mux.HandleFunc("POST /system/update/apply-container", func(w http.ResponseWriter, r *http.Request) {
+			var m SelfUpdateManifest
+			if !agentRead(w, r, &m) {
+				return
+			}
+			if err := o.SelfUpdate.ApplyContainer(r.Context(), m); err != nil {
+				agentErr(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+		})
+		mux.HandleFunc("POST /system/update/rollback", func(w http.ResponseWriter, r *http.Request) {
+			if err := o.SelfUpdate.Rollback(r.Context()); err != nil {
+				agentErr(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+		})
+	}
 	// Not wrapped in write(): a probe only reads the network, it changes nothing here.
 	mux.HandleFunc("POST /probe", probeHandler(o.Prober))
 	mux.HandleFunc("GET /stacks", func(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +185,15 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 		}
 		replyErr(w, h.Save(r.Context(), r.PathValue("name"), req.Compose, req.Env, req.Author, req.Create))
 	}))
+	if sa, ok := h.(SelfApplier); ok {
+		mux.HandleFunc("POST /stacks/{name}/self-apply", write(func(w http.ResponseWriter, r *http.Request) {
+			var req saveReq
+			if !agentRead(w, r, &req) {
+				return
+			}
+			replyErr(w, sa.SelfApply(r.Context(), r.PathValue("name"), req.Compose, req.Env, req.Author))
+		}))
+	}
 	mux.HandleFunc("DELETE /stacks/{name}", write(func(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, h.Delete(r.Context(), r.PathValue("name"), r.URL.Query().Get("author")))
 	}))
@@ -585,6 +627,11 @@ func (rm *Remote) Save(ctx context.Context, name, compose, env, author string, c
 // ignores the note and creates the stack with the plain message.
 func (rm *Remote) CreateNoted(ctx context.Context, name, compose, env, author, note string) error {
 	return rm.call(ctx, http.MethodPut, p(name), saveReq{Compose: compose, Env: env, Author: author, Create: true, Note: note}, nil)
+}
+
+// SelfApply asks the agent to apply changes to the stack it runs from.
+func (rm *Remote) SelfApply(ctx context.Context, name, compose, env, author string) error {
+	return rm.call(ctx, http.MethodPost, p(name)+"/self-apply", saveReq{Compose: compose, Env: env, Author: author}, nil)
 }
 
 func (rm *Remote) Delete(ctx context.Context, name, author string) error {

@@ -36,8 +36,12 @@ type AuditFilter struct {
 	Stack        string
 	Actor        string
 	ActionPrefix string
-	BeforeID     int64 // paging: only rows with a smaller id
-	Limit        int
+	// HostIDs and ActionPrefixes match any of their values (the UI's multi-select
+	// filters); they combine with the single-value fields above by AND.
+	HostIDs        []string
+	ActionPrefixes []string
+	BeforeID       int64 // paging: only rows with a smaller id
+	Limit          int
 }
 
 // maxAuditField caps every text column, so a long username tried at sign-in can't bloat the table.
@@ -92,6 +96,20 @@ func (s *Store) AuditEntries(ctx context.Context, f AuditFilter) ([]AuditEntry, 
 		// substr instead of LIKE: no escaping of % and _ needed.
 		where = append(where, `substr(action, 1, ?) = ?`)
 		args = append(args, len(f.ActionPrefix), f.ActionPrefix)
+	}
+	if len(f.HostIDs) > 0 {
+		where = append(where, `host_id IN (`+strings.TrimSuffix(strings.Repeat(`?,`, len(f.HostIDs)), `,`)+`)`)
+		for _, h := range f.HostIDs {
+			args = append(args, h)
+		}
+	}
+	if len(f.ActionPrefixes) > 0 {
+		var ors []string
+		for _, p := range f.ActionPrefixes {
+			ors = append(ors, `substr(action, 1, ?) = ?`)
+			args = append(args, len(p), p)
+		}
+		where = append(where, `(`+strings.Join(ors, ` OR `)+`)`)
 	}
 	if f.BeforeID > 0 {
 		add(`id < ?`, f.BeforeID)

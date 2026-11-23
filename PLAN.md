@@ -91,8 +91,9 @@ Každý milník je samostatně použitelný.
 | M7 | **Veřejná status stránka** **[U]** | stránka bez přihlášení, výběr stacků/sond, vlastní doména, RSS se správným content-type |
 | M8 | **Auto-update image** **[U]** | kontrola nových digestů/tagů, notifikace nebo automatický pull+up (per stack), s commitem do gitu a ztišením alertů |
 | M9 | **Webový terminál** **[U]** | exec do kontejneru, jen když ho agent povolí; audit log, kdo a kdy |
-| M10 | **OIDC / forward-auth** | přihlášení přes OIDC (Authentik, Keycloak…) a hlavičku z reverse proxy (jen od důvěryhodné proxy); mapování na role `admin` / `viewer` (ty už existují od M1) |
+| M10 ✓ | **OIDC / forward-auth + správa uživatelů** | přihlášení přes OIDC (Authentik, Keycloak…) a hlavičku z reverse proxy (jen od důvěryhodné proxy); mapování na role `admin` / `viewer` (ty už existují od M1) |
 | M11 | **Audit, záloha, dlouhodobý uptime** | audit log všech akcí (rozšíření tabulky z M9 na up/down/pull/rollback/smazání/změny nastavení); export/import konfigurace hubu; hodinové agregace výsledků kontrol na 1 rok |
+| M12 ✓ | **Aktualizace Moorage z UI** | hub i všichni agenti jedním klikem, podepsané releasy (Ed25519) ověřované na každém uzlu, automatický rollback |
 | – | **Vydání v1.0** | git repozitář, bezpečnostní průchod, image, instalační README, changelog |
 
 ### Mimo MVP (explicitně)
@@ -311,6 +312,163 @@ Moorage je teď na 39–45 MiB PSS, tedy pod polovinou limitu. Limit je strop, k
   - Drobnosti: hláška o chybějícím shellu se vypisovala dvakrát (a vkládala se i do běžného výstupu obsahujícího „no such file or directory“); barvy terminálu z tokenů (`--well`, `--foam`, `--buoy`) místo cizí modré; popisek „exit · exit 127“.
 - Známá omezení: mobilní klávesnice na dotykových telefonech není speciálně přizpůsobena (layout na 375 px se vejde a zalamuje); proces spuštěný s vyčištěným prostředím (`env -i`) nebo shell při `SIGKILL` agenta může relaci přežít; ukončovací skript potřebuje `cat` v obrazu; Logbook stacku ukazuje relace jako samostatný seznam nad verzemi, ne prolnuté po dnech.
 
+### M10 – hotovo (2026-11-23): uživatelé, OIDC, forward-auth
+- Implementace: agent (Claude) podle `prompts/M10-oidc-users.md`; review a živý test proti Dexu (mock connector) a forward-auth přes `curl --interface`.
+- **[A] Lokální uživatelé přes jednorázový odkaz** (48 h, uložen jen SHA-256): heslo i TOTP volí pozvaný, admin je nikdy nezná. TOTP povinné pro **všechny** lokální uživatele (viewer čte compose, `.env` a logy). Reset nahradí heslo a TOTP až po dokončení, teprve pak skončí relace.
+- **[A] Break-glass:** vždy aspoň jeden aktivní lokální admin s TOTP; demote/disable/delete se kontrolují v jedné transakci. Akce v seznamu nikdy na sebe sama. OIDC/proxy přihlášení až po dokončení setupu.
+- **[A] Role a stav se čtou při každém požadavku** (`SessionUser`); změna role, vypnutí a smazání ukončí relace hned.
+- **[A] OIDC:** code flow + PKCE S256, state a nonce (v paměti, max. 2000, 10 min, jednorázově), go-oidc + vlastní JWKS (refetch jen pro neznámé `kid`, max. 1× za 30 s). Účty podle (issuer, subject), nikdy podle jména či e-mailu; kolize jména → `-2`. Role ze skupin při každém přihlášení (admin > viewer > výchozí role, `admin` jako výchozí nejde). Rozbitá konfigurace nezastaví start (tlačítko se skryje, chyba v panelu SSO).
+- **[A] OIDC relace 12 h** (lokální a proxy 7 dní): role z IdP se mění jen při přihlášení a odhlášení u IdP relaci neukončí. Proxy ověřuje hlavičku při každém požadavku.
+- **[A] Forward-auth** jen od TCP peeru v `MOORAGE_TRUSTED_PROXIES`, jinak se hlavičky smažou; platí jen pro `/api/session` a přihlášené routy (ne login, status stránky, `/metrics`, agentský port). Neplatná konfigurace proxy zastaví start (bezpečnostní nastavení se nehádá).
+- Nové závislosti: `github.com/coreos/go-oidc/v3`, `golang.org/x/oauth2` (+ go-jose). Binárka +576 KiB, RAM beze změny.
+- **Review (Claude) – opraveno:** pozvánka vložená do už otevřené záložky ukázala přihlášení (fáze se počítala jen při načtení); admin ze setupu měl „Never signed in“; OIDC relace 7 dní → 12 h. Nestabilní `TestWatchdogIntegrationThreeAgentsHubOutageAndRecovery` (agenti zapisovali do TempDir po konci testu) opraven.
+- Neověřeno: skutečný Authentik/Keycloak; IdP na jiné doméně (SameSite cookie); RP-initiated logout (Dex nemá `end_session_endpoint`).
+
+### M12 – hotovo (2026-11-23): aktualizace Moorage z webového UI
+- Implementace: Gemini (Argon) podle `prompts/M12-gemini-argon.md`; bezpečnostní review agentem (17 nálezů), opravy agentem, živý test binárního režimu, režimu pod systemd a v kontejneru (testovací klíč, `-tags moorage_testkey`).
+- **[A] Podepsané releasy:** workflow `.github/workflows/release.yml` na tag `vX.Y.Z` (striktní semver) – job `build` bez secretů (`npm ci --ignore-scripts`), samostatný job `sign` (čistý checkout, Ed25519 nad `SHA256SUMS`; `sign.go` odmítne klíč, který nesedí s `releasePublicKeyB64`), `publish` (release, pak `:latest`). Akce pinnuté na SHA.
+- **[A] Ověřuje instalující uzel** vlastním vestavěným klíčem (podpis, checksum binárky, digest image z podepsaného `images.json`, verze). Kompromitovaný hub nic jiného nenainstaluje. Prázdný vestavěný klíč = vše se odmítne. Testovací klíč z env jen s build tagem `moorage_testkey`.
+- **[A] Kontejnerový režim:** pomocný kontejner z nového image (`moorage.role=updater`) zkopíruje konfiguraci cíle a ponechá compose labely; starý kontejner `<name>-moorage-prev` dostane restart policy `no` (původní se vrátí při rollbacku) a smaže se po 24 h. Self-ID jen kontejner, který běží a spouští `/moorage`.
+- **[A] Binární režim:** atomická výměna se zachováním práv, `moorage.prev`, re-exec. Rollback nezávislý na watcheru: nová binárka při startu počítá pokusy (`self-update-pending.json`, max. 3 / 120 s) a po překročení obnoví předchozí, takže funguje i pod systemd s crash-loopem.
+- **[A] Hub:** kontroluje releasy denně (jen User-Agent), „Update all“ postupně agenti a hub naposledy, stop na první chybě; čeká 180 s, ztišení host-offline 3 min; úspěch hubu až po potvrzení zdraví; overlay „Moorage is restarting“ jen ve fázi `restarting`, s timeoutem 4 min a zavřením. Read-only agent se aktualizovat smí (podepsaný kód), `MOORAGE_SELF_UPDATE=false` odmítne.
+- **Review – opraveno 17 chyb:** mimo jiné crash-loop pod systemd bez rollbacku, overlay blokující UI navždy, job uvízlý v `restarting`, „done“ před ověřením zdraví, rollback hlášený jako timeout, starý kontejner se spouštěl po rebootu, workflow bez kontroly klíče a s `:latest` před podpisem, helper bez sítě/SELinux/uživatele cíle, nejednoznačná self-ID, rollback podle tagu místo ID image, špatný ruční příkaz (arch, checksum), sériový a necachovaný přehled.
+- **Zbývá uživateli před prvním releasem:** `go run ./scripts/release/genkey.go`, veřejný klíč do `internal/selfupdate/key.go` (commit), privátní do `gh secret set MOORAGE_RELEASE_KEY`, pak tag `v…`.
+- Neověřeno: workflow na GitHubu, arm buildy, GHCR, hub pod systemd s padající binárkou, overlay v prohlížeči.
+
+### M13 – hotovo (2026-11-23), kromě bezpečnostního průchodu (odloženo uživatelem)
+- **Horní lišta** (`Shell.svelte`): stránky nad obsahem, co se nevejde, padá do „More“ podle naměřené šířky (skrytá měřicí kopie, oříznutá na 0×0, jinak zvětšovala stránku); aktuální stránka v přetečení pojmenuje tlačítko More; uživatelské menu (Account, motiv, odhlášení). Levý panel jen hosté a stacky: na 1152×720 má seznam stacků 483 px místo 2,5 řádku. Pod 768 px šuplík se stránkami pod stacky. „Updates“ → „Image updates“, nově i odkaz Hosts.
+- **Automatické vyplňování:** `name` atributy ve všech přihlašovacích formulářích, skrytý username u změny hesla.
+- **Rozbalovací prvky** se zavírají kliknutím mimo a Escape (`lib/dismiss.ts`, šipky v menu přes `menuKeys`).
+- **MultiSelect** (`lib/MultiSelect.svelte`, vlastní, bez závislosti: nativní checkboxy dávají přístupnost; +1,6 kB gzip): místa kontroly s důvodem nedostupnosti, kanály, rozsah údržby, položky status stránky, filtry audit logu (API nově přijímá více hostů/akcí), výběr kontejnerů v logu (filtr kontejneru přijímá seznam oddělený čárkou; starší agent vrátí „no containers“), agenti watchdogu.
+- **`.env` editor** (`lib/EnvEditor.svelte`, `lib/dotenv.ts`): bezeztrátový model (test round-trip v Node), maskování tajných klíčů, chybějící a nepoužité proměnné z compose, vložení více řádků.
+- **Vlastní stack Moorage** (`engine/self.go`, `selfupdate/stackapply.go`):
+  - **[A]** Detekce přes self-ID z M12 a compose labely.
+  - **[A]** Odmítá uzel sám (kód `self_stack`, 409): stop, down, delete, up/update, rollback image; auto-update se přeskočí jako Notify.
+  - **[A]** Restart přímo přes engine.
+  - **[A]** Apply & restart: záloha souborů do `<data>/self-stack-prev`, uložení verze, pomocný kontejner z aktuálního ID image se všemi mounty, sítí, uživatelem a SELinux cíle → `compose up -d` → 15 s stabilního běhu (hub: `/api/session`) do 120 s → jinak obnova souborů a `up`; výsledek v `<data>/self-stack-result.json` na stránce stacku.
+  - **[A]** Uložení odmítne odebrání služby, socketu nebo datového mountu.
+  - **Živě ověřeno** (all-in-one jako compose stack z lokálního image): odmítnutí, neškodná změna nasazena, rozbitá změna vrácena za 126 s, restart. Při testu nalezena a opravena chyba: odmítnutí vracelo 502 a zapisovalo se do auditu jako selhání.
+- **Nová služba od image** (`internal/imagefind`, `POST /api/image-lookup`, jen admin, bez auditu):
+  - **[A]** Registr anonymně (token z https realm, index → linux/amd64, config blob, 1 MiB, 20 s, cache 1 h, guard proti metadata adresám; privátní registry v síti povoleny).
+  - **[A]** Zdrojový repozitář jen pro GitHub, GitLab.com a Codeberg (jiný host z labelu se nekontaktuje).
+  - **[A]** Úprava `build:` na image a varování (env_file, relativní soubory, privileged…).
+  - **[A]** Generované compose: porty, volumes, nastavení image zakomentovaná v `.env`.
+  - Ověřeno proti Docker Hubu a GHCR.
+- Neověřeno: horní lišta jen přes rozměry v prohlížeči (bez prohlížení všech šířek), Apply & restart na agentovi (jen all-in-one), Podman.
+
+## M13 – UX a bezpečnost (návrh 2026-11-23, schváleno)
+
+Cíl: Moorage se pohodlně ovládá i na malém displeji, `.env` se edituje jako v Coolify, nová služba začíná od image a samotný stack Moorage nejde omylem vypnout. Na závěr bezpečnostní průchod celé aplikace.
+
+### 1. Navigace: stránky do horní lišty (rozhodnutí uživatele)
+- Dnes je na 1152×720 (16:10 se škálováním) v levém panelu 9 odkazů a na stacky zbudou asi 2,5 řádku.
+- **Levý panel:** jen přepínač hostu, hledání, seznam stacků (všechna volná výška) a dole stav hostu.
+- **Horní lišta nad obsahem:**
+  - Checks (s počtem problémů), Status pages, Maintenance, Templates, Dependencies, Updates, Notifications, Audit log, Users, Hosts;
+  - vpravo uživatelské menu (Account, motiv, odhlášení);
+  - odkazy, které se nevejdou, padají do menu „More“ (priority+: počítá se šířka, ne pevný breakpoint);
+  - položky jen pro adminy viewer nevidí.
+- **Pod 768 px** zůstává dnešní šuplík (drawer), stránky jsou v něm pod stacky.
+- Rozhodnuto: „Updates“ (image) se přejmenuje na „Image updates“, ať se neplete s „Moorage updates“ na Hosts.
+- Ověřit na 1440×900, 1280×800, 1152×720, 1024×640, 768 a 375 px: žádný vodorovný posuv, aktivní stránka viditelná, fokus a klávesnice v menu More.
+
+### 2. `.env` jako v Coolify
+- Dva režimy, přepínač **Variables | Raw**; volba se pamatuje v prohlížeči. Raw je dnešní editor.
+- **Bezeztrátový model:** parser zachová komentáře, prázdné řádky, pořadí, `export`, uvozovky i víceřádkové hodnoty v `"…"`. Tabulka mění jen klíče a hodnoty, takže přepnutí tam a zpět soubor nezmění (test round-trip).
+- **Tabulka** (klíč, hodnota, smazat, přidat):
+  - Vložení více řádků `KEY=VAL` do pole klíče je rozdělí do řádků.
+  - Neplatné jméno klíče je chyba; duplicitní klíč dostane varování („last wins“).
+- **Tajné hodnoty:** klíč obsahující `PASSWORD|SECRET|TOKEN|KEY|PRIVATE` se ukáže maskovaně s tlačítkem zobrazit. Žádný nový skrytý stav per stack.
+- **Nápověda z compose:**
+  - proměnné z `${VAR}` bez výchozí hodnoty, které v `.env` chybí, se ukážou s tlačítkem „Add“;
+  - proměnné v `.env`, které compose nepoužívá, jsou označené jako nepoužité (jen informace).
+- Viewer vidí hodnoty maskované a jen pro čtení. Stejný editor se použije v New stack i v recenzi šablony.
+
+### 3. Stack, ve kterém běží Moorage (rozhodnutí uživatele: editovatelný, nasazení přes pomocníka)
+- **Detekce:**
+  - uzel (all-in-one i agent) pozná vlastní compose projekt podle self-ID z M12 (běžící kontejner s `/moorage` a label `com.docker.compose.project`);
+  - hub dostane příznak `self: true` u stacku;
+  - binární režim žádný takový stack nemá.
+- **Zakázané akce:** Stop, Down, Delete, Pull+up z auto-updatu (politika se vynutí na Notify; aktualizace jde přes Moorage updates). Refuse vynucuje **uzel sám**, ne jen skryté tlačítko v UI.
+- **Restart:** přímo přes engine. Daemon restart dokončí, i když volající proces skončí; UI ukáže overlay „Moorage is restarting“ (z M12).
+- **Uložení compose/.env + „Apply & restart“:**
+  - verze se uloží do git historie jako dnes;
+  - pak se spustí pomocný kontejner z aktuálního image ID (jako v M12, s kontextem cíle: síť, SELinux, uživatel), který udělá `compose up -d` pro tento projekt;
+  - počká, až nový Moorage odpoví (hub `/api/session`, agent znovu připojen), nejdéle 120 s;
+  - při neúspěchu vrátí předchozí verzi compose/.env z historie, znovu `up` a zapíše rollback do historie i auditu.
+- Validace před nasazením: služba Moorage musí ve compose zůstat, socket a datový volume musí zůstat namountované. Jinak odmítnout s vysvětlením (jinak by se Moorage odřízl).
+- Ostatní služby ve stejném stacku (např. reverse proxy) se nasazují stejnou cestou.
+
+### 4. Nová služba od image (rozhodnutí uživatele: katalog + repozitář image + generování)
+- **New stack, krok 1:** pole „Image“ (např. `vaultwarden/server`, `ghcr.io/org/app:1`). Vedle zůstává „Empty“ a „From `docker run`“.
+- **Krok 2: kandidáti se zdrojem,** uživatel jednoho vybere:
+  1. **Šablona** z katalogu R7 (bundled/local/remote), která image používá.
+  2. **Compose z repozitáře image:**
+     - label `org.opencontainers.image.source` z konfigurace image v registru (anonymní token nebo přihlašovací údaje z M8);
+     - u GitHub/GitLab/Codeberg zkusit `compose.yaml|compose.yml|docker-compose.yml|docker-compose.yaml` v kořeni, `docker/` a `deploy/` výchozí větve;
+     - `build:` sekce a chybějící `env_file`/relativní soubory označit nebo odstranit s varováním.
+  3. **Vygenerované z metadat image:** exposed porty, volumes, env výchozí hodnoty, user, healthcheck.
+- **Krok 3:** dnešní editor (compose + nový `.env` editor) a create.
+- **Bezpečnost:**
+  - stahuje hub, jen HTTPS, 1 MiB na soubor, 20 s, žádné redirecty na http, žádné privátní IP (stejná pravidla jako vzdálené indexy šablon);
+  - cache 1 h; GitHub API jen 1 volání na repozitář (výchozí větev), soubory přes raw.
+  - Obsah je nedůvěryhodný: varování jako u šablon (privileged, socket, host network), vždy recenze před vytvořením, nic se nespouští.
+- **Stavy:**
+  - image nenalezen nebo registr nedostupný: hláška, zůstává ruční vložení;
+  - repozitář bez compose: jen ostatní kandidáti;
+  - soukromý image bez přístupu: návod na přihlášení (M8 `auth`).
+
+### 5. Automatické vyplňování přihlášení
+- `autocomplete` už je (username, current-password, one-time-code, new-password).
+- Doplnit `name` atributy (některé správce hesel je potřebují) a skrytý username i u změny hesla v Account.
+- Ověřit uložení a vyplnění v Chrome i Firefoxu.
+
+### 6. Bezpečnostní průchod celé aplikace (po bodech 1–5) – odloženo uživatelem
+- **Rozdělení na oblasti, každá prověřená zvlášť** (agenti paralelně, skill `security-review`):
+  - auth/session/OIDC/forward-auth;
+  - hub↔agent tunel a agentské API (allowlist, read-only);
+  - práce se soubory stacků (path traversal, symlinky, git historie s `.env`);
+  - SSRF (kontroly, šablony, vyhledání image, webhooky);
+  - self-update a self-stack;
+  - UI (XSS, CSP, CSRF, WebSocket origin);
+  - závislosti (`govulncheck`, `npm audit`).
+- Výstup: seznam nálezů se závažností, opravy, záznam do PLAN.
+- Neplatí jen pro novou práci; projde se celý kód.
+
+### 7. Vlastní dropdown s multi-selectem
+- **Jedna komponenta `MultiSelect`:**
+  - tlačítko ukazuje vybrané jako „3 selected“ nebo první dvě jména + „+2“;
+  - po otevření panel s hledáním (od 8 položek), zaškrtávacími řádky, „Select all / Clear“;
+  - u položky může být důvod, proč nejde vybrat (např. agent offline);
+  - zavírá se kliknutím mimo i Escape.
+- **Implementace:** postavit na hotovém primitivu `bits-ui` (Svelte 5, MIT: klávesnice, fokus, ARIA listbox) a nastylovat tokeny; vlastní implementace jen pokud by bundle narostl o víc než ~30 kB gzip.
+- **Kde:**
+  - **CheckForm:** místa kontroly (lokace s důvodem nedostupnosti), notifikační kanály;
+  - **MaintenanceForm:** stacky a kontroly (dnes výběr po jedné + Přidat);
+  - **StatusPageForm:** přidání více kontrol/stacků naráz (pořadí položek se dál řadí v seznamu);
+  - **AuditView:** filtr hostů a skupin akcí;
+  - **LogViewer:** výběr kontejnerů (dnes „All“ nebo jeden);
+  - **Hosts → watchdog:** sledující agenti.
+- Jednoduché jednovýběrové `<select>` (interval, metoda, role) zůstávají nativní: na mobilu dávají systémový výběr a jsou přístupné bez práce navíc.
+- Hotovo hned (2026-11-23): menu „More actions“ u stacku a přepínač hostů se zavírají kliknutím mimo a Escape (`web/src/lib/dismiss.ts`, focus se vrací na tlačítko). Ostatní rozbalovací prvky dostanou totéž.
+
+### Pořadí
+1. Autofill a horní lišta + ověření displejů (malé, viditelné hned), spolu s MultiSelect.
+2. `.env` editor.
+3. Self-stack.
+4. Nová služba od image.
+5. Bezpečnostní průchod.
+
+### Mimo rozsah
+- Sdílené proměnné mezi stacky.
+- Šifrování `.env` v historii.
+- Parsování README z Docker Hubu (uživatel nevybral).
+- Vyhledávání image v registrech (autocomplete).
+- Pody a Kubernetes.
+
+### Otevřené otázky
+- Jakým způsobem implementovat: agenti (Claude) jako u M10, nebo prompty pro Argon jako u M12?
+
 ## Roadmapové funkce (2026-11-22)
 Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Dělají je agenti jeden po druhém (zadání `prompts/roadmap-agent-common.md` + `prompts/R*.md`), každou pak Claude zkontroluje a otestuje živě.
 
@@ -385,8 +543,9 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 - Zbývá: spustit `scripts/dev/podman-smoke.sh` proti Podmanu 4.9 a 5.x (rootful i rootless) a projít matici funkcí z hlášení agenta; přihlašovací údaje z Podman `auth.json`; README (nastavení socketu). Lokální host v seznamu hostů zatím typ enginu neuvádí.
 
 ## Další krok
-1. Git repozitář a první commit (projekt zatím není pod gitem).
-2. **M10 – OIDC / forward-auth** (prompt pro Gemini, pak review).
-3. **M11 – export/import konfigurace, hodinové agregace kontrol** (audit log všech akcí je hotový jako R1).
-4. Ověřit R8 (Podman) proti skutečnému Podmanu: `scripts/dev/podman-smoke.sh`, matice v sekci R8.
-5. Vydání **v1.0**. Z plánu 1.1/1.2 zbývá jen automatický rollback po selhání kontrol.
+1. Commit a push M10 + M12 + M13.
+2. Bezpečnostní průchod celé aplikace (M13 bod 6, odložený).
+3. Podepisovací klíč releasů (uživatel: genkey, `key.go`, `gh secret set`) a první tag – ověří workflow, GHCR a aktualizaci z UI naostro.
+4. **M11 – export/import konfigurace, hodinové agregace kontrol** (audit log všech akcí je hotový jako R1).
+5. Ověřit R8 (Podman) proti skutečnému Podmanu: `scripts/dev/podman-smoke.sh`, matice v sekci R8.
+6. Vydání **v1.0**. Z plánu 1.1/1.2 zbývá jen automatický rollback po selhání kontrol.

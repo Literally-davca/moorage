@@ -1,0 +1,293 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Least privilege by default; each job asks for what it needs.
+permissions:
+  contents: read
+
+# Third-party actions are pinned to full commit SHAs (the major tag they resolved to when
+# pinned is in the comment). Update them deliberately, e.g. with Dependabot.
+
+jobs:
+  # Builds and tests everything and pushes the image under its version tag only.
+  # It never sees the signing key.
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.docker.outputs.digest }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve and validate release version
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Strict SemVer 2.0 with a leading v; the binaries parse this version.
+          SEMVER='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if ! [[ "$TAG" =~ $SEMVER ]]; then
+            echo "Tag '$TAG' is not a SemVer release tag like v1.2.3 or v1.2.3-rc.1" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          PRERELEASE="false"
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE="true"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build web UI
+        working-directory: web
+        run: |
+          # No dependency install scripts: the UI toolchain doesn't need them.
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run check
+          npm run build
+
+      - name: Run Go tests
+        run: go test -count=1 ./...
+
+      - name: Build static Linux binaries
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o dist/moorage-linux-amd64 ./cmd/moorage
+          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o dist/moorage-linux-arm64 ./cmd/moorage
+          GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o dist/moorage-linux-armv7 ./cmd/moorage
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only the version tag here: :latest moves in the publish job, after signing.
+      - name: Build and push multi-arch container image
+        id: docker
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          push: true
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+
+      - name: Generate images.json with per-arch digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          IMAGE: ${{ steps.meta.outputs.image }}
+          INDEX_DIGEST: ${{ steps.docker.outputs.digest }}
+        run: |
+          docker buildx imagetools inspect --raw "${IMAGE}@${INDEX_DIGEST}" > dist/manifest.json
+          python3 - <<'PY'
+          import json, os
+
+          with open("dist/manifest.json", "r", encoding="utf-8") as f:
+              manifest = json.load(f)
+
+          digests = {}
+          for m in manifest.get("manifests", []):
+              p = m.get("platform", {})
+              os_name = p.get("os", "")
+              arch = p.get("architecture", "")
+              variant = p.get("variant", "")
+              if not os_name or not arch or os_name == "unknown" or arch == "unknown":
+                  continue
+              key = f"{os_name}/{arch}" + (f"/{variant}" if variant else "")
+              digests[key] = m["digest"]
+
+          required = ["linux/amd64", "linux/arm64", "linux/arm/v7"]
+          missing = [k for k in required if k not in digests]
+          if missing:
+              raise SystemExit(f"missing platform digests in manifest: {missing}")
+
+          out = {
+              "version": os.environ["VERSION"],
+              "image": os.environ["IMAGE"],
+              "index_digest": os.environ["INDEX_DIGEST"],
+              "digests": digests,
+          }
+          if os.path.exists("release-compat.json"):
+              with open("release-compat.json", "r", encoding="utf-8") as cf:
+                  compat = json.load(cf)
+              if compat.get("min_hub"):
+                  out["min_hub"] = compat["min_hub"]
+              if compat.get("min_agent"):
+                  out["min_agent"] = compat["min_agent"]
+
+          with open("dist/images.json", "w", encoding="utf-8") as f:
+              json.dump(out, f, indent=2, sort_keys=True)
+              f.write("\n")
+          PY
+          rm -f dist/manifest.json
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Signs in a fresh job: clean checkout, only the built artifacts, no npm, no Docker.
+  # Only the Go standard library runs next to the private key.
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Compute checksums and sign SHA256SUMS
+        env:
+          MOORAGE_RELEASE_KEY: ${{ secrets.MOORAGE_RELEASE_KEY }}
+        run: |
+          if [ -z "$MOORAGE_RELEASE_KEY" ]; then
+            echo "MOORAGE_RELEASE_KEY secret is not configured" >&2
+            exit 1
+          fi
+          (cd dist && sha256sum images.json moorage-linux-amd64 moorage-linux-arm64 moorage-linux-armv7 > SHA256SUMS)
+          # Fails unless the key matches releasePublicKeyB64 in internal/selfupdate/key.go.
+          go run ./scripts/release/sign.go dist/SHA256SUMS dist/SHA256SUMS.sig
+
+      - name: Upload signature
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-signature
+          path: |
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishes only after a successful signature: the GitHub release, then :latest.
+  publish:
+    needs: [build, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Download signature
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-signature
+          path: dist
+
+      - name: Build release notes
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          VERSION: ${{ needs.build.outputs.version }}
+          INDEX_DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          cat > dist/NOTES.md <<EOF
+          ## Container image
+
+          \`${IMAGE}:${VERSION}\` (digest \`${INDEX_DIGEST}\`)
+
+          \`images.json\` and all release binaries are listed in \`SHA256SUMS\` and signed in \`SHA256SUMS.sig\`.
+          EOF
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          PRE_FLAG=""
+          if [ "$PRERELEASE" = "true" ]; then
+            PRE_FLAG="--prerelease"
+          fi
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "Moorage ${VERSION}" \
+            --notes-file dist/NOTES.md \
+            --generate-notes \
+            $PRE_FLAG \
+            dist/moorage-linux-amd64 \
+            dist/moorage-linux-arm64 \
+            dist/moorage-linux-armv7 \
+            dist/images.json \
+            dist/SHA256SUMS \
+            dist/SHA256SUMS.sig
+
+      - name: Set up Docker Buildx
+        if: needs.build.outputs.prerelease == 'false'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        if: needs.build.outputs.prerelease == 'false'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Move :latest to the signed release
+        if: needs.build.outputs.prerelease == 'false'
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          INDEX_DIGEST: ${{ needs.build.outputs.digest }}
+        run: docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${INDEX_DIGEST}"

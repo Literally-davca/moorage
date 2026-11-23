@@ -26,6 +26,9 @@ type StackSummary struct {
 	Total    int    `json:"total"`
 	Busy     bool   `json:"busy"`
 	Location string `json:"location,omitempty"` // working dir of read-only stacks
+	// Self marks the stack this Moorage node runs from: no stop/down/delete, changes go
+	// through Apply & restart (self.go).
+	Self bool `json:"self,omitempty"`
 }
 
 // Stack is the detail view.
@@ -35,6 +38,8 @@ type Stack struct {
 	Compose     string      `json:"compose"`
 	Env         string      `json:"env"`
 	Containers  []Container `json:"containers"`
+	// SelfResult is the outcome of the last Apply & restart of the self stack.
+	SelfResult *SelfApplyResult `json:"selfResult,omitempty"`
 }
 
 // ListStacks returns managed stacks from the folder plus read-only compose projects found in Docker.
@@ -59,7 +64,7 @@ func (e *Engine) ListStacks(ctx context.Context) ([]StackSummary, error) {
 		}
 		cs := byProject[ent.Name()]
 		st, running := stackStatus(cs)
-		out = append(out, StackSummary{Name: ent.Name(), Managed: true, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(ent.Name())})
+		out = append(out, StackSummary{Name: ent.Name(), Managed: true, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(ent.Name()), Self: e.IsSelf(ent.Name())})
 		seen[ent.Name()] = true
 	}
 	for p, cs := range byProject {
@@ -67,7 +72,7 @@ func (e *Engine) ListStacks(ctx context.Context) ([]StackSummary, error) {
 			continue
 		}
 		st, running := stackStatus(cs)
-		out = append(out, StackSummary{Name: p, Managed: false, Status: st, Running: running, Total: len(cs), Location: dirs[p]})
+		out = append(out, StackSummary{Name: p, Managed: false, Status: st, Running: running, Total: len(cs), Location: dirs[p], Self: e.IsSelf(p)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	if dockerErr != nil {
@@ -91,8 +96,11 @@ func (e *Engine) GetStack(ctx context.Context, name string) (Stack, error) {
 	}
 	st, running := stackStatus(cs)
 	s := Stack{
-		StackSummary: StackSummary{Name: name, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(name)},
+		StackSummary: StackSummary{Name: name, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(name), Self: e.IsSelf(name)},
 		Containers:   cs,
+	}
+	if s.Self {
+		s.SelfResult = e.SelfResult()
 	}
 
 	dir, derr := e.stackDir(name)
@@ -210,6 +218,11 @@ func (e *Engine) saveStack(ctx context.Context, name, compose, env, author strin
 	if err := e.ValidateCompose(ctx, name, compose, env); err != nil {
 		return err
 	}
+	// The self stack keeps Moorage's service, socket and data mounts even when only saved:
+	// a later Apply & restart or host reboot would otherwise start a Moorage cut off.
+	if err := e.ValidateSelfCompose(ctx, name, compose, env); err != nil {
+		return err
+	}
 	if !e.lock(name) {
 		return ErrBusy
 	}
@@ -253,6 +266,9 @@ func (e *Engine) saveStack(ctx context.Context, name, compose, env, author strin
 // DeleteStack removes a managed stack folder. It refuses while containers exist.
 // The last state stays in the version history.
 func (e *Engine) DeleteStack(ctx context.Context, name, author string) error {
+	if e.IsSelf(name) {
+		return ErrSelfStack
+	}
 	dir, err := e.stackDir(name)
 	if err != nil {
 		return err

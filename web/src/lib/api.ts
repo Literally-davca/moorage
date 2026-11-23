@@ -2,17 +2,131 @@
 import { app } from './state.svelte';
 
 export type Role = 'admin' | 'viewer';
+export type AuthSource = 'local' | 'oidc' | 'proxy';
 export interface User {
   id: number;
   username: string;
   role: Role;
+  source?: AuthSource;
+  displayName?: string;
+}
+/** Which ways to sign in the login page offers. */
+export interface LoginInfo {
+  sso: boolean;
+  ssoLabel?: string;
+  localLogin: boolean;
+  proxy: boolean;
 }
 export interface Session {
   setupRequired: boolean;
   user: User | null;
   version: string;
+  login?: LoginInfo;
+  /** Why the trusted proxy's user was refused. */
+  proxyError?: string;
+}
+export interface UserInfo {
+  id: number;
+  username: string;
+  displayName: string;
+  email: string;
+  source: AuthSource;
+  role: Role;
+  status: 'active' | 'invited' | 'disabled';
+  totp: boolean;
+  lastLoginAt?: string;
+  createdBy: string;
+  createdAt: string;
+  linkKind?: 'invite' | 'reset';
+  linkExpires?: string;
+}
+export interface UserLink {
+  token: string;
+  kind: 'invite' | 'reset';
+  expires: string;
+}
+export interface OIDCStatus {
+  configured: boolean;
+  ready: boolean;
+  issuer?: string;
+  clientId?: string;
+  redirectUri?: string;
+  scopes?: string[];
+  groupsClaim?: string;
+  adminGroups: string[];
+  viewerGroups: string[];
+  defaultRole?: string;
+  localLogin: boolean;
+  label?: string;
+  lastError?: string;
+  lastErrorAt?: string;
+}
+export interface ProxyStatus {
+  enabled: boolean;
+  trusted: string[];
+  userHeader?: string;
+  groupsHeader?: string;
+  adminGroups: string[];
+  viewerGroups: string[];
+  defaultRole?: string;
+}
+export interface UsersPage {
+  users: UserInfo[];
+  self: number;
+  oidc: OIDCStatus;
+  proxy: ProxyStatus;
+  publicUrl: string;
+}
+export interface LinkResult {
+  user: UserInfo;
+  link: UserLink;
+  url?: string;
+}
+export interface SessionInfo {
+  id: number;
+  createdAt: string;
+  lastSeen: string;
+  expiresAt: string;
+  ip: string;
+  userAgent: string;
+  current: boolean;
+}
+export interface Account {
+  user: User;
+  email?: string;
+  totp: boolean;
+  sessions: SessionInfo[];
+}
+export interface InviteInfo {
+  username: string;
+  displayName?: string;
+  role: Role;
+  kind: 'invite' | 'reset';
+  expires: string;
+}
+export interface TOTPEnrolment {
+  secret: string;
+  otpauthUrl: string;
+  ticket: string;
 }
 export type Status = 'up' | 'degraded' | 'down' | 'stopped' | 'inactive';
+export interface ImageCandidate {
+  source: 'template' | 'repo' | 'generated';
+  title: string;
+  detail?: string;
+  url?: string;
+  compose?: string;
+  env?: string;
+  warnings?: string[];
+  templateSource?: string;
+  templateId?: string;
+}
+export interface ImageLookup {
+  image: string;
+  name: string;
+  candidates: ImageCandidate[];
+  problems?: string[];
+}
 export interface StackSummary {
   name: string;
   managed: boolean;
@@ -21,6 +135,8 @@ export interface StackSummary {
   total: number;
   busy: boolean;
   location?: string;
+  /** Moorage itself runs from this stack: no stop/down/delete, changes go through Apply & restart. */
+  self?: boolean;
 }
 export interface Container {
   id: string;
@@ -39,6 +155,8 @@ export interface Stack extends StackSummary {
   compose: string;
   env: string;
   containers: Container[];
+  /** Outcome of the last Apply & restart of Moorage's own stack. */
+  selfResult?: { at: string; ok: boolean; rolledBack: boolean; message: string };
 }
 export interface Stat {
   id: string;
@@ -438,6 +556,70 @@ export interface ImageUpdate {
   services: ImageUpdateService[];
   logTail?: string;
 }
+export interface ReleaseSummary {
+  version: string;
+  tag: string;
+  prerelease: boolean;
+  publishedAt?: string;
+  htmlUrl?: string;
+  notes?: string;
+  notesTruncated?: boolean;
+  image?: string;
+  indexDigest?: string;
+  minHub?: string;
+  minAgent?: string;
+}
+export interface UpdateJob {
+  id: number;
+  nodeId: string;
+  action: 'apply' | 'rollback';
+  fromVersion: string;
+  toVersion: string;
+  status: 'running' | 'restarting' | 'done' | 'failed' | 'rolled-back';
+  message?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+export interface NodeUpdateStatus {
+  id: string;
+  name: string;
+  kind: 'hub' | 'all-in-one' | 'agent';
+  connected: boolean;
+  readOnly?: boolean;
+  version: string;
+  mode: 'container' | 'binary' | 'unknown';
+  reason?: string;
+  supported: boolean;
+  selfUpdate: boolean;
+  olderAgent?: boolean;
+  manualCommand?: string;
+  platform?: string;
+  composeProject?: string;
+  containerName?: string;
+  image?: string;
+  latest?: string;
+  updateAvailable: boolean;
+  canUpdate: boolean;
+  compatibility?: 'ok' | 'update-hub-first' | 'agent-too-old' | 'dev-build';
+  compatNote?: string;
+  prevVersion?: string;
+  prevSavedAt?: string;
+  lastRollback?: string;
+  job?: UpdateJob;
+}
+export interface SystemUpdatesResponse {
+  channel: string;
+  updateUrl: string;
+  lastChecked?: string;
+  checkError?: string;
+  release?: ReleaseSummary;
+  keyReady: boolean;
+  nodes: NodeUpdateStatus[];
+}
+export interface ApplyUpdatesResult {
+  jobs: UpdateJob[];
+  restartingHub: boolean;
+}
 export type TimelineKind = 'version' | 'event' | 'incident' | 'update' | 'audit' | 'terminal';
 export interface TimelineEntry {
   key: string;
@@ -688,7 +870,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 401 && !path.startsWith('/api/login') && !path.startsWith('/api/setup')) onUnauthorized();
+    if (res.status === 401 && !path.startsWith('/api/login') && !path.startsWith('/api/setup') && !path.startsWith('/api/invite'))
+      onUnauthorized();
     throw new ApiError(res.status, data.error ?? `Request failed (${res.status}).`);
   }
   return data as T;
@@ -708,7 +891,27 @@ export const api = {
     request<User>('POST', '/api/setup/finish', { token, username, code }),
   login: (username: string, password: string, code: string) =>
     request<User>('POST', '/api/login', { username, password, code }),
-  logout: () => request<void>('POST', '/api/logout'),
+  logout: () => request<{ redirect?: string } | undefined>('POST', '/api/logout'),
+  inviteInspect: (token: string) => request<InviteInfo>('POST', '/api/invite/inspect', { token }),
+  inviteStart: (token: string, password: string) =>
+    request<{ secret: string; otpauthUrl: string }>('POST', '/api/invite/start', { token, password }),
+  inviteFinish: (token: string, code: string) => request<User>('POST', '/api/invite/finish', { token, code }),
+  users: () => request<UsersPage>('GET', '/api/users'),
+  createUser: (username: string, role: Role, displayName: string) =>
+    request<LinkResult>('POST', '/api/users', { username, role, displayName }),
+  setUserRole: (id: number, role: Role) => request<void>('PUT', `/api/users/${id}/role`, { role }),
+  disableUser: (id: number) => request<void>('POST', `/api/users/${id}/disable`),
+  enableUser: (id: number) => request<void>('POST', `/api/users/${id}/enable`),
+  deleteUser: (id: number) => request<void>('DELETE', `/api/users/${id}`),
+  resetUser: (id: number) => request<LinkResult>('POST', `/api/users/${id}/reset`),
+  revokeUserSessions: (id: number) => request<void>('DELETE', `/api/users/${id}/sessions`),
+  account: () => request<Account>('GET', '/api/account'),
+  changePassword: (current: string, password: string) => request<void>('PUT', '/api/account/password', { current, password }),
+  totpStart: (password: string, code: string) => request<TOTPEnrolment>('POST', '/api/account/totp/start', { password, code }),
+  totpFinish: (secret: string, ticket: string, code: string) =>
+    request<void>('PUT', '/api/account/totp', { secret, ticket, code }),
+  revokeSession: (id: number) => request<void>('DELETE', `/api/account/sessions/${id}`),
+  revokeOtherSessions: () => request<{ revoked: number }>('DELETE', '/api/account/sessions'),
   hosts: () =>
     request<{ hosts: HostEntry[]; agentPort?: string; acceptsAgents?: boolean; metrics?: MetricsInfo }>('GET', '/api/hosts'),
   addAgent: (name: string) => request<{ token: string; expires: string; agentPort: string }>('POST', '/api/agents', { name }),
@@ -735,6 +938,8 @@ export const api = {
   deleteTemplateSource: (id: number) => request<void>('DELETE', `/api/templates/sources/${id}`),
   refreshTemplateSource: (id: number) => request<void>('POST', `/api/templates/sources/${id}/refresh`),
   save: (name: string, compose: string, env: string) => request<void>('PUT', `${H()}/stacks/${enc(name)}`, { compose, env }),
+  selfApply: (name: string, compose: string, env: string) =>
+    request<void>('POST', `${H()}/stacks/${enc(name)}/self-apply`, { compose, env }),
   remove: (name: string) => request<void>('DELETE', `${H()}/stacks/${enc(name)}`),
   action: (name: string, action: string) => request<Op>('POST', `${H()}/stacks/${enc(name)}/actions/${enc(action)}`),
   timeline: (name: string, q: TimelineQuery = {}) => {
@@ -811,6 +1016,12 @@ export const api = {
     ),
   rollbackStackImages: (name: string, updateId?: number) =>
     request<Op>('POST', `${H()}/stacks/${enc(name)}/images/rollback`, updateId ? { updateId } : {}),
+  systemUpdates: () => request<SystemUpdatesResponse>('GET', '/api/system/updates'),
+  checkSystemUpdates: () => request<SystemUpdatesResponse>('POST', '/api/system/updates/check', {}),
+  applySystemUpdates: (targets: string[]) =>
+    request<ApplyUpdatesResult>('POST', '/api/system/updates/apply', { targets }),
+  rollbackSystemUpdate: (node: string) =>
+    request<{ job: UpdateJob; restartingHub: boolean }>('POST', `/api/system/updates/${enc(node)}/rollback`, {}),
   terminalSessions: (host?: string, stack?: string) => {
     const q = new URLSearchParams();
     if (host) q.set('host', host);
@@ -827,6 +1038,7 @@ export const api = {
     return request<{ entries: AuditEntry[]; more: boolean }>('GET', `/api/audit${qs ? '?' + qs : ''}`);
   },
   convert: (command: string) => request<ConvertResult>('POST', '/api/convert', { command }),
+  imageLookup: (image: string) => request<ImageLookup>('POST', '/api/image-lookup', { image }),
   deps: (host?: string) => request<HostDeps>('GET', `/api/hosts/${enc(host ?? app.host)}/deps`),
   detectDeps: (host?: string) => request<DepDetection>('POST', `/api/hosts/${enc(host ?? app.host)}/deps/detect`),
   addDep: (name: string, to: StackRef) => request<StackDep>('POST', `${H()}/stacks/${enc(name)}/deps`, to),

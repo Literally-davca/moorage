@@ -539,6 +539,9 @@ func (e *Engine) StackImages(ctx context.Context, stack string) (map[string]Runn
 // RollbackImages re-tags each service's image tag back to its previous image ID (pulling by digest if pruned)
 // and runs compose up without pull.
 func (e *Engine) RollbackImages(ctx context.Context, stack string, targets map[string]RollbackTarget, author string) (OpInfo, error) {
+	if e.IsSelf(stack) {
+		return OpInfo{}, ErrSelfStack
+	}
 	dir, err := e.stackDir(stack)
 	if err != nil {
 		return OpInfo{}, err

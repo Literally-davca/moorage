@@ -11,6 +11,7 @@
   import { isAdmin } from '../lib/state.svelte';
   import { kindName } from '../lib/checks';
   import Icon from '../lib/Icon.svelte';
+  import MultiSelect from '../lib/MultiSelect.svelte';
   import Confirm from '../lib/Confirm.svelte';
 
   let { id }: { id: number | null } = $props();
@@ -31,9 +32,6 @@
   let hosts = $state<HostEntry[]>([]);
   let hostStacks = $state<Record<string, StackSummary[]>>({});
 
-  let addKind = $state<'check' | 'stack'>('check');
-  let pickCheckId = $state<number>(0);
-  let pickStackKey = $state<string>('');
 
   let saving = $state(false);
   let saveOk = $state(false);
@@ -80,7 +78,6 @@
         }),
       );
       hostStacks = byHost;
-      if (chs.length) pickCheckId = chs[0].id;
     } catch {
       /* handled below */
     }
@@ -156,16 +153,36 @@
     }
   }
 
-  function addItem() {
-    if (addKind === 'check') {
-      const c = checks.find((x) => x.id === Number(pickCheckId));
-      if (!c) return;
-      form.items = [...form.items, { section: '', displayName: c.name, checkId: c.id }];
-    } else {
-      const sc = stackChoices.find((x) => x.key === pickStackKey);
-      if (!sc || sc.checkCount === 0) return;
-      form.items = [...form.items, { section: '', displayName: sc.stack, hostId: sc.hostId, stack: sc.stack }];
-    }
+  // The pickers add and remove items; the list below keeps their order, names and sections.
+  const pickedChecks = $derived(form.items.filter((it) => it.checkId).map((it) => String(it.checkId)));
+  const pickedStacks = $derived(form.items.filter((it) => it.stack).map((it) => `${it.hostId}/${it.stack}`));
+  const checkItems = $derived(checks.map((c) => ({ value: String(c.id), label: c.name, meta: kindName[c.kind] })));
+  const stackItems = $derived(
+    stackChoices.map((sc) => ({
+      value: sc.key,
+      label: sc.stack,
+      meta: `on ${sc.hostName}${sc.checkCount ? ` · ${sc.checkCount} ${sc.checkCount === 1 ? 'check' : 'checks'}` : ''}`,
+      disabled: sc.checkCount === 0 ? 'Add a check to this stack first' : undefined,
+    })),
+  );
+  function setChecks(next: string[]) {
+    const want = new Set(next.map(Number));
+    const have = new Set(form.items.filter((it) => it.checkId).map((it) => it.checkId));
+    const kept = form.items.filter((it) => !it.checkId || want.has(it.checkId));
+    const added = checks
+      .filter((c) => want.has(c.id) && !have.has(c.id))
+      .map((c) => ({ section: '', displayName: c.name, checkId: c.id }));
+    form.items = [...kept, ...added];
+  }
+  function setStacks(next: string[]) {
+    const want = new Set(next);
+    const key = (it: StatusPageInput['items'][number]) => `${it.hostId}/${it.stack}`;
+    const have = new Set(form.items.filter((it) => it.stack).map(key));
+    const kept = form.items.filter((it) => !it.stack || want.has(key(it)));
+    const added = stackChoices
+      .filter((sc) => want.has(sc.key) && !have.has(sc.key) && sc.checkCount > 0)
+      .map((sc) => ({ section: '', displayName: sc.stack, hostId: sc.hostId, stack: sc.stack }));
+    form.items = [...kept, ...added];
   }
 
   function moveItem(idx: number, dir: -1 | 1) {
@@ -349,32 +366,15 @@
 
       {#if isAdmin()}
         <div class="adder">
-          <select class="field kind-sel" bind:value={addKind} aria-label="Item type">
-            <option value="check">Check</option>
-            <option value="stack">Stack (all its checks)</option>
-          </select>
-
-          {#if addKind === 'check'}
-            <select class="field grow" bind:value={pickCheckId} aria-label="Pick a check">
-              {#if checks.length === 0}
-                <option value={0} disabled>No checks configured yet</option>
-              {/if}
-              {#each checks as c (c.id)}
-                <option value={c.id}>{c.name} ({kindName[c.kind]})</option>
-              {/each}
-            </select>
-            <button type="button" class="btn" onclick={addItem} disabled={!pickCheckId}><Icon name="plus" /> Add check</button>
-          {:else}
-            <select class="field grow" bind:value={pickStackKey} aria-label="Pick a stack">
-              <option value="">Pick a stack…</option>
-              {#each stackChoices as sc (sc.key)}
-                <option value={sc.key} disabled={sc.checkCount === 0}>
-                  {sc.stack} on {sc.hostName}{sc.checkCount === 0 ? ' — Add a check to this stack first' : ` (${sc.checkCount} ${sc.checkCount === 1 ? 'check' : 'checks'})`}
-                </option>
-              {/each}
-            </select>
-            <button type="button" class="btn" onclick={addItem} disabled={!pickStackKey}><Icon name="plus" /> Add stack</button>
-          {/if}
+          <div>
+            <span class="label">Checks</span>
+            <MultiSelect label="Checks on this page" placeholder={checks.length ? 'Pick checks' : 'No checks configured yet'}
+              items={checkItems} selected={pickedChecks} onchange={setChecks} />
+          </div>
+          <div>
+            <span class="label">Stacks <span class="opt">all checks of the stack</span></span>
+            <MultiSelect label="Stacks on this page" placeholder="Pick stacks" items={stackItems} selected={pickedStacks} onchange={setStacks} />
+          </div>
         </div>
       {/if}
 
@@ -544,17 +544,9 @@
     gap: 10px;
   }
   .adder {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .kind-sel {
-    width: auto;
-    min-width: 190px;
-  }
-  .grow {
-    flex: 1;
-    min-width: 180px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
   }
   .item-list {
     display: grid;

@@ -76,17 +76,18 @@ type Monitor struct {
 	log       *slog.Logger
 	publicURL string
 
-	ctx       context.Context
-	sem       chan struct{}
-	mu        sync.Mutex
-	runners   map[int64]context.CancelFunc
-	states    map[int64]*state
-	watchers  map[int64]*logWatcher
-	silence   map[string]time.Time // host/stack -> until
-	batches   map[string]*batch
-	agentDown map[string]time.Time // agent ID -> time when offline alert was sent
-	started   time.Time            // when this hub process started watching
-	kicks     map[int64]chan struct{}
+	ctx         context.Context
+	sem         chan struct{}
+	mu          sync.Mutex
+	runners     map[int64]context.CancelFunc
+	states      map[int64]*state
+	watchers    map[int64]*logWatcher
+	silence     map[string]time.Time // host/stack -> until
+	hostSilence map[string]time.Time // hostID -> until (silences host-offline alerts during self-update)
+	batches     map[string]*batch
+	agentDown   map[string]time.Time // agent ID -> time when offline alert was sent
+	started     time.Time            // when this hub process started watching
+	kicks       map[int64]chan struct{}
 
 	// planned maintenance (maintenance.go)
 	maint        *maintIndex
@@ -116,7 +117,7 @@ func New(st *store.Store, reg *host.Registry, log *slog.Logger, publicURL string
 		st: st, reg: reg, log: log, publicURL: strings.TrimRight(publicURL, "/"),
 		sem: make(chan struct{}, maxParallel), runners: map[int64]context.CancelFunc{},
 		states: map[int64]*state{}, watchers: map[int64]*logWatcher{},
-		silence: map[string]time.Time{}, batches: map[string]*batch{},
+		silence: map[string]time.Time{}, hostSilence: map[string]time.Time{}, batches: map[string]*batch{},
 		agentDown: map[string]time.Time{}, kicks: map[int64]chan struct{}{},
 		maint: &maintIndex{}, maintLogged: map[string]bool{}, maintReload: make(chan struct{}, 1),
 		alertsSent: map[string]uint64{}, alertsFailed: map[string]uint64{},
@@ -1060,6 +1061,31 @@ func (m *Monitor) watchAgents(ctx context.Context) {
 	}
 }
 
+// SilenceHost suppresses host-offline watchdog alerts for hostID for duration d
+// (used while an agent disconnects to install a self-update or rollback).
+func (m *Monitor) SilenceHost(hostID string, d time.Duration) {
+	if m == nil || hostID == "" || d <= 0 {
+		return
+	}
+	until := time.Now().Add(d)
+	m.mu.Lock()
+	if until.After(m.hostSilence[hostID]) {
+		m.hostSilence[hostID] = until
+	}
+	delete(m.agentDown, hostID)
+	m.mu.Unlock()
+}
+
+// ClearHostSilence ends an active host-offline alert silence for hostID.
+func (m *Monitor) ClearHostSilence(hostID string) {
+	if m == nil || hostID == "" {
+		return
+	}
+	m.mu.Lock()
+	delete(m.hostSilence, hostID)
+	m.mu.Unlock()
+}
+
 // CheckWatchdogAgents checks whether any participating watchdog agent has been
 // disconnected longer than grace (its own network or host issue, while the hub is alive)
 // and sends an offline or recovery alert through the watchdog channel.
@@ -1093,7 +1119,21 @@ func (m *Monitor) CheckWatchdogAgents(ctx context.Context, now time.Time) {
 		_, _, connected := m.reg.Remote(a.ID)
 		m.mu.Lock()
 		downSince, wasDown := m.agentDown[a.ID]
+		silenceUntil := m.hostSilence[a.ID]
+		silenced := !silenceUntil.IsZero() && now.Before(silenceUntil)
+		if silenced || (connected && !silenceUntil.IsZero()) {
+			if silenced {
+				delete(m.agentDown, a.ID)
+			}
+			if connected {
+				delete(m.hostSilence, a.ID)
+			}
+		}
 		m.mu.Unlock()
+
+		if silenced {
+			continue
+		}
 
 		if connected {
 			if wasDown {

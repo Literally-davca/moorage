@@ -57,24 +57,24 @@
 
 {#if step === 1}
   <AuthFrame title="Set up Moorage" lead="Create the admin account. You'll add an authenticator app in the next step.">
-    <form onsubmit={start} class="form">
+    <form method="post" onsubmit={start} class="form">
       <div>
         <label class="label" for="token">Setup token</label>
-        <input id="token" class="field mono" bind:value={token} autocomplete="off" required spellcheck="false" />
+        <input id="token" name="setup-token" class="field mono" bind:value={token} autocomplete="off" required spellcheck="false" />
         <p class="hint">Printed in the Moorage log on first start.</p>
       </div>
       <div>
         <label class="label" for="user">Username</label>
-        <input id="user" class="field" bind:value={username} autocomplete="username" required />
+        <input id="user" name="username" class="field" bind:value={username} autocomplete="username" required />
       </div>
       <div>
         <label class="label" for="pw">Password</label>
-        <input id="pw" class="field" type="password" bind:value={password} autocomplete="new-password" minlength="12" required />
+        <input id="pw" name="new-password" class="field" type="password" bind:value={password} autocomplete="new-password" minlength="12" required />
         <p class="hint">At least 12 characters.</p>
       </div>
       <div>
         <label class="label" for="pw2">Confirm password</label>
-        <input id="pw2" class="field" type="password" bind:value={confirm} autocomplete="new-password" required />
+        <input id="pw2" name="confirm-password" class="field" type="password" bind:value={confirm} autocomplete="new-password" required />
       </div>
       {#if error}<p class="error-text" role="alert">{error}</p>{/if}
       <button class="btn btn-primary wide" aria-busy={busy}>Continue</button>
@@ -82,7 +82,7 @@
   </AuthFrame>
 {:else}
   <AuthFrame title="Add two-factor sign-in" lead="Scan the code with an authenticator app, then enter the 6-digit code it shows.">
-    <form onsubmit={finish} class="form">
+    <form method="post" onsubmit={finish} class="form">
       <div class="qr">
         <img src={qr} alt="QR code for your authenticator app" width="180" height="180" />
       </div>
@@ -92,7 +92,7 @@
       </details>
       <div>
         <label class="label" for="code">Code</label>
-        <input id="code" class="field mono code" bind:value={code} inputmode="numeric" autocomplete="one-time-code"
+        <input id="code" name="otp" class="field mono code" bind:value={code} inputmode="numeric" autocomplete="one-time-code"
           maxlength="7" required />
       </div>
       {#if error}<p class="error-text" role="alert">{error}</p>{/if}

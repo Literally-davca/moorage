@@ -3,6 +3,7 @@
   import { api, type Channel, type CheckInput, type CheckKind, type CheckTestResult, type HostEntry, type Quorum, type StackSummary } from '../lib/api';
   import { app } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import MultiSelect from '../lib/MultiSelect.svelte';
   import { emptyCheck, kindName, quorumText, remoteKinds, toInput, voteText } from '../lib/checks';
 
   let { id, host, stack }: { id: number | null; host?: string; stack?: string } = $props();
@@ -110,9 +111,8 @@
     return '';
   }
 
-  function toggleLocation(loc: string, on: boolean) {
-    form.locations = on ? [...form.locations.filter((l) => l !== loc), loc] : form.locations.filter((l) => l !== loc);
-    if (form.locations.length >= 2 && !form.quorum) form.quorum = 'majority';
+  function locationsChanged(next: string[]) {
+    if (next.length >= 2 && !form.quorum) form.quorum = 'majority';
   }
 
   const canSubmit = $derived.by(() => {
@@ -187,10 +187,6 @@
     } finally {
       saving = false;
     }
-  }
-
-  function toggleChannel(chId: number, on: boolean) {
-    form.channels = on ? [...form.channels, chId] : form.channels.filter((x) => x !== chId);
   }
 </script>
 
@@ -354,20 +350,8 @@
       {#if isRemote}
         <fieldset class="locs">
           <legend class="label">Check from</legend>
-          <div class="chans">
-            <label class="checkbox">
-              <input type="checkbox" checked={form.locations.includes('hub')} onchange={(e) => toggleLocation('hub', e.currentTarget.checked)} />
-              <span>Hub <span class="meta">this Moorage</span></span>
-            </label>
-            {#each agents as h (h.id)}
-              {@const reason = agentReason(h)}
-              {@const on = form.locations.includes(h.id)}
-              <label class="checkbox" class:off={!!reason}>
-                <input type="checkbox" checked={on} disabled={!!reason && !on} onchange={(e) => toggleLocation(h.id, e.currentTarget.checked)} />
-                <span>{h.name}{#if reason}<span class="meta"> · {reason}</span>{/if}</span>
-              </label>
-            {/each}
-          </div>
+          <MultiSelect label="Check from" placeholder="Pick locations" bind:selected={form.locations} onchange={locationsChanged}
+            items={[{ value: 'hub', label: 'Hub', meta: 'this Moorage' }, ...agents.map((h) => ({ value: h.id, label: h.name, disabled: agentReason(h) || undefined }))]} />
           {#if form.locations.length === 0}<p class="hint bad">Pick at least one location.</p>{/if}
           {#if form.locations.length >= 2}
             <div class="quorum">
@@ -405,14 +389,9 @@
         {#if channels.length === 0}
           <p class="hint">No notification channels yet. <a href="#/notifications">Add one</a>, the check will still record incidents.</p>
         {:else}
-          <div class="chans">
-            {#each channels as ch (ch.id)}
-              <label class="checkbox">
-                <input type="checkbox" checked={form.channels.includes(ch.id)} onchange={(e) => toggleChannel(ch.id, e.currentTarget.checked)} />
-                <span>{ch.name} <span class="meta">{ch.kind}{ch.enabled ? '' : ' · off'}</span></span>
-              </label>
-            {/each}
-          </div>
+          <MultiSelect label="Send alerts to" placeholder="No channel (incidents only)"
+            items={channels.map((ch) => ({ value: String(ch.id), label: ch.name, meta: ch.kind + (ch.enabled ? '' : ' · off') }))}
+            selected={form.channels.map(String)} onchange={(v) => (form.channels = v.map(Number))} />
         {/if}
       </div>
 
@@ -608,11 +587,6 @@
   .link .two {
     margin-bottom: 0;
   }
-  .chans {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px 20px;
-  }
   .locs {
     border: 0;
     padding: 0;
@@ -620,9 +594,6 @@
     display: grid;
     gap: 10px;
     min-width: 0;
-  }
-  .locs .off {
-    color: var(--haze);
   }
   .quorum {
     max-width: 280px;

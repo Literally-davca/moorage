@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dismiss } from '../lib/dismiss';
   import {
     api,
     formatBytes,
@@ -17,6 +18,7 @@
   import { app, canEdit, currentHost, go, isAdmin } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import CodeEditor from '../lib/CodeEditor.svelte';
+  import EnvEditor from '../lib/EnvEditor.svelte';
   import Confirm from '../lib/Confirm.svelte';
   import LogViewer from './LogViewer.svelte';
   import OpPanel from './OpPanel.svelte';
@@ -307,6 +309,49 @@
     }
   }
 
+  // Moorage's own stack: Restart and Apply & restart take this node down for a moment.
+  // On the hub's own host the page waits for Moorage to answer again and reloads.
+  let selfMsg = $state('');
+  const ownHub = $derived(currentHost()?.kind === 'local');
+  async function waitForMoorage() {
+    selfMsg = 'Moorage is restarting… this page reloads when it is back.';
+    let sawDown = false;
+    const until = Date.now() + 3 * 60 * 1000;
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        await api.session();
+        if (sawDown) {
+          location.reload();
+          return;
+        }
+      } catch {
+        sawDown = true;
+      }
+    }
+    selfMsg = sawDown
+      ? 'Moorage did not come back within 3 minutes. Check the host; a failed change is rolled back automatically.'
+      : 'Moorage kept running: nothing needed a restart.';
+  }
+  async function selfRestart() {
+    await run('restart');
+    if (!actionError && ownHub) void waitForMoorage();
+    else if (!actionError) selfMsg = 'The agent restarts and reconnects within a minute.';
+  }
+  async function selfApply() {
+    actionError = '';
+    saveError = '';
+    try {
+      await api.selfApply(name, draftCompose, draftEnv);
+      savedCompose = draftCompose;
+      savedEnv = draftEnv;
+      if (ownHub) void waitForMoorage();
+      else selfMsg = 'Applying: the agent restarts and reconnects within a minute. A change that breaks it is rolled back.';
+    } catch (e) {
+      actionError = (e as Error).message;
+    }
+  }
+
   async function save() {
     saving = true;
     saveError = '';
@@ -379,14 +424,28 @@
           </div>
         </div>
 
-        {#if editable}
+        {#if editable && stack.self}
+          <div class="actions">
+            <button class="btn" onclick={selfRestart} disabled={stack.busy || stack.running === 0}><Icon name="refresh" /> Restart</button>
+            <button class="btn btn-primary" onclick={selfApply} disabled={stack.busy || !!validation}
+              title="Save the files and recreate Moorage; rolled back if it doesn't come back"><Icon name="play" /> Apply & restart</button>
+            <div class="more" use:dismiss={() => (menuOpen = false)}>
+              <button class="btn btn-icon" onclick={() => (menuOpen = !menuOpen)} aria-label="More actions" aria-expanded={menuOpen}><Icon name="dots" /></button>
+              {#if menuOpen}
+                <div class="menu card" role="menu">
+                  <button role="menuitem" onclick={() => run('pull')}><Icon name="download" /> Pull images only</button>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {:else if editable}
           <div class="actions">
             <button class="btn" onclick={() => run('restart')} disabled={stack.busy || stack.running === 0}><Icon name="refresh" /> Restart</button>
             <button class="btn" onclick={() => run('stop')} disabled={stack.busy || stack.running === 0}><Icon name="stop" /> Stop</button>
             <button class="btn {dirty && tab === 'compose' ? '' : 'btn-primary'}" onclick={() => run('up')} disabled={stack.busy} title={dirty ? 'Save your changes first to deploy them' : ''}>
               <Icon name="play" /> Deploy
             </button>
-            <div class="more">
+            <div class="more" use:dismiss={() => (menuOpen = false)}>
               <button class="btn btn-icon" onclick={() => (menuOpen = !menuOpen)} aria-label="More actions" aria-expanded={menuOpen}><Icon name="dots" /></button>
               {#if menuOpen}
                 <div class="menu card" role="menu">
@@ -401,6 +460,17 @@
           </div>
         {/if}
       </div>
+      {#if stack.self}
+        <p class="note">
+          Moorage runs from this stack, so it can't be stopped, taken down or deleted here. <strong>Apply & restart</strong> saves your
+          changes and recreates Moorage from a helper container; if Moorage doesn't come back within 2 minutes, the previous files are
+          put back. To update Moorage itself, use <a href="#/hosts">Moorage updates</a>.
+        </p>
+        {#if selfMsg}<p class="note" role="status">{selfMsg}</p>{/if}
+        {#if stack.selfResult && !stack.selfResult.ok}
+          <p class="error-text" role="alert">Last Apply & restart ({new Date(stack.selfResult.at).toLocaleString()}): {stack.selfResult.message}</p>
+        {/if}
+      {/if}
       {#if !stack.managed}
         <p class="note">
           This stack runs from <code>{stack.location || 'another folder'}</code>, outside the Moorage stacks folder. You can
@@ -695,7 +765,7 @@
           <span class="section-title">.env</span>
           <span class="meta">Variables for <code>$&#123;VAR&#125;</code> in the compose file. Leave empty to remove the file.</span>
         </div>
-        <CodeEditor bind:value={draftEnv} language="plain" label=".env file" readonly={!editable} minHeight={96} />
+        <EnvEditor bind:value={draftEnv} compose={draftCompose} readonly={!editable} />
         {#if dirty}<p class="meta">Save, then Deploy to apply the changes.</p>{/if}
       </section>
     {:else if tab === 'history'}

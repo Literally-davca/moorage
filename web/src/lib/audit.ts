@@ -3,6 +3,7 @@
 const labels: Record<string, string> = {
   'stack.create': 'Created stack',
   'stack.save': 'Saved stack',
+  'stack.self_apply': 'Applied & restarted Moorage stack',
   'stack.delete': 'Deleted stack',
   'stack.up': 'Deployed stack',
   'stack.down': 'Took stack down',
@@ -19,6 +20,12 @@ const labels: Record<string, string> = {
   'image.auto_update': 'Auto-updated images',
   'updates.settings': 'Saved update settings',
   'updates.check': 'Checked all images',
+  'update.check': 'Checked Moorage releases',
+  'update.apply': 'Started Moorage update',
+  'update.rollback': 'Started Moorage rollback',
+  'update.done': 'Completed Moorage update',
+  'update.failed': 'Moorage update failed',
+  'update.rolled_back': 'Moorage update rolled back',
   'host.add': 'Created join token',
   'host.paired': 'Paired agent',
   'host.rename': 'Renamed host',
@@ -48,6 +55,20 @@ const labels: Record<string, string> = {
   'auth.login_failed': 'Failed sign-in',
   'auth.logout': 'Signed out',
   'auth.setup': 'Finished setup',
+  'auth.invite_accept': 'Finished invite or reset link',
+  'auth.oidc_login': 'Signed in with SSO',
+  'auth.oidc_denied': 'SSO sign-in refused',
+  'auth.proxy_login': 'Signed in through proxy',
+  'user.create': 'Invited user',
+  'user.role': 'Changed user role',
+  'user.disable': 'Disabled user',
+  'user.enable': 'Enabled user',
+  'user.delete': 'Deleted user',
+  'user.reset': 'Issued reset link',
+  'user.sessions_revoke': 'Signed user out everywhere',
+  'account.password': 'Changed own password',
+  'account.totp': 'Re-enrolled two-factor',
+  'account.session_revoke': 'Signed out own session',
 };
 
 export function auditLabel(action: string): string {
@@ -59,6 +80,7 @@ export const auditGroups: { prefix: string; name: string }[] = [
   { prefix: 'stack.', name: 'Stacks' },
   { prefix: 'image.', name: 'Images' },
   { prefix: 'updates.', name: 'Update settings' },
+  { prefix: 'update.', name: 'Moorage updates' },
   { prefix: 'terminal.', name: 'Terminal' },
   { prefix: 'host.', name: 'Hosts' },
   { prefix: 'check.', name: 'Checks' },
@@ -68,6 +90,8 @@ export const auditGroups: { prefix: string; name: string }[] = [
   { prefix: 'maintenance.', name: 'Maintenance' },
   { prefix: 'template_source.', name: 'Template indexes' },
   { prefix: 'auth.', name: 'Sign-in' },
+  { prefix: 'user.', name: 'Users' },
+  { prefix: 'account.', name: 'Own account' },
 ];
 
 const when = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
