@@ -564,7 +564,7 @@ func (s *Service) Overview(ctx context.Context) (OverviewResponse, error) {
 	}
 
 	return OverviewResponse{
-		Channel:     s.Cfg.UpdateChannel,
+		Channel:     s.Checker.CurrentChannel(),
 		UpdateURL:   s.Cfg.UpdateURL,
 		LastChecked: cs.LastChecked,
 		CheckError:  cs.Error,

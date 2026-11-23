@@ -19,27 +19,38 @@ type diagnosticItem struct {
 }
 
 type settingsConfigResp struct {
-	PublicURL       string           `json:"publicUrl"`
-	MetricsTokenSet bool             `json:"metricsTokenSet"`
-	MetricsToken    string           `json:"metricsToken,omitempty"`
-	MetricsURL      string           `json:"metricsUrl"`
-	UpdateChannel   string           `json:"updateChannel"`
-	CleanupEnabled  bool             `json:"cleanupEnabled"`
-	CleanupSchedule string           `json:"cleanupSchedule"`
-	CleanupVolumes  bool             `json:"cleanupVolumes"`
-	FromEnv         map[string]bool  `json:"fromEnv"`
-	EnvLocks        map[string]bool  `json:"envLocks"`
-	Diagnostics     []diagnosticItem `json:"diagnostics"`
+	PublicURL string `json:"publicUrl"`
+	// PublicURLRestart: the saved URL differs from the one this process started with.
+	PublicURLRestart bool             `json:"publicUrlRestart"`
+	MetricsTokenSet  bool             `json:"metricsTokenSet"`
+	MetricsToken     string           `json:"metricsToken,omitempty"`
+	MetricsURL       string           `json:"metricsUrl"`
+	UpdateChannel    string           `json:"updateChannel"`
+	CleanupEnabled   bool             `json:"cleanupEnabled"`
+	CleanupSchedule  string           `json:"cleanupSchedule"`
+	CleanupVolumes   bool             `json:"cleanupVolumes"`
+	FromEnv          map[string]bool  `json:"fromEnv"`
+	EnvLocks         map[string]bool  `json:"envLocks"`
+	Diagnostics      []diagnosticItem `json:"diagnostics"`
 }
 
 func (s *Server) effectivePublicURL(ctx context.Context) string {
-	if s.cfg.PublicURL != "" {
+	if s.cfg.PublicURLSet {
 		return strings.TrimRight(s.cfg.PublicURL, "/")
 	}
 	if v, err := s.store.GetSetting(ctx, store.SettingPublicURL); err == nil && v != "" {
 		return strings.TrimRight(v, "/")
 	}
-	return ""
+	return strings.TrimRight(s.cfg.PublicURL, "/") // what this process started with
+}
+
+// publicURLNeedsRestart: the URL saved in Settings differs from the one in use.
+func (s *Server) publicURLNeedsRestart(ctx context.Context) bool {
+	if s.cfg.PublicURLSet {
+		return false
+	}
+	v, err := s.store.GetSetting(ctx, store.SettingPublicURL)
+	return err == nil && strings.TrimRight(v, "/") != strings.TrimRight(s.cfg.PublicURL, "/")
 }
 
 func (s *Server) effectiveMetricsToken(ctx context.Context) string {
@@ -86,15 +97,16 @@ func (s *Server) getSettingsConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := settingsConfigResp{
-		PublicURL:       pubURL,
-		MetricsTokenSet: tok != "",
-		MetricsURL:      metricsURL,
-		UpdateChannel:   ch,
-		CleanupEnabled:  cleanupEnabled,
-		CleanupSchedule: cleanupSched,
-		CleanupVolumes:  cleanupVolumes,
+		PublicURL:        pubURL,
+		PublicURLRestart: s.publicURLNeedsRestart(ctx),
+		MetricsTokenSet:  tok != "",
+		MetricsURL:       metricsURL,
+		UpdateChannel:    ch,
+		CleanupEnabled:   cleanupEnabled,
+		CleanupSchedule:  cleanupSched,
+		CleanupVolumes:   cleanupVolumes,
 		FromEnv: map[string]bool{
-			"publicUrl":     s.cfg.PublicURL != "",
+			"publicUrl":     s.cfg.PublicURLSet,
 			"metricsToken":  s.cfg.MetricsToken != "",
 			"updateChannel": s.cfg.UpdateChannelSet,
 		},
@@ -124,7 +136,7 @@ func (s *Server) putSettingsConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	if req.PublicURL != nil && s.cfg.PublicURL == "" {
+	if req.PublicURL != nil && !s.cfg.PublicURLSet {
 		v := strings.TrimRight(strings.TrimSpace(*req.PublicURL), "/")
 		if v != "" {
 			u, err := url.Parse(v)
@@ -160,6 +172,9 @@ func (s *Server) putSettingsConfig(w http.ResponseWriter, r *http.Request) {
 		if err := s.store.SetSetting(ctx, store.SettingUpdateChannel, v); err != nil {
 			s.engErr(w, err)
 			return
+		}
+		if s.sysUpd != nil && s.sysUpd.Checker != nil {
+			s.sysUpd.Checker.SetChannel(v)
 		}
 	}
 

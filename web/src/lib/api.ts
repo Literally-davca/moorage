@@ -87,8 +87,34 @@ export interface DiagnosticItem {
   title: string;
   detail: string;
 }
+export interface ImportPreview {
+  token: string;
+  exportedAt: string;
+  version: string;
+  database: { schemaVersion: number; users: number; agents: number; checks: number; channels: number; statusPages: number };
+  hosts: {
+    id: string;
+    name: string;
+    known: boolean;
+    writable: boolean;
+    history: boolean;
+    stacks: { name: string; exists: boolean }[];
+  }[];
+  skipped?: string[];
+}
+
+async function rawError(res: Response): Promise<string> {
+  const text = await res.text();
+  try {
+    return (JSON.parse(text) as { error?: string }).error || res.statusText;
+  } catch {
+    return text || res.statusText;
+  }
+}
+
 export interface SettingsConfig {
   publicUrl: string;
+  publicUrlRestart: boolean;
   metricsTokenSet: boolean;
   metricsUrl: string;
   updateChannel: 'stable' | 'pre';
@@ -1151,28 +1177,43 @@ export const api = {
   saveSettingsConfig: (patch: Partial<{ publicUrl: string; metricsToken: string; updateChannel: string; cleanupEnabled: boolean; cleanupSchedule: string; cleanupVolumes: boolean }>) =>
     request<SettingsConfig>('PUT', '/api/settings/config', patch),
   generateMetricsToken: () => request<{ token: string }>('POST', '/api/settings/metrics-token'),
-  exportBackupURL: () => '/api/settings/backup/export',
-  importBackup: async (file: File) => {
-    const res = await fetch('/api/settings/backup/import', {
+  /** Downloads an encrypted backup (.mbk) of the hub database, stacks and histories. */
+  exportBackup: async (password: string) => {
+    const res = await fetch('/api/settings/backup/export', {
       method: 'POST',
-      headers: { 'X-Moorage': '1' },
+      headers: { 'X-Moorage': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (!res.ok) throw new Error(await rawError(res));
+    const blob = await res.blob();
+    const name = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') ?? '')?.[1] ?? 'moorage-backup.mbk';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  },
+  /** Uploads and checks a backup; nothing changes until importBackupApply. */
+  importBackupPreview: async (file: File, password: string) => {
+    const res = await fetch('/api/settings/backup/import/preview', {
+      method: 'POST',
+      headers: { 'X-Moorage': '1', 'Content-Type': 'application/octet-stream', 'X-Backup-Password': password },
       body: file,
     });
-    if (!res.ok) {
-      const text = await res.text();
-      let msg = res.statusText;
-      try {
-        msg = (JSON.parse(text) as { error?: string }).error || msg;
-      } catch {
-        if (text) msg = text;
-      }
-      throw new Error(msg);
-    }
-    return (await res.json()) as { restoredStacks: number; dbStaged: boolean; message: string };
+    if (!res.ok) throw new Error(await rawError(res));
+    return (await res.json()) as ImportPreview;
   },
+  pushKey: () => request<{ publicKey: string; endpoints: string[] }>('GET', '/api/push/key'),
+  pushSubscribe: (sub: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    request<void>('POST', '/api/push/subscriptions', sub),
+  pushUnsubscribe: (endpoint: string) => request<void>('POST', '/api/push/subscriptions/delete', { endpoint }),
+  pushTest: () => request<{ sent: number }>('POST', '/api/push/test'),
+  importBackupApply: (token: string, database: boolean, stacks: boolean) =>
+    request<{ restoredStacks: number; failedStacks: string[]; dbStaged: boolean }>('POST', '/api/settings/backup/import/apply', { token, database, stacks }),
   deletedStacks: (host?: string) => request<DeletedStack[]>('GET', `/api/hosts/${enc(host ?? app.host)}/deleted-stacks`),
   restoreDeletedStack: (name: string, hash: string, deploy = false, host?: string) =>
-    request<void>('POST', `/api/hosts/${enc(host ?? app.host)}/deleted-stacks/${enc(name)}/restore`, { hash, deploy }),
+    request<{ deployError?: string }>('POST', `/api/hosts/${enc(host ?? app.host)}/deleted-stacks/${enc(name)}/restore`, { hash, deploy }),
   prunePreview: (hostId: string) => request<PrunePreview>('GET', `/api/hosts/${enc(hostId)}/prune/preview`),
   pruneDisk: (hostId: string, body: PruneRequest) => request<PruneResult>('POST', `/api/hosts/${enc(hostId)}/prune`, body),
   autoRollbacks: () => request<AutoRollback[]>('GET', '/api/auto-rollbacks'),

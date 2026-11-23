@@ -806,36 +806,6 @@ volumes:
     border-top: 1px solid var(--rope);
     padding-top: 12px;
   }
-  .term-audit {
-    display: grid;
-    gap: 8px;
-  }
-  .term-table-wrap {
-    overflow-x: auto;
-    margin-top: 6px;
-  }
-  .term-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
-  .term-table th {
-    text-align: left;
-    font-size: 11px;
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    color: var(--haze);
-    padding: 8px 10px;
-  }
-  .term-table td {
-    padding: 8px 10px;
-    border-top: 1px solid var(--rope);
-    vertical-align: middle;
-  }
-  .term-table .foam {
-    color: var(--foam);
-    font-weight: 500;
-  }
 
   @media (max-width: 767px) {
     .wd-grid {

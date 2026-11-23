@@ -1,17 +1,9 @@
 package api
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -71,11 +63,17 @@ func (s *Server) restoreDeletedStack(w http.ResponseWriter, r *http.Request) {
 		s.engErr(w, err)
 		return
 	}
-	if req.Deploy {
-		_, _ = h.RunAction(r.Context(), name, "up", user)
-	}
 	setAuditTarget(r, name)
-	writeJSON(w, http.StatusOK, ver)
+	if req.Deploy {
+		// The definition is back either way; a failed start is reported, not hidden.
+		op, err := h.RunAction(r.Context(), name, "up", user)
+		if err != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"version": ver, "deployError": err.Error()})
+			return
+		}
+		s.watchOp(h, r.PathValue("host"), name, "up", op.ID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": ver})
 }
 
 func (s *Server) prunePreview(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +121,7 @@ func (s *Server) pruneDisk(w http.ResponseWriter, r *http.Request) {
 
 // StartCleanupLoop runs daily automatic disk cleanup when enabled in General settings.
 func (s *Server) StartCleanupLoop(ctx context.Context) {
+	s.cleanBackupTemp()
 	go func() {
 		t := time.NewTicker(1 * time.Minute)
 		defer t.Stop()
@@ -194,217 +193,6 @@ func (s *Server) runDailyCleanup(ctx context.Context, req engine.PruneRequest) {
 			Outcome: "ok",
 		})
 	}
-}
-
-type backupManifest struct {
-	Format     int       `json:"format"`
-	ExportedAt time.Time `json:"exportedAt"`
-	Version    string    `json:"version"`
-}
-
-func (s *Server) exportBackup(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	tmpDB := filepath.Join(os.TempDir(), fmt.Sprintf("moorage-export-%d.db", time.Now().UnixNano()))
-	defer os.Remove(tmpDB)
-
-	if err := s.store.BackupTo(ctx, tmpDB); err != nil {
-		s.engErr(w, err)
-		return
-	}
-	dbBytes, err := os.ReadFile(tmpDB)
-	if err != nil {
-		s.engErr(w, err)
-		return
-	}
-
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-
-	addFile := func(name string, data []byte) error {
-		hdr := &tar.Header{
-			Name:    name,
-			Mode:    0o600,
-			Size:    int64(len(data)),
-			ModTime: time.Now(),
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		_, err := tw.Write(data)
-		return err
-	}
-
-	manifestBytes, _ := json.MarshalIndent(backupManifest{
-		Format:     1,
-		ExportedAt: time.Now().UTC(),
-		Version:    s.version,
-	}, "", "  ")
-	if err := addFile("manifest.json", manifestBytes); err != nil {
-		s.engErr(w, err)
-		return
-	}
-	if err := addFile("moorage.db", dbBytes); err != nil {
-		s.engErr(w, err)
-		return
-	}
-
-	if s.reg != nil {
-		if hosts, err := s.reg.List(ctx); err == nil {
-			for _, meta := range hosts {
-				if !meta.Connected {
-					continue
-				}
-				h, _, err := s.reg.Get(ctx, meta.ID)
-				if err != nil {
-					continue
-				}
-				stacks, err := h.ListStacks(ctx)
-				if err != nil {
-					continue
-				}
-				for _, st := range stacks {
-					if !st.Managed {
-						continue
-					}
-					det, err := h.GetStack(ctx, st.Name)
-					if err != nil {
-						continue
-					}
-					prefix := "stacks/" + meta.ID + "/" + st.Name + "/"
-					if det.Compose != "" {
-						_ = addFile(prefix+"compose.yaml", []byte(det.Compose))
-					}
-					if det.Env != "" {
-						_ = addFile(prefix+".env", []byte(det.Env))
-					}
-				}
-			}
-		}
-	}
-
-	if err := tw.Close(); err != nil {
-		s.engErr(w, err)
-		return
-	}
-	if err := gz.Close(); err != nil {
-		s.engErr(w, err)
-		return
-	}
-
-	setAuditTarget(r, "backup")
-	w.Header().Set("Content-Type", "application/gzip")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="moorage-backup-%s.tar.gz"`, time.Now().Format("2006-01-02")))
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(buf.Bytes())
-}
-
-func (s *Server) importBackup(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	const maxUpload = 64 << 20
-	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
-
-	gz, err := gzip.NewReader(r.Body)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "Invalid gzip archive: "+err.Error())
-		return
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	var hasManifest bool
-	var dbData []byte
-	type stackFiles struct {
-		compose string
-		env     string
-	}
-	stacks := map[string]map[string]*stackFiles{} // hostID -> stackName -> files
-
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "Corrupt tar archive: "+err.Error())
-			return
-		}
-		if hdr.Typeflag != tar.TypeReg || hdr.Size > 32<<20 {
-			continue
-		}
-		data, err := io.ReadAll(io.LimitReader(tr, 32<<20))
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		switch {
-		case hdr.Name == "manifest.json":
-			var m backupManifest
-			if err := json.Unmarshal(data, &m); err != nil || m.Format != 1 {
-				writeErr(w, http.StatusBadRequest, "Unsupported backup manifest.")
-				return
-			}
-			hasManifest = true
-		case hdr.Name == "moorage.db":
-			dbData = data
-		case strings.HasPrefix(hdr.Name, "stacks/"):
-			parts := strings.Split(strings.TrimPrefix(hdr.Name, "stacks/"), "/")
-			if len(parts) != 3 {
-				continue
-			}
-			hostID, stName, file := parts[0], parts[1], parts[2]
-			if stacks[hostID] == nil {
-				stacks[hostID] = map[string]*stackFiles{}
-			}
-			if stacks[hostID][stName] == nil {
-				stacks[hostID][stName] = &stackFiles{}
-			}
-			if file == "compose.yaml" {
-				stacks[hostID][stName].compose = string(data)
-			} else if file == ".env" {
-				stacks[hostID][stName].env = string(data)
-			}
-		}
-	}
-
-	if !hasManifest || len(dbData) == 0 {
-		writeErr(w, http.StatusBadRequest, "Archive is missing manifest.json or moorage.db.")
-		return
-	}
-
-	// Stage database restore as moorage.db.restore next to moorage.db so next restart swaps it atomically,
-	// and restore stack definitions to connected writable hosts immediately.
-	restorePath := filepath.Join(s.cfg.DataDir, "moorage.db.restore")
-	if err := os.WriteFile(restorePath, dbData, 0o600); err != nil {
-		s.engErr(w, err)
-		return
-	}
-
-	restoredStacks := 0
-	user := currentUser(r).Username
-	if s.reg != nil {
-		for hostID, hostStacks := range stacks {
-			h, meta, err := s.reg.Get(ctx, hostID)
-			if err != nil || meta.ReadOnly {
-				continue
-			}
-			for stName, files := range hostStacks {
-				if files.compose == "" {
-					continue
-				}
-				if err := h.Save(ctx, stName, files.compose, files.env, user, false); err == nil {
-					restoredStacks++
-				}
-			}
-		}
-	}
-
-	setAuditTarget(r, fmt.Sprintf("backup (%d stacks)", restoredStacks))
-	writeJSON(w, http.StatusOK, map[string]any{
-		"restoredStacks": restoredStacks,
-		"dbStaged":       true,
-		"message":        "Stack definitions restored. Restart Moorage to activate the imported database.",
-	})
 }
 
 func (s *Server) listAutoRollbacks(w http.ResponseWriter, r *http.Request) {

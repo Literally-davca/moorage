@@ -44,20 +44,13 @@
 
   // Revealed secret rows, by key, for this view only.
   let revealed = $state<Record<string, boolean>>({});
-  let dismissedAuto = new Set<string>();
-
-  $effect(() => {
-    if (readonly || !compose) return;
-    const toAdd: EnvLine[] = [];
-    for (const k of used.all) {
-      if (!keyCount.has(k) && !dismissedAuto.has(k)) {
-        toAdd.push({ kind: 'var', key: k, value: used.defaults.get(k) ?? '' });
-      }
-    }
-    if (toAdd.length > 0) {
-      write([...lines, ...toAdd]);
-    }
-  });
+  // Variables compose.yaml reads that .env doesn't define yet. They are offered, not
+  // written on their own: opening a stack must not leave unsaved changes behind.
+  const notInEnv = $derived([...used.all].filter((k) => !keyCount.has(k)).sort());
+  function addAll() {
+    // Empty values: `${VAR:-default}` still falls back to its default (shown as placeholder).
+    write([...lines, ...notInEnv.map((k): EnvLine => ({ kind: 'var', key: k, value: '' }))]);
+  }
 
   function write(next: EnvLine[]) {
     value = serializeEnv(next);
@@ -69,12 +62,9 @@
     write(next);
   }
   function remove(i: number) {
-    const cur = lines[i];
-    if (cur?.kind === 'var' && cur.key) dismissedAuto.add(cur.key);
     write(lines.filter((_, j) => j !== i));
   }
   function add(key = '', val = '') {
-    if (key) dismissedAuto.delete(key);
     write([...lines, { kind: 'var', key, value: val }]);
   }
 
@@ -114,13 +104,19 @@
     {/if}
   </div>
 
-  {#if missing.length && !readonly}
-    <div class="missing" role="status">
-      <Icon name="alert" />
-      <span>The compose file needs {missing.length === 1 ? 'a variable' : 'variables'} without a default:</span>
-      {#each missing as k (k)}
-        <button type="button" class="chip mono" onclick={() => add(k)}><Icon name="plus" /> {k}</button>
+  {#if notInEnv.length && !readonly}
+    <div class="missing" class:soft={!missing.length} role="status">
+      <Icon name={missing.length ? 'alert' : 'plus'} />
+      <span>
+        {notInEnv.length === 1 ? 'A variable' : `${notInEnv.length} variables`} from the compose file {notInEnv.length === 1 ? "isn't" : "aren't"} in .env{missing.length ? `, ${missing.length} without a default` : ''}:
+      </span>
+      {#each notInEnv as k (k)}
+        <button type="button" class="chip mono" class:req={missing.includes(k)} onclick={() => add(k)}
+          title={missing.includes(k) ? 'Required: no default in compose.yaml' : 'Has a default in compose.yaml'}><Icon name="plus" /> {k}</button>
       {/each}
+      {#if notInEnv.length > 1}
+        <button type="button" class="chip all" onclick={addAll}>Add all</button>
+      {/if}
     </div>
   {/if}
 
@@ -237,6 +233,19 @@
     font-size: 12px;
     font-weight: 500;
     cursor: pointer;
+  }
+  .chip.req {
+    background: var(--signal);
+    color: var(--deep-water);
+  }
+  .chip.all {
+    background: transparent;
+    color: inherit;
+    text-decoration: underline;
+  }
+  .missing.soft {
+    background: var(--well);
+    color: var(--haze);
   }
   .rows {
     display: grid;

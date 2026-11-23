@@ -22,12 +22,12 @@ func TestExtractContainerURLs(t *testing.T) {
 			want:   []string{"https://app.example.com", "http://localhost:8080"},
 		},
 		{
-			name:   "homepage.href and priority over proxy labels",
+			name: "homepage.href and priority over proxy labels",
 			labels: map[string]string{
-				"moorage.url":                  "https://primary.example.com",
-				"homepage.href":                "https://home.example.com",
-				"traefik.http.routers.r.rule":  "Host(`traefik.example.com`)",
-				"caddy":                        "caddy.example.com",
+				"moorage.url":                 "https://primary.example.com",
+				"homepage.href":               "https://home.example.com",
+				"traefik.http.routers.r.rule": "Host(`traefik.example.com`)",
+				"caddy":                       "caddy.example.com",
 			},
 			want: []string{
 				"https://primary.example.com",
@@ -39,10 +39,10 @@ func TestExtractContainerURLs(t *testing.T) {
 		{
 			name: "traefik Host and PathPrefix and TLS",
 			labels: map[string]string{
-				"traefik.http.routers.app.rule":            "Host(`app.example.com`, `alt.example.com`) && PathPrefix(`/ui`)",
+				"traefik.http.routers.app.rule":             "Host(`app.example.com`, `alt.example.com`) && PathPrefix(`/ui`)",
 				"traefik.http.routers.app.tls.certresolver": "le",
-				"traefik.http.routers.local.rule":          "Host(`localhost`)",
-				"traefik.http.routers.local.tls":           "false",
+				"traefik.http.routers.local.rule":           "Host(`localhost`)",
+				"traefik.http.routers.local.tls":            "false",
 			},
 			want: []string{
 				"https://app.example.com/ui",

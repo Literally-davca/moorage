@@ -31,6 +31,7 @@ import (
 	"moorage/internal/tunnel"
 	"moorage/internal/updater"
 	"moorage/internal/web"
+	"moorage/internal/webpush"
 )
 
 const cookieName = "moorage_session"
@@ -65,6 +66,11 @@ type Server struct {
 	termWG  sync.WaitGroup // open terminal handlers, so shutdown can close their audit rows
 
 	routes []string // registered route patterns, for the audit mapping test
+
+	importOnce sync.Once
+	importSt   *importState // uploaded backups waiting for confirmation (backup.go)
+
+	push *webpush.Service
 }
 
 // TerminalLimits allows overriding terminal timeouts and concurrency limits in tests.
@@ -99,6 +105,13 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 	}
 	if mon != nil && s.upd != nil {
 		mon.OnStackDown = s.upd.HandleStackCheckDown
+	}
+	s.push = webpush.New(st, log, cfg.PublicURL)
+	if mon != nil {
+		mon.Push = s.push.Broadcast
+	}
+	if s.upd != nil {
+		s.upd.Push = s.push.Broadcast
 	}
 	return s
 }
@@ -283,12 +296,17 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/settings/config", s.admin(s.getSettingsConfig))
 	mux.Handle("PUT /api/settings/config", s.admin(s.putSettingsConfig))
 	mux.Handle("POST /api/settings/metrics-token", s.admin(s.generateMetricsToken))
-	mux.Handle("GET /api/settings/backup/export", s.admin(s.exportBackup))
-	mux.Handle("POST /api/settings/backup/import", s.admin(s.importBackup))
+	mux.Handle("POST /api/settings/backup/export", s.admin(s.exportBackup))
+	mux.Handle("POST /api/settings/backup/import/preview", s.admin(s.importBackupPreview))
+	mux.Handle("POST /api/settings/backup/import/apply", s.admin(s.importBackupApply))
 	mux.Handle("GET /api/hosts/{host}/deleted-stacks", s.admin(s.listDeletedStacks))
 	mux.Handle("POST /api/hosts/{host}/deleted-stacks/{name}/restore", s.admin(s.restoreDeletedStack))
 	mux.Handle("GET /api/hosts/{host}/prune/preview", s.admin(s.prunePreview))
 	mux.Handle("POST /api/hosts/{host}/prune", s.admin(s.pruneDisk))
+	mux.Handle("GET /api/push/key", s.user(s.pushKey))
+	mux.Handle("POST /api/push/subscriptions", s.user(s.pushSubscribe))
+	mux.Handle("POST /api/push/subscriptions/delete", s.user(s.pushUnsubscribe))
+	mux.Handle("POST /api/push/test", s.user(s.pushTest))
 	mux.Handle("GET /api/auto-rollbacks", s.user(s.listAutoRollbacks))
 	mux.Handle("POST /api/auto-rollbacks/{id}/ack", s.admin(s.ackAutoRollback))
 	mux.Handle("POST /api/users", s.admin(s.createUser))
@@ -925,6 +943,7 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	if kind := actionEvent[action]; kind != "" {
 		s.stackEvent(r, name, kind, "")
 	}
+	s.watchOp(h, r.PathValue("host"), name, action, op.ID)
 	writeJSON(w, http.StatusAccepted, op)
 }
 

@@ -589,7 +589,7 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
     - `sidecar` add-ony se instalují stažením `compose.yaml` z `moorage-addons` (přes `netguard`) jako spravovaný stack `addon-<id>`; vypnutí = `stop` stacku (`0 MB` RAM), odinstalace = `down` + smazání stacku a záznamu v `installed_addons`.
     - **[U]** Katalog `moorage-addons/index.json` se načítá automaticky při otevření stránky **Settings → Add-ons** (s krátkou paměťovou cache, žádný nechtěný provoz při startu samotného hubu).
 
-## Další vlna vylepšení a jádrové funkce z roadmapy (návrh 2026-11-23, čeká na schválení)
+## Další vlna vylepšení a jádrové funkce z roadmapy (2026-11-23, implementováno)
 
 **Cíl:** Zpřehlednit správu add-onů (filtry, automatický katalog, jeden společný stack `add-ons` pro sidecary) a stránku Hosts, zrychlit práci s `.env` po vzoru Coolify, rozšířit notifikace a převést klíčové položky z roadmapy do jádra.
 
@@ -649,6 +649,16 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 - **Denní úklid disku:** nikdy nemazat volumes automaticky bez explicitního povolení (zastavený stack by přišel o data); respektovat `readOnly` agenta.
 - **Automatický rollback:** spustit maximálně jednou na jednu aktualizaci (`auto_rollback_attempted`), aby při trvalé externí chybě nedošlo k nekonečné smyčce.
 - **Import dat:** atomická výměna SQLite (přes `VACUUM INTO` / zálohu předchozího souboru) a odmítnutí nekompatibilní verze schématu.
+
+### Stav a rozhodnutí (2026-11-23, dokončení)
+- **Add-ony ve společném stacku `add-ons`:** vypnutí nastaví službě `scale: 0` (profil kontejner nezastavil), odinstalace nejdřív škáluje na 0 a pak službu odebere (`up` neodstraňuje osiřelé kontejnery). Instalace čeká na výsledek `up` a při chybě vrátí předchozí `compose.yaml`; kolize jména služby s jiným add-onem se odmítne.
+- **Public URL z Settings** se načte při startu (alerty, OIDC, pozvánky, status stránky); změna se projeví po restartu a UI na to upozorní. **Kanál aktualizací** se přepíná hned.
+- **Automatický rollback:** jen pro záznam s aktérem `auto-update`, okno 13 min (3 min ticho po deployi + 10 min), pokus se zapíše před rollbackem (neúspěšný se neopakuje), souběžné DOWN se serializují.
+- **Export zálohy** `.mbk`: šifrovaný heslem (scrypt + AES-256-GCM po 64KiB blocích, detekce useknutí), obsahuje DB hubu, `compose.yaml`/`.env` všech spravovaných stacků a `history.git` každého připojeného hosta; export je POST (heslo mimo URL) a je v auditu.
+- **Import zálohy** ve dvou krocích: nahrání → dešifrování, kontrola SQLite (`quick_check`), verze schématu (novější odmítne) a náhled (počty, stacky po hostech, co se přepíše) → potvrzení s volbou DB / stacky. DB se vymění při restartu (stará zůstane jako `moorage.db.bak`), stacky se jen uloží (nic se nespustí). Historie se neimportuje, zůstává v souboru pro ruční obnovu.
+- **Notifikace:** události `deploy_failed` (operace z UI a obnova stacku) a `agents` (offline / zpět online, s prodlevou a údržbou z watchdogu, pro všechny agenty); kanál může vypnout i alerty kontrol. **Web Push** bez externí knihovny (RFC 8291/8292, VAPID klíč v DB, service worker `/sw.js`), zapíná se v Account; posílá kontroly, hosty, selhané operace a rollbacky, ne informativní auto-updaty.
+- **`.env` editor** proměnné z `compose.yaml` jen nabízí (čipy + *Add all*), nic nepřidává sám při otevření.
+- Denní úklid disku zůstává ve výchozím stavu vypnutý.
 
 ### Pořadí realizace (po schválení)
 1. UI úklid: **Hosts** + **Add-ons** (filtry, auto-katalog, společný stack `add-ons`) + **`.env` editor**.

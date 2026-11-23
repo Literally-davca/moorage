@@ -278,6 +278,20 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	}
 	defer db.Close()
 
+	// Settings saved in the UI fill in what the env leaves unset. The public URL feeds
+	// alert links, OIDC redirects, invites and status pages, so it is read once here and a
+	// change takes effect after a restart; the update channel also switches live.
+	if !cfg.PublicURLSet {
+		if v, err := db.GetSetting(ctx, store.SettingPublicURL); err == nil && v != "" {
+			cfg.PublicURL = v
+		}
+	}
+	if !cfg.UpdateChannelSet {
+		if v, err := db.GetSetting(ctx, store.SettingUpdateChannel); err == nil && (v == "stable" || v == "pre") {
+			cfg.UpdateChannel = v
+		}
+	}
+
 	authSvc, err := auth.New(db, log)
 	if err != nil {
 		return nil, err

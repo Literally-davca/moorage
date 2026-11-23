@@ -19,6 +19,7 @@ type Config struct {
 	SecureCookies    bool   // MOORAGE_SECURE_COOKIES, auto-detected from HTTPS when unset
 	SecureCookiesSet bool   // true when MOORAGE_SECURE_COOKIES was explicitly set in env
 	PublicURL        string // MOORAGE_PUBLIC_URL, e.g. https://moorage.example.com, used for links in alerts
+	PublicURLSet     bool   // true when MOORAGE_PUBLIC_URL was set in env (otherwise loaded from Settings at start)
 	PUID, PGID       int    // MOORAGE_PUID / MOORAGE_PGID, owner of written stack files (-1 = leave as is)
 
 	// hub
@@ -107,6 +108,7 @@ func FromEnv() (Config, error) {
 		UpdateURL:        strings.TrimRight(env("MOORAGE_UPDATE_URL", DefaultUpdateURL), "/"),
 		UpdateChannel:    strings.ToLower(strings.TrimSpace(env("MOORAGE_UPDATE_CHANNEL", "stable"))),
 		UpdateChannelSet: strings.TrimSpace(os.Getenv("MOORAGE_UPDATE_CHANNEL")) != "",
+		PublicURLSet:     strings.TrimSpace(os.Getenv("MOORAGE_PUBLIC_URL")) != "",
 	}
 	if c.WatchdogListen == "off" {
 		c.WatchdogListen = ""

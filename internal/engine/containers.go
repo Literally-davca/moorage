@@ -41,15 +41,15 @@ func IsInternalContainer(s container.Summary) bool {
 
 // Container is the UI view of one container.
 type Container struct {
-	ID       string   `json:"id"`
-	Name     string   `json:"name"`
-	Service  string   `json:"service"`
-	Image    string   `json:"image"`
-	ImageID  string   `json:"imageId,omitempty"`
-	State    string   `json:"state"`  // running, exited, restarting, paused, created, dead
-	Status   string   `json:"status"` // human text from Docker, e.g. "Up 3 hours"
-	ExitCode *int     `json:"exitCode,omitempty"`
-	Health   string   `json:"health,omitempty"` // healthy, unhealthy, starting
+	ID        string   `json:"id"`
+	Name      string   `json:"name"`
+	Service   string   `json:"service"`
+	Image     string   `json:"image"`
+	ImageID   string   `json:"imageId,omitempty"`
+	State     string   `json:"state"`  // running, exited, restarting, paused, created, dead
+	Status    string   `json:"status"` // human text from Docker, e.g. "Up 3 hours"
+	ExitCode  *int     `json:"exitCode,omitempty"`
+	Health    string   `json:"health,omitempty"` // healthy, unhealthy, starting
 	Created   int64    `json:"created"`
 	Ports     []string `json:"ports,omitempty"`
 	URLs      []string `json:"urls,omitempty"`

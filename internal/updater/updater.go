@@ -158,7 +158,10 @@ type Updater struct {
 	log       *slog.Logger
 	publicURL string
 
-	mu          sync.Mutex
+	mu         sync.Mutex
+	rollbackMu sync.Mutex // serializes auto-rollback decisions (several checks can fail at once)
+	// Push receives auto-update and rollback notices for Web Push.
+	Push        func(ctx context.Context, event string, msg notify.Message)
 	ctx         context.Context
 	jobs        sync.WaitGroup // follow-ups of updates and rollbacks running in the background
 	wake        chan struct{}
@@ -1164,6 +1167,10 @@ func changedServices(rec store.ImageUpdate) []string {
 	return parts
 }
 
+// autoRollbackWindow is how long after an auto-update a DOWN check still rolls it back:
+// the monitor's 3-minute deploy silence plus 10 minutes of real checking.
+const autoRollbackWindow = 13 * time.Minute
+
 // HandleStackCheckDown triggers an automatic rollback when a check on a stack fails
 // shortly after an automatic image update.
 func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
@@ -1173,19 +1180,24 @@ func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
 	ctx, cancel := context.WithTimeout(u.bg(), 2*time.Minute)
 	defer cancel()
 
+	u.rollbackMu.Lock()
+	defer u.rollbackMu.Unlock()
+
 	updates, err := u.st.ImageUpdates(ctx, hostID, stack, 1)
 	if err != nil || len(updates) == 0 {
 		return
 	}
 	rec := updates[0]
-	if rec.Result != "ok" || !strings.Contains(strings.ToLower(rec.Actor), "auto") {
+	if rec.Result != store.UpdateOK || rec.Actor != ActorAuto {
 		return
 	}
 	refTime := rec.FinishedAt
 	if refTime.IsZero() {
 		refTime = rec.StartedAt
 	}
-	if u.now().Sub(refTime) > 15*time.Minute {
+	// Failures inside the deploy silence never reach here (the monitor marks them
+	// silenced), so the window is the silence plus 10 minutes of real checking.
+	if u.now().Sub(refTime) > autoRollbackWindow {
 		return
 	}
 	already, err := u.st.HasAutoRollbackForUpdate(ctx, rec.ID)
@@ -1193,19 +1205,9 @@ func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
 		return
 	}
 
-	if _, err := u.Rollback(ctx, hostID, stack, rec.ID, "auto-rollback"); err != nil {
-		if u.log != nil {
-			u.log.Warn("auto-rollback failed", "host", hostID, "stack", stack, "err", err)
-		}
-		return
-	}
-
-	if pol, err := u.st.StackUpdatePolicy(ctx, hostID, stack); err == nil {
-		pol.Policy = "notify"
-		_ = u.st.SaveStackUpdatePolicy(ctx, pol)
-	}
-
-	_, _ = u.st.InsertAutoRollback(ctx, store.AutoRollback{
+	// Record the attempt before rolling back: a failing rollback must not be retried on
+	// every following DOWN.
+	rbID, err := u.st.InsertAutoRollback(ctx, store.AutoRollback{
 		HostID:    hostID,
 		Stack:     stack,
 		UpdateID:  rec.ID,
@@ -1213,6 +1215,30 @@ func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
 		Reason:    cause,
 		At:        u.now(),
 	})
+	if err != nil {
+		if u.log != nil {
+			u.log.Warn("auto-rollback: record attempt", "host", hostID, "stack", stack, "err", err)
+		}
+		return
+	}
+
+	// Rollback also switches the stack's policy to notify and skips the bad digests.
+	if _, err := u.Rollback(ctx, hostID, stack, rec.ID, "auto-rollback"); err != nil {
+		if u.log != nil {
+			u.log.Warn("auto-rollback failed", "host", hostID, "stack", stack, "err", err)
+		}
+		_ = u.st.SetAutoRollbackReason(ctx, rbID, fmt.Sprintf("%s (rollback failed: %v)", cause, err))
+		_ = u.st.Audit(ctx, store.AuditEntry{
+			At:      u.now(),
+			Actor:   "system",
+			Action:  "stack.auto_rollback",
+			HostID:  hostID,
+			Stack:   stack,
+			Target:  fmt.Sprintf("update #%d (%s): %v", rec.ID, checkName, err),
+			Outcome: "error",
+		})
+		return
+	}
 	_ = u.st.Audit(ctx, store.AuditEntry{
 		At:      u.now(),
 		Actor:   "system",
@@ -1245,13 +1271,17 @@ func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
 			}
 		}
 	}
+	rbMsg := notify.Message{
+		Status: "down",
+		Title:  fmt.Sprintf("Auto-rollback: %s (%s)", stack, checkName),
+		Text:   fmt.Sprintf("Check %q failed after auto-update (%s). Rolled back to previous images and switched update policy to notify.", checkName, cause),
+		URL:    u.stackURL(hostID, stack),
+	}
 	if len(ids) > 0 {
-		u.deliverToChannels(ctx, ids, notify.Message{
-			Status: "down",
-			Title:  fmt.Sprintf("Auto-rollback: %s (%s)", stack, checkName),
-			Text:   fmt.Sprintf("Check %q failed after auto-update (%s). Rolled back to previous images and switched update policy to notify.", checkName, cause),
-			URL:    u.stackURL(hostID, stack),
-		})
+		u.deliverToChannels(ctx, ids, rbMsg)
+	}
+	if u.Push != nil {
+		u.Push(ctx, notify.EventRollback, rbMsg)
 	}
 }
 

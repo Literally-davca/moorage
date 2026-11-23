@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -103,6 +104,8 @@ type Monitor struct {
 	stackDownAt  map[string]time.Time // "host/stack" -> when its last incident opened (pruned after CascadeWindow)
 	onStackEvent func(hostID, stack, kind string)
 	OnStackDown  func(hostID, stack, checkName, cause string)
+	// Push receives every alert (check or host) for Web Push, channels or not.
+	Push func(ctx context.Context, event string, msg notify.Message)
 
 	// alert deliveries per channel kind since start, for the metrics endpoint
 	alertsSent   map[string]uint64
@@ -790,6 +793,18 @@ func (m *Monitor) deliverCascade(group []alert, info *cascadeInfo) {
 			want[id] = true
 		}
 	}
+	hostAlert := len(group) > 0 && group[0].check.Kind == "host"
+	if m.Push == nil && len(want) == 0 {
+		return
+	}
+	msg := m.composeCascade(group, info)
+	if m.Push != nil {
+		ev := notify.EventChecks
+		if hostAlert {
+			ev = notify.EventAgents
+		}
+		m.Push(ctx, ev, msg)
+	}
 	if len(want) == 0 {
 		return
 	}
@@ -798,9 +813,14 @@ func (m *Monitor) deliverCascade(group []alert, info *cascadeInfo) {
 		m.log.Error("load channels", "err", err)
 		return
 	}
-	msg := m.composeCascade(group, info)
 	for _, ch := range channels {
 		if !want[ch.ID] || !ch.Enabled {
+			continue
+		}
+		// A channel can opt out of check alerts while keeping other events. Host alerts
+		// were already routed by CheckWatchdogAgents.
+		var cfg notify.Config
+		if !hostAlert && json.Unmarshal([]byte(ch.Config), &cfg) == nil && !cfg.WantsEvent(notify.EventChecks) {
 			continue
 		}
 		err := m.send(ctx, ch, msg)
@@ -1098,10 +1118,24 @@ func (m *Monitor) CheckWatchdogAgents(ctx context.Context, now time.Time) {
 		return
 	}
 	ws, err := m.st.Watchdog(ctx)
-	if err != nil || !ws.Enabled || ws.ChannelID <= 0 {
+	if err != nil {
 		return
 	}
-	if !ws.MaintenanceUntil.IsZero() && now.Before(ws.MaintenanceUntil) {
+	watchdogOn := ws.Enabled && ws.ChannelID > 0
+	// Channels subscribed to the "agents" event hear about every agent, watchdog or not.
+	var eventChannels []int64
+	if chs, err := m.st.Channels(ctx); err == nil {
+		for _, ch := range chs {
+			var cfg notify.Config
+			if ch.Enabled && json.Unmarshal([]byte(ch.Config), &cfg) == nil && cfg.WantsEvent(notify.EventAgents) {
+				eventChannels = append(eventChannels, ch.ID)
+			}
+		}
+	}
+	if !watchdogOn && len(eventChannels) == 0 {
+		return
+	}
+	if watchdogOn && !ws.MaintenanceUntil.IsZero() && now.Before(ws.MaintenanceUntil) {
 		return
 	}
 	// Only a planned window over everything silences host-offline alerts: a window for some
@@ -1116,7 +1150,16 @@ func (m *Monitor) CheckWatchdogAgents(ctx context.Context, now time.Time) {
 	grace := time.Duration(max(ws.Grace, 1)) * time.Second
 	activeIDs := map[string]bool{}
 	for _, a := range agents {
-		if !a.Watchdog {
+		var channels []int64
+		if watchdogOn && a.Watchdog {
+			channels = append(channels, ws.ChannelID)
+		}
+		for _, id := range eventChannels {
+			if !slices.Contains(channels, id) {
+				channels = append(channels, id)
+			}
+		}
+		if len(channels) == 0 {
 			continue
 		}
 		activeIDs[a.ID] = true
@@ -1145,7 +1188,7 @@ func (m *Monitor) CheckWatchdogAgents(ctx context.Context, now time.Time) {
 				delete(m.agentDown, a.ID)
 				m.mu.Unlock()
 				m.enqueue(alert{
-					check:   store.Check{Name: a.Name, Kind: "host", Target: a.ID, Channels: []int64{ws.ChannelID}},
+					check:   store.Check{Name: a.Name, Kind: "host", Target: a.ID, Channels: channels},
 					up:      true,
 					at:      now,
 					downFor: max(now.Sub(downSince), time.Second),
@@ -1165,7 +1208,7 @@ func (m *Monitor) CheckWatchdogAgents(ctx context.Context, now time.Time) {
 			m.agentDown[a.ID] = since
 			m.mu.Unlock()
 			m.enqueue(alert{
-				check: store.Check{Name: a.Name, Kind: "host", Target: a.ID, Channels: []int64{ws.ChannelID}},
+				check: store.Check{Name: a.Name, Kind: "host", Target: a.ID, Channels: channels},
 				at:    since,
 				cause: fmt.Sprintf("offline since %s", since.Local().Format("15:04")),
 			})

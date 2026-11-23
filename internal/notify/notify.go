@@ -58,10 +58,22 @@ type Config struct {
 	Events   []string          `json:"events,omitempty"`   // subscribed event kinds (empty = checks only)
 }
 
+// Event kinds a channel can subscribe to (Config.Events).
+const (
+	EventChecks       = "checks"        // DOWN / back up of the checks the channel is attached to
+	EventAutoUpdate   = "auto_update"   // an image update was installed automatically
+	EventRollback     = "rollback"      // an automatic rollback after a failed update
+	EventDeployFailed = "deploy_failed" // a stack operation (up, restart, pull…) failed
+	EventAgents       = "agents"        // an agent went offline / came back
+)
+
+// Events lists the known event kinds.
+var Events = []string{EventChecks, EventAutoUpdate, EventRollback, EventDeployFailed, EventAgents}
+
 // WantsEvent reports whether the channel is subscribed to eventKind.
 func (c Config) WantsEvent(eventKind string) bool {
 	if len(c.Events) == 0 {
-		return eventKind == "checks"
+		return eventKind == EventChecks
 	}
 	return slices.Contains(c.Events, eventKind)
 }

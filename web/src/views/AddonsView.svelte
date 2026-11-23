@@ -354,9 +354,6 @@
       grid-column: 1 / -1;
     }
   }
-  .head .meta {
-    max-width: 70ch;
-  }
   .host-pick {
     display: flex;
     align-items: center;

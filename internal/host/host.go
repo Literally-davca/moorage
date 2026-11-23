@@ -5,6 +5,7 @@ package host
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 
 	"moorage/internal/engine"
@@ -68,6 +69,12 @@ type SelfApplier interface {
 // DeletedStacksSource is implemented by hosts that can list deleted stacks in history.git.
 type DeletedStacksSource interface {
 	DeletedStacks(ctx context.Context) ([]engine.DeletedStack, error)
+}
+
+// HistoryExporter is implemented by hosts that can stream their history.git as a tar
+// (for backups). An older agent answers 404 (IsUnsupported).
+type HistoryExporter interface {
+	ExportHistory(ctx context.Context, w io.Writer) error
 }
 
 // DiskPruner is implemented by hosts that support disk cleanup preview and execution.

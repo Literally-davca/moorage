@@ -94,6 +94,12 @@ func (s *Store) HasAutoRollbackForUpdate(ctx context.Context, updateID int64) (b
 	return n > 0, err
 }
 
+// SetAutoRollbackReason replaces the reason of a recorded auto-rollback (e.g. when it failed).
+func (s *Store) SetAutoRollbackReason(ctx context.Context, id int64, reason string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE auto_rollbacks SET reason = ? WHERE id = ?`, reason, id)
+	return err
+}
+
 func (s *Store) InsertAutoRollback(ctx context.Context, r AutoRollback) (int64, error) {
 	if r.At.IsZero() {
 		r.At = time.Now()

@@ -334,7 +334,9 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 		s.engErr(w, err)
 		return
 	}
-	if _, err := h.RunAction(ctx, stackName, "up", user); err != nil {
+	// Wait for `up`: a failure must restore the previous compose.yaml so the other
+	// sidecars in the shared stack keep their definitions.
+	if err := runAndWait(ctx, h, stackName, "up", user); err != nil {
 		if existed {
 			_ = h.Save(ctx, stackName, prevCompose, prevEnv, user, false)
 		} else {
@@ -432,7 +434,7 @@ func (s *Server) setAddon(w http.ResponseWriter, r *http.Request) {
 							s.engErr(w, err)
 							return
 						}
-						if _, err := h.RunAction(ctx, ia.StackName, "up", user); err != nil {
+						if err := runAndWait(ctx, h, ia.StackName, "up", user); err != nil {
 							s.engErr(w, err)
 							return
 						}
@@ -507,12 +509,21 @@ func (s *Server) uninstallAddon(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 					} else {
+						// `up` never removes containers of a service that left compose.yaml (no
+						// --remove-orphans), so scale the add-on to 0 first, then drop its definition.
+						if scaled, changed, err := setAddonServiceDisabled(cur.Compose, ia.ID, true); err == nil && changed {
+							if err := h.Save(ctx, ia.StackName, scaled, cur.Env, user, false); err != nil {
+								s.engErr(w, err)
+								return
+							}
+							if err := runAndWait(ctx, h, ia.StackName, "up", user); err != nil {
+								s.engErr(w, err)
+								return
+							}
+						}
 						if err := h.Save(ctx, ia.StackName, nextCompose, cur.Env, user, false); err != nil {
 							s.engErr(w, err)
 							return
-						}
-						if op, err := h.RunAction(ctx, ia.StackName, "up", user); err == nil && op.ID != "" {
-							_ = h.FollowOp(ctx, op.ID, func(host.OpEvent) error { return nil })
 						}
 					}
 				}
@@ -734,6 +745,9 @@ func mergeAddonCompose(existingYAML string, addonID string, addonRaw []byte) (st
 		if svc == nil {
 			continue
 		}
+		if cur := asMap(baseSvcs[name]); cur != nil && !hasServiceAddonLabel(cur, addonID) {
+			return "", fmt.Errorf("service %q already exists in the add-ons stack", name)
+		}
 		setServiceAddonLabel(svc, addonID)
 		baseSvcs[name] = svc
 	}
@@ -762,6 +776,32 @@ func mergeAddonCompose(existingYAML string, addonID string, addonRaw []byte) (st
 	return string(out), nil
 }
 
+// runAndWait starts a compose action and waits for it to finish, returning its error.
+func runAndWait(ctx context.Context, h host.Host, stack, action, user string) error {
+	op, err := h.RunAction(ctx, stack, action, user)
+	if err != nil {
+		return err
+	}
+	if op.ID == "" {
+		return nil
+	}
+	var opErr string
+	if err := h.FollowOp(ctx, op.ID, func(ev host.OpEvent) error {
+		if ev.Done {
+			opErr = ev.Error
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if opErr != "" {
+		return fmt.Errorf("%s failed: %s", action, opErr)
+	}
+	return nil
+}
+
+// setAddonServiceDisabled scales the add-on's services to 0 (disabled) or back. Unlike a
+// compose profile, scale 0 makes `up` really stop and remove the running container.
 func setAddonServiceDisabled(existingYAML string, addonID string, disabled bool) (string, bool, error) {
 	doc, err := parseComposeMap([]byte(existingYAML))
 	if err != nil {
@@ -780,10 +820,14 @@ func setAddonServiceDisabled(existingYAML string, addonID string, disabled bool)
 		if !hasServiceAddonLabel(svc, addonID) && name != addonID {
 			continue
 		}
+		delete(svc, "profiles") // older builds disabled services through a profile
 		if disabled {
-			svc["profiles"] = []string{"disabled"}
+			svc["scale"] = 0
 		} else {
-			delete(svc, "profiles")
+			delete(svc, "scale")
+		}
+		if dep := asMap(svc["deploy"]); dep != nil {
+			delete(dep, "replicas") // would conflict with scale
 		}
 		changed = true
 	}

@@ -50,6 +50,7 @@ var ErrNoHistory = errors.New("version not found")
 // git repo there are left alone, and it never runs a git binary.
 type History struct {
 	mu   sync.Mutex
+	path string
 	repo *git.Repository
 	st   storer.Storer
 }
@@ -65,7 +66,7 @@ func openHistory(path string) (*History, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &History{repo: repo, st: repo.Storer}, nil
+	return &History{path: path, repo: repo, st: repo.Storer}, nil
 }
 
 // Version is one entry of a stack's history.

@@ -3,6 +3,7 @@
   import qrcode from 'qrcode-generator';
   import { api, type Account, type SessionInfo, type TOTPEnrolment } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
+  import PushToggle from '../lib/PushToggle.svelte';
 
   let acc = $state<Account | null>(null);
   let error = $state('');
@@ -247,6 +248,8 @@
         <p class="meta">Your proxy checks who you are on every request; signing out there ends your access here too.</p>
       {/if}
     </section>
+
+    <PushToggle />
   {/if}
 </div>
 

@@ -28,7 +28,9 @@
   ];
 
   const eventOptions = [
-    { id: 'checks', label: 'Checks (DOWN / UP)' },
+    { id: 'checks', label: 'Checks this channel is attached to (DOWN / UP)' },
+    { id: 'deploy_failed', label: 'Failed stack operations' },
+    { id: 'agents', label: 'Hosts offline / back online' },
     { id: 'auto_update', label: 'Auto-updates' },
     { id: 'rollback', label: 'Auto-rollbacks' },
   ];

@@ -161,6 +161,16 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 			reply(w)(df.DepFacts(r.Context()))
 		})
 	}
+	if he, ok := h.(HistoryExporter); ok {
+		mux.HandleFunc("GET /history/archive", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/x-tar")
+			// Errors after the first byte can't change the status: the hub notices a
+			// broken tar instead.
+			if err := he.ExportHistory(r.Context(), w); err != nil {
+				agentErr(w, err)
+			}
+		})
+	}
 	if ds, ok := h.(DeletedStacksSource); ok {
 		mux.HandleFunc("GET /deleted-stacks", func(w http.ResponseWriter, r *http.Request) {
 			reply(w)(ds.DeletedStacks(r.Context()))
@@ -649,6 +659,18 @@ func (rm *Remote) CreateNoted(ctx context.Context, name, compose, env, author, n
 // SelfApply asks the agent to apply changes to the stack it runs from.
 func (rm *Remote) SelfApply(ctx context.Context, name, compose, env, author string) error {
 	return rm.call(ctx, http.MethodPost, p(name)+"/self-apply", saveReq{Compose: compose, Env: env, Author: author}, nil)
+}
+
+func (rm *Remote) ExportHistory(ctx context.Context, w io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	resp, err := rm.req(ctx, http.MethodGet, "/history/archive", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, err = io.Copy(w, resp.Body)
+	return err
 }
 
 func (rm *Remote) DeletedStacks(ctx context.Context) ([]engine.DeletedStack, error) {

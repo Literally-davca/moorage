@@ -69,6 +69,26 @@ type Checker struct {
 
 	mu    sync.RWMutex
 	state CheckState
+
+	chMu       sync.RWMutex
+	chOverride string // set through SetChannel; wins over Channel
+}
+
+// SetChannel switches the release channel ("stable" or "pre") at runtime.
+func (c *Checker) SetChannel(ch string) {
+	c.chMu.Lock()
+	c.chOverride = ch
+	c.chMu.Unlock()
+}
+
+// CurrentChannel returns the channel in effect.
+func (c *Checker) CurrentChannel() string {
+	c.chMu.RLock()
+	defer c.chMu.RUnlock()
+	if c.chOverride != "" {
+		return c.chOverride
+	}
+	return c.Channel
 }
 
 // NewChecker creates a release checker using netguard unless Client is replaced in tests.
@@ -169,6 +189,7 @@ func (c *Checker) fetchLatest(ctx context.Context) (*ReleaseInfo, error) {
 		return nil, fmt.Errorf("no releases published yet")
 	}
 
+	channel := c.CurrentChannel()
 	var chosen *ghRelease
 	var chosenVer SemVer
 	for i := range rels {
@@ -181,7 +202,7 @@ func (c *Checker) fetchLatest(ctx context.Context) (*ReleaseInfo, error) {
 			continue
 		}
 		isPre := r.Prerelease || len(sv.Pre) > 0
-		if c.Channel != "pre" && isPre {
+		if channel != "pre" && isPre {
 			continue
 		}
 		if chosen == nil || compareSemVer(sv, chosenVer) > 0 {
@@ -190,7 +211,7 @@ func (c *Checker) fetchLatest(ctx context.Context) (*ReleaseInfo, error) {
 		}
 	}
 	if chosen == nil {
-		if c.Channel != "pre" {
+		if channel != "pre" {
 			return nil, fmt.Errorf("no stable releases found")
 		}
 		return nil, fmt.Errorf("no releases published yet")

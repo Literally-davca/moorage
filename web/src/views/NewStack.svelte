@@ -35,7 +35,11 @@
     restoring = d.name;
     error = '';
     try {
-      await api.restoreDeletedStack(d.name, d.hash, deploy);
+      const r = await api.restoreDeletedStack(d.name, d.hash, deploy);
+      if (r?.deployError) {
+        error = `${d.name} is restored, but it couldn't be started: ${r.deployError}`;
+        return;
+      }
       onCreated(d.name);
     } catch (err) {
       error = (err as Error).message;

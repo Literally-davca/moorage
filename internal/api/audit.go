@@ -83,10 +83,15 @@ var auditActions = map[string]string{
 	"DELETE /api/addons/{id}":                                "addon.uninstall",
 	"PUT /api/settings/config":                               "settings.update",
 	"POST /api/settings/metrics-token":                       "settings.metrics_token",
-	"POST /api/settings/backup/import":                       "backup.import",
-	"POST /api/hosts/{host}/deleted-stacks/{name}/restore": "stack.restore",
-	"POST /api/hosts/{host}/prune":                         "host.prune",
+	"POST /api/settings/backup/export":                       "backup.export",
+	"POST /api/settings/backup/import/preview":               auditSkip, // only stages the upload
+	"POST /api/settings/backup/import/apply":                 "backup.import",
+	"POST /api/hosts/{host}/deleted-stacks/{name}/restore":   "stack.restore",
+	"POST /api/hosts/{host}/prune":                           "host.prune",
 	"POST /api/auto-rollbacks/{id}/ack":                      "stack.auto_rollback_ack",
+	"POST /api/push/subscriptions":                           "push.subscribe",
+	"POST /api/push/subscriptions/delete":                    "push.unsubscribe",
+	"POST /api/push/test":                                    auditSkip, // sends a test only
 
 	// M10: invite links are public (the handler records auth.invite_accept); the OIDC
 	// routes are GETs and record auth.oidc_login / auth.oidc_denied themselves.

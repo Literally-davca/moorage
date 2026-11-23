@@ -421,6 +421,16 @@ var migrations = []string{
 		acknowledged INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX idx_auto_rollbacks_unacked ON auto_rollbacks(acknowledged, at DESC);`,
+	// Web Push: one row per browser that allowed notifications.
+	`CREATE TABLE push_subscriptions (
+		id       INTEGER PRIMARY KEY,
+		user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		endpoint TEXT    NOT NULL UNIQUE,
+		p256dh   TEXT    NOT NULL,
+		auth     TEXT    NOT NULL,
+		created  INTEGER NOT NULL
+	);
+	CREATE INDEX idx_push_subscriptions_user ON push_subscriptions(user_id);`,
 }
 
 // Open opens (and migrates) moorage.db in dataDir.

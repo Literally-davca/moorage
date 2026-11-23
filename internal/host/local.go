@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"io"
 
 	"moorage/internal/engine"
 )
@@ -43,6 +44,10 @@ func (l Local) CreateNoted(ctx context.Context, name, compose, env, author, note
 // SelfApply saves and applies the stack Moorage runs from through the helper container.
 func (l Local) SelfApply(ctx context.Context, name, compose, env, author string) error {
 	return l.E.SelfApply(ctx, name, compose, env, author)
+}
+
+func (l Local) ExportHistory(_ context.Context, w io.Writer) error {
+	return l.E.ExportHistory(w)
 }
 
 func (l Local) DeletedStacks(_ context.Context) ([]engine.DeletedStack, error) {
