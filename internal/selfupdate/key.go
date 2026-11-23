@@ -13,7 +13,7 @@ import (
 // releasePublicKeyB64 is the base64-encoded Ed25519 public key embedded in release binaries.
 // Populate it from scripts/release/genkey.go before tagging the first signed release;
 // the matching private key lives ONLY in the GitHub Actions secret MOORAGE_RELEASE_KEY.
-const releasePublicKeyB64 = ""
+const releasePublicKeyB64 = "B9nldEFADaVDLeR1QUV/fRj4xdxaxNftzz+0h1cNMrY="
 
 // ErrReleaseKeyUnconfigured indicates that releasePublicKeyB64 has not been populated yet.
 var ErrReleaseKeyUnconfigured = errors.New("release signing public key is not configured in this build")
