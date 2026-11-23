@@ -1214,26 +1214,26 @@ func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
 		At:        u.now(),
 	})
 	_ = u.st.Audit(ctx, store.AuditEntry{
-		At:     u.now(),
-		Actor:  "system",
-		Action: "stack.auto_rollback",
-		HostID: hostID,
-		Stack:  stack,
-		Target: fmt.Sprintf("update #%d (%s)", rec.ID, checkName),
-		Result: "ok",
+		At:      u.now(),
+		Actor:   "system",
+		Action:  "stack.auto_rollback",
+		HostID:  hostID,
+		Stack:   stack,
+		Target:  fmt.Sprintf("update #%d (%s)", rec.ID, checkName),
+		Outcome: "ok",
 	})
 
 	var ids []int64
 	seen := map[int64]bool{}
 	if us, err := u.st.UpdateSettings(ctx); err == nil {
-		for _, id := range us.ChannelIDs {
+		for _, id := range us.Channels {
 			if !seen[id] {
 				seen[id] = true
 				ids = append(ids, id)
 			}
 		}
 	}
-	if chs, err := u.st.ListChannels(ctx); err == nil {
+	if chs, err := u.st.Channels(ctx); err == nil {
 		for _, ch := range chs {
 			if !ch.Enabled || seen[ch.ID] {
 				continue
@@ -1264,7 +1264,7 @@ func (u *Updater) sendAutoAppliedNotice(ctx context.Context, channelIDs []int64,
 			ids = append(ids, id)
 		}
 	}
-	if chs, err := u.st.ListChannels(ctx); err == nil {
+	if chs, err := u.st.Channels(ctx); err == nil {
 		for _, ch := range chs {
 			if !ch.Enabled || seen[ch.ID] {
 				continue

@@ -182,12 +182,12 @@ func (s *Server) runDailyCleanup(ctx context.Context, req engine.PruneRequest) {
 			continue
 		}
 		_ = s.store.Audit(ctx, store.AuditEntry{
-			At:     time.Now(),
-			Actor:  "system",
-			Action: "host.prune",
-			HostID: meta.ID,
-			Target: fmt.Sprintf("%s (%d B)", meta.Name, res.ReclaimedBytes),
-			Result: "ok",
+			At:      time.Now(),
+			Actor:   "system",
+			Action:  "host.prune",
+			HostID:  meta.ID,
+			Target:  fmt.Sprintf("%s (%d B)", meta.Name, res.ReclaimedBytes),
+			Outcome: "ok",
 		})
 	}
 }
