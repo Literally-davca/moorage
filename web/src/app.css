@@ -380,7 +380,6 @@ select.field {
   height: 1em;
   flex: none;
 }
-.icon :global(svg),
 .icon svg {
   width: 100%;
   height: 100%;
