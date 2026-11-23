@@ -22,8 +22,9 @@ import (
 )
 
 func (s *Server) listDeletedStacks(w http.ResponseWriter, r *http.Request) {
-	h, _, ok := s.resolveHost(w, r, false)
-	if !ok {
+	h, code, msg := s.resolveHost(r, false)
+	if code != 0 {
+		writeErr(w, code, msg)
 		return
 	}
 	ds, ok := h.(host.DeletedStacksSource)
@@ -47,8 +48,9 @@ func (s *Server) listDeletedStacks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) restoreDeletedStack(w http.ResponseWriter, r *http.Request) {
-	h, _, ok := s.resolveHost(w, r, true)
-	if !ok {
+	h, code, msg := s.resolveHost(r, true)
+	if code != 0 {
+		writeErr(w, code, msg)
 		return
 	}
 	name := r.PathValue("name")
@@ -77,8 +79,9 @@ func (s *Server) restoreDeletedStack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) prunePreview(w http.ResponseWriter, r *http.Request) {
-	h, _, ok := s.resolveHost(w, r, false)
-	if !ok {
+	h, code, msg := s.resolveHost(r, false)
+	if code != 0 {
+		writeErr(w, code, msg)
 		return
 	}
 	dp, ok := h.(host.DiskPruner)
@@ -95,8 +98,9 @@ func (s *Server) prunePreview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) pruneDisk(w http.ResponseWriter, r *http.Request) {
-	h, meta, ok := s.resolveHost(w, r, true)
-	if !ok {
+	h, code, msg := s.resolveHost(r, true)
+	if code != 0 {
+		writeErr(w, code, msg)
 		return
 	}
 	dp, ok := h.(host.DiskPruner)
@@ -113,7 +117,7 @@ func (s *Server) pruneDisk(w http.ResponseWriter, r *http.Request) {
 		s.engErr(w, err)
 		return
 	}
-	setAuditTarget(r, meta.Name)
+	setAuditTarget(r, r.PathValue("host"))
 	writeJSON(w, http.StatusOK, res)
 }
 

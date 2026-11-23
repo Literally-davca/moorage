@@ -84,8 +84,8 @@ var auditActions = map[string]string{
 	"PUT /api/settings/config":                               "settings.update",
 	"POST /api/settings/metrics-token":                       "settings.metrics_token",
 	"POST /api/settings/backup/import":                       "backup.import",
-	"POST /api/hosts/{id}/deleted-stacks/{name}/restore":     "stack.restore",
-	"POST /api/hosts/{id}/prune":                             "host.prune",
+	"POST /api/hosts/{host}/deleted-stacks/{name}/restore": "stack.restore",
+	"POST /api/hosts/{host}/prune":                         "host.prune",
 	"POST /api/auto-rollbacks/{id}/ack":                      "stack.auto_rollback_ack",
 
 	// M10: invite links are public (the handler records auth.invite_accept); the OIDC
