@@ -170,3 +170,25 @@ func TestTimelineShowsCascadeCause(t *testing.T) {
 		t.Fatalf("entry: %+v", p.Entries[0])
 	}
 }
+
+func TestAllDepsAPI(t *testing.T) {
+	e := newDepsEnv(t)
+	if w := e.req("POST", "/api/hosts/local/stacks/app/deps", `{"stack":"pg"}`, "tok-admin"); w.Code != http.StatusCreated {
+		t.Fatalf("add dep: %d %s", w.Code, w.Body)
+	}
+	r := readDeps(t, e, "tok-viewer")
+	if len(r.Hosts) != 1 || r.Hosts[0].ID != "local" || r.Hosts[0].Kind != "local" || !r.Hosts[0].Connected {
+		t.Fatalf("hostDeps hosts: %+v", r.Hosts)
+	}
+	w := e.req("GET", "/api/deps", "", "tok-viewer")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /api/deps: %d %s", w.Code, w.Body)
+	}
+	var all depsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &all); err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Hosts) != 1 || len(all.Nodes) != 2 || len(all.Edges) != 1 {
+		t.Fatalf("allDeps: %+v", all)
+	}
+}

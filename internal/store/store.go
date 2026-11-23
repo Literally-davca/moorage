@@ -384,6 +384,26 @@ var migrations = []string{
 		finished_at  INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX idx_system_updates_node ON system_updates(node_id, started_at DESC);`,
+	`CREATE TABLE addons (
+		id         TEXT    PRIMARY KEY,
+		enabled    INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE TABLE installed_addons (
+		id           TEXT    PRIMARY KEY,
+		name         TEXT    NOT NULL,
+		kind         TEXT    NOT NULL,
+		category     TEXT    NOT NULL DEFAULT '',
+		description  TEXT    NOT NULL DEFAULT '',
+		version      TEXT    NOT NULL DEFAULT '1',
+		host_id      TEXT    NOT NULL DEFAULT '',
+		stack_name   TEXT    NOT NULL DEFAULT '',
+		ram          TEXT    NOT NULL DEFAULT '',
+		cpu          TEXT    NOT NULL DEFAULT '',
+		enabled      INTEGER NOT NULL DEFAULT 1,
+		installed_at INTEGER NOT NULL,
+		updated_at   INTEGER NOT NULL
+	);`,
 }
 
 // Open opens (and migrates) moorage.db in dataDir.

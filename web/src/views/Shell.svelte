@@ -7,25 +7,21 @@
   import StackDetail from './StackDetail.svelte';
   import NewStack from './NewStack.svelte';
   import Home from './Home.svelte';
-  import HostsView from './HostsView.svelte';
-  import ChecksView from './ChecksView.svelte';
+  import SettingsView from './SettingsView.svelte';
+  import MonitoringView from './MonitoringView.svelte';
   import CheckDetail from './CheckDetail.svelte';
   import CheckForm from './CheckForm.svelte';
-  import StatusPagesView from './StatusPagesView.svelte';
   import StatusPageForm from './StatusPageForm.svelte';
   import UpdatesView from './UpdatesView.svelte';
-  import NotificationsView from './NotificationsView.svelte';
-  import AuditView from './AuditView.svelte';
-  import MaintenanceView from './MaintenanceView.svelte';
   import MaintenanceForm from './MaintenanceForm.svelte';
   import DepsView from './DepsView.svelte';
   import TemplatesView from './TemplatesView.svelte';
   import TemplateDeploy from './TemplateDeploy.svelte';
-  import TemplateSources from './TemplateSources.svelte';
-  import UsersView from './UsersView.svelte';
   import AccountView from './AccountView.svelte';
+  import CommandPalette from '../lib/CommandPalette.svelte';
 
   let { onSignedOut }: { onSignedOut: () => void } = $props();
+  let paletteOpen = $state(false);
 
   let stacks = $state<StackSummary[] | null>(null);
   let listError = $state('');
@@ -44,28 +40,19 @@
   } catch {
     /* ignore */
   }
-  const onChecks = $derived(['checks', 'check', 'checkForm'].includes(app.route.page));
-  const onStatusPages = $derived(['statusPages', 'statusPageForm'].includes(app.route.page));
-  const onMaintenance = $derived(['maintenance', 'maintenanceForm'].includes(app.route.page));
+  const onMonitoring = $derived(
+    ['monitoring', 'check', 'checkForm', 'statusPageForm', 'maintenanceForm'].includes(app.route.page),
+  );
 
   // Pages live in the top bar (the sidebar is for hosts and stacks). Links that don't fit
   // the bar's width fold into "More" from the end (priority+), measured, not by breakpoint.
   type PageLink = { href: string; label: string; icon: IconName; current: boolean; badge?: number };
   const pages = $derived<PageLink[]>([
-    { href: '#/checks', label: 'Checks', icon: 'pulse', current: onChecks, badge: checksDown },
-    { href: '#/status-pages', label: 'Status pages', icon: 'world', current: onStatusPages },
-    { href: '#/maintenance', label: 'Maintenance', icon: 'tool', current: onMaintenance },
-    { href: link('templates'), label: 'Templates', icon: 'template', current: ['templates', 'template', 'templateSources'].includes(app.route.page) },
+    { href: '#/monitoring/checks', label: 'Monitoring', icon: 'pulse', current: onMonitoring, badge: checksDown },
+    { href: link('templates'), label: 'Templates', icon: 'template', current: ['templates', 'template'].includes(app.route.page) },
     { href: link('deps'), label: 'Dependencies', icon: 'hierarchy', current: app.route.page === 'deps' },
     { href: '#/updates', label: 'Image updates', icon: 'cloudDown', current: app.route.page === 'updates' },
-    { href: '#/hosts', label: 'Hosts', icon: 'server', current: app.route.page === 'hosts' },
-    ...(isAdmin()
-      ? <PageLink[]>[
-          { href: '#/notifications', label: 'Notifications', icon: 'bell', current: app.route.page === 'notifications' },
-          { href: '#/audit', label: 'Audit log', icon: 'clipboardList', current: app.route.page === 'audit' },
-          { href: '#/users', label: 'Users', icon: 'users', current: app.route.page === 'users' },
-        ]
-      : []),
+    { href: '#/settings/hosts', label: 'Settings', icon: 'settings', current: app.route.page === 'settings' },
   ]);
   let barWidth = $state(0);
   let measureEl = $state<HTMLElement | null>(null);
@@ -282,7 +269,7 @@
       app.hosts = r.hosts;
       hostsLoaded = true;
       // first start in hub mode, or a remembered host that was removed
-      if (r.hosts.length && !r.hosts.some((h) => h.id === app.host)) setHost(r.hosts[0].id, app.route.page !== 'hosts');
+      if (r.hosts.length && !r.hosts.some((h) => h.id === app.host)) setHost(r.hosts[0].id, app.route.page !== 'settings');
     } catch {
       /* the stack list shows the error */
     }
@@ -377,7 +364,7 @@
             </button>
           {/each}
           {#if app.hosts.length}<hr />{/if}
-          <a role="menuitem" href="#/hosts" onclick={() => (hostMenu = false)}><Icon name="server" /> {isAdmin() ? 'Manage hosts' : 'All hosts'}</a>
+          <a role="menuitem" href="#/settings/hosts" onclick={() => (hostMenu = false)}><Icon name="server" /> {isAdmin() ? 'Manage hosts' : 'All hosts'}</a>
         </div>
       {/if}
     </div>
@@ -466,6 +453,9 @@
           <span class="tab"><Icon name={p.icon} /> {p.label}{#if p.badge}<span class="cnt">{p.badge}</span>{/if}</span>
         {/each}
       </div>
+      <button type="button" class="tab pal-btn" onclick={() => (paletteOpen = true)} title="Quick search (Ctrl+K)" aria-label="Quick search">
+        <Icon name="search" /> <kbd class="kbd-hint">Ctrl K</kbd>
+      </button>
       <div class="pop user" use:dismiss={() => (userMenu = false)}>
         <button class="tab user-btn" class:cur={app.route.page === 'account'} onclick={() => (userMenu = !userMenu)}
           aria-haspopup="menu" aria-expanded={userMenu} title="Your account">
@@ -490,37 +480,27 @@
           <span>Moorage <strong class="mono">{availUpdateVer}</strong> is available.</span>
         </span>
         <span class="upd-actions">
-          <a class="btn btn-ghost" href="#/hosts">View updates</a>
+          <a class="btn btn-ghost" href="#/settings/hosts">View updates</a>
           <button type="button" class="btn btn-ghost btn-icon" aria-label="Dismiss update notice" onclick={dismissUpdateBanner}>
             <Icon name="x" />
           </button>
         </span>
       </div>
     {/if}
-    {#if app.route.page === 'hosts'}
-      <HostsView onChanged={loadHosts} />
-    {:else if app.route.page === 'checks'}
-      <ChecksView />
+    {#if app.route.page === 'settings'}
+      <SettingsView tab={app.route.tab} onHostsChanged={loadHosts} />
+    {:else if app.route.page === 'monitoring'}
+      <MonitoringView tab={app.route.tab} />
     {:else if app.route.page === 'check'}
       {#key app.route.id}<CheckDetail id={app.route.id} />{/key}
     {:else if app.route.page === 'checkForm'}
       {#key JSON.stringify(app.route)}<CheckForm id={app.route.id} host={app.route.host} stack={app.route.stack} />{/key}
-    {:else if app.route.page === 'statusPages'}
-      <StatusPagesView />
     {:else if app.route.page === 'statusPageForm'}
       {#key app.route.id}<StatusPageForm id={app.route.id} />{/key}
-    {:else if app.route.page === 'maintenance'}
-      <MaintenanceView />
     {:else if app.route.page === 'maintenanceForm'}
       {#key app.route.id}<MaintenanceForm id={app.route.id} />{/key}
     {:else if app.route.page === 'updates'}
       <UpdatesView />
-    {:else if app.route.page === 'notifications'}
-      <NotificationsView />
-    {:else if app.route.page === 'audit' && isAdmin()}
-      <AuditView />
-    {:else if app.route.page === 'users' && isAdmin()}
-      <UsersView />
     {:else if app.route.page === 'account'}
       <AccountView />
     {:else if app.route.page === 'stack'}
@@ -533,8 +513,6 @@
       {#key app.route.source + '/' + app.route.id + '@' + app.host}
         <TemplateDeploy source={app.route.source} id={app.route.id} onCreated={refresh} />
       {/key}
-    {:else if app.route.page === 'templateSources' && isAdmin()}
-      <TemplateSources />
     {:else if app.route.page === 'deps'}
       <DepsView />
     {:else if app.route.page === 'new'}
@@ -543,13 +521,15 @@
       <section class="card card-pad first">
         <h1 class="ftitle">Connect your first host</h1>
         <p class="meta">This Moorage runs as a hub without its own Docker. Pair a Docker host by running the Moorage agent on it.</p>
-        {#if isAdmin()}<a class="btn btn-primary" href="#/hosts"><Icon name="plus" /> Add host</a>{/if}
+        {#if isAdmin()}<a class="btn btn-primary" href="#/settings/hosts"><Icon name="plus" /> Add host</a>{/if}
       </section>
     {:else}
       <Home {stacks} {host} />
     {/if}
   </main>
 </div>
+
+<CommandPalette bind:open={paletteOpen} />
 
 {#if app.restarting && restartPhase !== 'waiting'}
   <div class="restart-overlay" role="dialog" aria-modal="true" aria-labelledby="restart-title">
@@ -1030,7 +1010,26 @@
     justify-content: flex-end;
   }
 
+  .pal-btn {
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    font: 500 13px var(--font);
+    gap: 6px;
+  }
+  .kbd-hint {
+    font: 500 11px var(--mono);
+    color: var(--haze);
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--rope);
+  }
+
   @media (max-width: 767px) {
+    .kbd-hint {
+      display: none;
+    }
     .shell {
       grid-template-columns: minmax(0, 1fr);
       padding: 8px;

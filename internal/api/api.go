@@ -206,6 +206,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/maintenance", s.user(s.stackMaintenance))
 	mux.Handle("GET /api/maintenance", s.user(s.listMaintenance))
 	mux.Handle("GET /api/maintenance/{id}", s.user(s.getMaintenance))
+	mux.Handle("GET /api/deps", s.user(s.allDeps))
 	mux.Handle("GET /api/hosts/{host}/deps", s.user(s.hostDeps))
 	mux.Handle("GET /api/templates", s.user(s.listTemplates))
 	mux.Handle("GET /api/templates/{source}/{id}", s.user(s.getTemplate))
@@ -272,6 +273,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/templates/sources/{id}", s.admin(s.deleteTemplateSource))
 	mux.Handle("POST /api/templates/sources/{id}/refresh", s.admin(s.refreshTemplateSource))
 	mux.Handle("GET /api/users", s.admin(s.listUsers))
+	mux.Handle("GET /api/addons", s.admin(s.listAddons))
+	mux.Handle("POST /api/addons/install", s.admin(s.installAddon))
+	mux.Handle("PUT /api/addons/{id}", s.admin(s.setAddon))
+	mux.Handle("DELETE /api/addons/{id}", s.admin(s.uninstallAddon))
 	mux.Handle("POST /api/users", s.admin(s.createUser))
 	mux.Handle("PUT /api/users/{id}/role", s.admin(s.setUserRole))
 	mux.Handle("POST /api/users/{id}/disable", s.admin(s.disableUser))
@@ -672,6 +677,13 @@ func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list, err := h.ListStacks(r.Context())
+	proxyOn, _ := s.store.AddonEnabled(r.Context(), addonProxyLabels)
+	for i := range list {
+		if proxyOn && len(list[i].ProxyURLs) > 0 {
+			list[i].URLs = mergeURLs(list[i].URLs, list[i].ProxyURLs, 10)
+		}
+		list[i].ProxyURLs = nil
+	}
 	resp := map[string]any{"stacks": list}
 	if list == nil {
 		resp["stacks"] = []engine.StackSummary{}
@@ -693,7 +705,36 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		s.engErr(w, err)
 		return
 	}
+	proxyOn, _ := s.store.AddonEnabled(r.Context(), addonProxyLabels)
+	if proxyOn && len(st.ProxyURLs) > 0 {
+		st.URLs = mergeURLs(st.URLs, st.ProxyURLs, 10)
+	}
+	st.ProxyURLs = nil
+	for i := range st.Containers {
+		if proxyOn && len(st.Containers[i].ProxyURLs) > 0 {
+			st.Containers[i].URLs = mergeURLs(st.Containers[i].URLs, st.Containers[i].ProxyURLs, 5)
+		}
+		st.Containers[i].ProxyURLs = nil
+	}
 	writeJSON(w, http.StatusOK, st)
+}
+
+func mergeURLs(base, extra []string, max int) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(base)+len(extra))
+	for _, u := range base {
+		if !seen[u] && len(out) < max {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	for _, u := range extra {
+		if !seen[u] && len(out) < max {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	return out
 }
 
 func (s *Server) stackStats(w http.ResponseWriter, r *http.Request) {

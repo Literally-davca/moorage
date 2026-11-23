@@ -137,6 +137,7 @@ export interface StackSummary {
   location?: string;
   /** Moorage itself runs from this stack: no stop/down/delete, changes go through Apply & restart. */
   self?: boolean;
+  urls?: string[];
 }
 export interface Container {
   id: string;
@@ -149,6 +150,7 @@ export interface Container {
   health?: string;
   created: number;
   ports?: string[];
+  urls?: string[];
 }
 export interface Stack extends StackSummary {
   composeFile?: string;
@@ -685,9 +687,18 @@ export interface DepDetection {
   stacks: number;
   broken?: string[];
 }
+export interface DepHost {
+  id: string;
+  name: string;
+  kind: 'local' | 'agent';
+  connected: boolean;
+  readOnly?: boolean;
+  lastSeen?: string;
+}
 export interface HostDeps {
   edges: StackDep[];
   nodes: DepNode[];
+  hosts?: DepHost[];
   cycles: StackRef[][];
   detection: DepDetection;
   stacksError?: string;
@@ -824,6 +835,36 @@ export interface TemplateRef {
   source: string;
   id: string;
 }
+export interface AddonInfo {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  kind: 'builtin' | 'sidecar';
+  version?: string;
+  ram?: string;
+  cpu?: string;
+  hostId?: string;
+  stackName?: string;
+  enabled: boolean;
+  installed: boolean;
+  toggleable: boolean;
+  removable: boolean;
+  detail?: string;
+  linkHref?: string;
+  linkLabel?: string;
+}
+export interface AddonCatalogEntry {
+  id: string;
+  name: string;
+  version: string;
+  kind: 'builtin' | 'sidecar';
+  category: string;
+  description: string;
+  resources: { ram: string; cpu: string };
+  readme?: string;
+  compose?: string;
+}
 export interface RemoteTemplateSource {
   id: number;
   key: string;
@@ -918,7 +959,7 @@ export const api = {
   renameHost: (id: string, name: string) => request<void>('PATCH', `/api/hosts/${enc(id)}`, { name }),
   removeHost: (id: string) => request<void>('DELETE', `/api/hosts/${enc(id)}`),
   host: () => request<HostInfo>('GET', `${H()}/info`),
-  stacks: () => request<{ stacks: StackSummary[]; error?: string }>('GET', `${H()}/stacks`),
+  stacks: (host?: string) => request<{ stacks: StackSummary[]; error?: string }>('GET', `/api/hosts/${enc(host ?? app.host)}/stacks`),
   stack: (name: string) => request<Stack>('GET', `${H()}/stacks/${enc(name)}`),
   stats: (name: string) => request<Stat[]>('GET', `${H()}/stacks/${enc(name)}/stats`),
   validate: (name: string, compose: string, env: string) =>
@@ -1039,6 +1080,17 @@ export const api = {
   },
   convert: (command: string) => request<ConvertResult>('POST', '/api/convert', { command }),
   imageLookup: (image: string) => request<ImageLookup>('POST', '/api/image-lookup', { image }),
+  allDeps: () => request<HostDeps>('GET', '/api/deps'),
+  addons: (opts?: { catalog?: boolean; refresh?: boolean }) => {
+    const q = new URLSearchParams();
+    if (opts?.catalog) q.set('catalog', '1');
+    if (opts?.refresh) q.set('refresh', '1');
+    const qs = q.toString();
+    return request<{ addons: AddonInfo[]; catalog?: AddonCatalogEntry[]; catalogError?: string }>('GET', `/api/addons${qs ? '?' + qs : ''}`);
+  },
+  installAddon: (id: string, hostId?: string) => request<void>('POST', '/api/addons/install', { id, hostId }),
+  setAddon: (id: string, enabled: boolean) => request<void>('PUT', `/api/addons/${enc(id)}`, { enabled }),
+  uninstallAddon: (id: string) => request<void>('DELETE', `/api/addons/${enc(id)}`),
   deps: (host?: string) => request<HostDeps>('GET', `/api/hosts/${enc(host ?? app.host)}/deps`),
   detectDeps: (host?: string) => request<DepDetection>('POST', `/api/hosts/${enc(host ?? app.host)}/deps/detect`),
   addDep: (name: string, to: StackRef) => request<StackDep>('POST', `${H()}/stacks/${enc(name)}/deps`, to),

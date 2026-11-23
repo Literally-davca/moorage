@@ -549,3 +549,42 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 4. **M11 – export/import konfigurace, hodinové agregace kontrol** (audit log všech akcí je hotový jako R1).
 5. Ověřit R8 (Podman) proti skutečnému Podmanu: `scripts/dev/podman-smoke.sh`, matice v sekci R8.
 6. Vydání **v1.0**. Z plánu 1.1/1.2 zbývá jen automatický rollback po selhání kontrol.
+
+## Další vylepšení (schváleno 2026-11-23)
+
+Čtyři navazující změny nad M13/R5/R7:
+
+1. **Odkazy na webové stránky služeb (`internal/engine/containers.go`, `StackDetail.svelte`):**
+   - **[U]** Explicitní label `moorage.url` (jedna či více URL) + autodetekce z `homepage.href`, Traefik (`traefik.http.routers.<r>.rule` s `Host`/`PathPrefix` + TLS) a Caddy (`caddy` / `caddy_N`).
+   - **[A]** Striktní sanitizace: jen `http://` a `https://`, bez přihlašovacích údajů, max. 512 znaků a max. 5 odkazů na kontejner; v UI `target="_blank" rel="noopener noreferrer"`. Zastavený kontejner odkaz zobrazí tlumeně (`--haze`), nebezpečné či neplatné labely se ignorují.
+2. **Repozitář `moorage-templates` + jednokliková předvolba (`TemplateSources.svelte`):**
+   - **[U]** Samostatné repo `moorage-templates` se šablonami ve formátu `index.json` + `<id>/template.yaml`, `compose.yaml` (a volitelně `.env`), plus CI validace.
+   - **[U]** V **Template sources** jednoklikové tlačítko *Add official templates* (opt-in bez nechtěného síťového provozu po instalaci).
+3. **Dependencies – vizualizace zařízení a přepínač „All hosts“ (`internal/api/deps.go`, `DepsView.svelte`, `lib/deps.ts`):**
+   - **[U]** Výchozí pohled zůstává per-host; přibude přepínač **Current host / All hosts** (`GET /api/deps`).
+   - **[A]** Každé zařízení (Hub / Agent) je v SVG grafu vykreslené jako zaoblený kontejner se stavovou tečkou (online/offline) a štítkem `Hub`/`Agent`, v němž leží jeho stacky. Offline agent drží známé hrany se šedým rámečkem.
+4. **Stránka Nastavení (`SettingsView.svelte`, `Shell.svelte`, `state.svelte.ts`):**
+   - **[U]** Sloučení `Hosts`, `Notifications`, `Audit` a `Users` pod jednu položku **Settings** (`#/settings/hosts`, `notifications`, `audit`, `users`).
+   - **[A]** Zpětná kompatibilita starých rout (`#/hosts`, `#/notifications`, `#/audit`, `#/users`) a omezení `Notifications`/`Audit`/`Users` pouze pro roli `admin` (viewer vidí jen `Hosts`).
+- **Mimo rozsah:** automatická detekce mezihostových závislostí, hádání HTTP odkazů z raw portů, přesun `Template sources` do `Settings`.
+
+## Zpřehlednění UI a navigace (schváleno 2026-11-23)
+
+1. **Čistší horní lišta:** sloučení `Checks`, `Status pages` a `Maintenance` pod **Monitoring** (`MonitoringView.svelte`, `#/monitoring/checks|status-pages|maintenance` se zachováním zpětné kompatibility starých cest) a přesun **Template sources** do 5. záložky v **Settings** (`#/settings/templates`, jen admin).
+2. **Přehlednější Home dashboard (`Home.svelte`):** přehled všech zařízení (Hub + agenti) s rychlým přepnutím, společný seznam problémů (stacky + padající kontroly), seznam služeb s webovými odkazy (`StackSummary.urls`) a upozornění na dostupné aktualizace imagí.
+3. **Zpřehlednění `StackDetail.svelte`:** webové odkazy stacku přímo v hlavičce, přesun `StackDeps` do samostatného tabu **Dependencies** vedle `Containers`, `Compose`, `Logs` a `History`.
+4. **Globální příkazová paleta (`Ctrl+K` / `Cmd+K`, `CommandPalette.svelte`):** rychlé vyhledávání napříč všemi hosty, stacky, webovými odkazy služeb, kontrolami a stránkami aplikace.
+
+## Architektonický princip: Univerzální jádro vs. Add-ons (schváleno 2026-11-23)
+
+- **[U]** **Moorage je univerzální služba.** Jádro obsahuje jen to, co potřebuje každý uživatel Dockeru/Compose (stacky, logy, terminál, git historie, hub + agenti, watchdog, checks, status pages, maintenance, image updates, OIDC/forward-auth, `moorage.url`, navigace a `Ctrl+K`).
+- **[U]** Funkce zaměřené na konkrétní skupinu uživatelů nebo vlastní autorovo použití patří mimo jádro jako **Add-ons / Extra** (zapínatelné volitelně v **Settings → Add-ons**, ve výchozím stavu vypnuté, bez zbytečné zátěže v základním UI):
+  - **Proxy & dashboard label autodetection (`proxy-labels`):** čtení `traefik.*`, `caddy*` a `homepage.href` (nativní `moorage.url` zůstává vždy v jádru).
+  - **Official templates (`official-templates`):** jednoklikové připojení externího repozitáře `moorage-templates` (základní *Template sources* zůstává čistě obecné pro jakékoli HTTPS repo).
+  - **Prometheus & Grafana (`prometheus-metrics`):** přehled `/metrics` endpointu a odkazu na `deploy/grafana/moorage-dashboard.json`.
+  - Budoucí specifické nástroje z `ROADMAP.md` (`Trivy`, `Restic`, `Podman`, specifické webhooky/integrace) se budou přidávat stejně — přes volitelné add-ony nebo externí HTTP/kontejnerové kontrakty.
+  - Samostatný katalog add-onů žije v repozitáři **`moorage-addons`** (`<id>/addon.json` + `<id>/README.md` s povinným odhadem **RAM a CPU** zátěže + generovaný `index.json`).
+  - **[U]** Životní cyklus add-onů (**Install / Enable / Disable / Uninstall**):
+    - `builtin` add-ony se zapínají/vypínají v DB (`0 MB` když jsou vypnuté).
+    - `sidecar` add-ony se instalují stažením `compose.yaml` z `moorage-addons` (přes `netguard`) jako spravovaný stack `addon-<id>`; vypnutí = `stop` stacku (`0 MB` RAM), odinstalace = `down` + smazání stacku a záznamu v `installed_addons`.
+    - Katalog `moorage-addons/index.json` se načítá jen na vyžádání v **Settings → Add-ons** (s krátkou paměťovou cache, žádný nechtěný provoz při startu).

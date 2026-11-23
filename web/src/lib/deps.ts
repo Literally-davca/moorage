@@ -1,5 +1,5 @@
 // Helpers for the stack dependency graph (R5): node status text, edge labels, layout.
-import { statusLabel, type DepDetection, type DepNode, type StackDep, type StackRef } from './api';
+import { statusLabel, type DepDetection, type DepHost, type DepNode, type StackDep, type StackRef } from './api';
 
 export const refKey = (r: StackRef) => `${r.hostId}/${r.stack}`;
 
@@ -106,4 +106,113 @@ export function layout(nodes: DepNode[], edges: StackDep[], w: number, h: number
   });
   const height = rows.length ? rows.length * (h + gapY) - gapY : 0;
   return { placed, width, height };
+}
+
+export interface HostBox {
+  host: DepHost;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface HostLayoutOpts {
+  nodeW: number;
+  nodeH: number;
+  gapX: number;
+  gapY: number;
+  boxPad?: number;
+  boxHead?: number;
+  boxGap?: number;
+  maxRowWidth?: number;
+}
+
+/**
+ * Groups linked nodes inside visual device containers (Hub / Agents) and arranges the
+ * device containers in a wrapping grid.
+ */
+export function layoutByHost(
+  nodes: DepNode[],
+  edges: StackDep[],
+  hosts: DepHost[],
+  opts: HostLayoutOpts,
+): { placed: Placed[]; boxes: HostBox[]; width: number; height: number } {
+  const boxPad = opts.boxPad ?? 16;
+  const boxHead = opts.boxHead ?? 36;
+  const boxGap = opts.boxGap ?? 24;
+  const maxRowWidth = opts.maxRowWidth ?? 960;
+
+  const nodesByHost = new Map<string, DepNode[]>();
+  for (const n of nodes) {
+    const list = nodesByHost.get(n.hostId) ?? [];
+    list.push(n);
+    nodesByHost.set(n.hostId, list);
+  }
+
+  const hostMap = new Map(hosts.map((h) => [h.id, h]));
+  for (const [hid, list] of nodesByHost) {
+    if (!hostMap.has(hid)) {
+      hostMap.set(hid, {
+        id: hid,
+        name: list[0]?.hostName || hid,
+        kind: hid === 'local' ? 'local' : 'agent',
+        connected: false,
+      });
+    }
+  }
+
+  const orderedHosts = [...hostMap.values()]
+    .filter((h) => nodesByHost.has(h.id))
+    .sort((a, b) => {
+      if (a.kind !== b.kind) return a.kind === 'local' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+  const subLayouts = orderedHosts.map((host) => {
+    const hNodes = nodesByHost.get(host.id) ?? [];
+    const hEdges = edges.filter((e) => e.from.hostId === host.id && e.to.hostId === host.id);
+    const sub = layout(hNodes, hEdges, opts.nodeW, opts.nodeH, opts.gapX, opts.gapY);
+    const boxW = Math.max(sub.width + boxPad * 2, opts.nodeW + boxPad * 2, 220);
+    const boxH = sub.height + boxHead + boxPad * 2;
+    return { host, sub, boxW, boxH };
+  });
+
+  const boxes: HostBox[] = [];
+  const placed: Placed[] = [];
+  let curX = 0;
+  let curY = 0;
+  let rowH = 0;
+  let totalW = 0;
+  let totalH = 0;
+  let rowCount = 0;
+
+  for (const item of subLayouts) {
+    if (rowCount > 0 && (curX + item.boxW > maxRowWidth || rowCount >= 3)) {
+      curX = 0;
+      curY += rowH + boxGap;
+      rowH = 0;
+      rowCount = 0;
+    }
+    boxes.push({
+      host: item.host,
+      x: curX,
+      y: curY,
+      width: item.boxW,
+      height: item.boxH,
+    });
+    for (const p of item.sub.placed) {
+      placed.push({
+        node: p.node,
+        x: curX + boxPad + p.x,
+        y: curY + boxHead + boxPad + p.y,
+      });
+    }
+    totalW = Math.max(totalW, curX + item.boxW);
+    totalH = Math.max(totalH, curY + item.boxH);
+    curX += item.boxW + boxGap;
+    rowH = Math.max(rowH, item.boxH);
+    rowCount++;
+  }
+
+  return { placed, boxes, width: totalW, height: totalH };
 }

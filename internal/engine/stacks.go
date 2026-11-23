@@ -28,7 +28,9 @@ type StackSummary struct {
 	Location string `json:"location,omitempty"` // working dir of read-only stacks
 	// Self marks the stack this Moorage node runs from: no stop/down/delete, changes go
 	// through Apply & restart (self.go).
-	Self bool `json:"self,omitempty"`
+	Self      bool     `json:"self,omitempty"`
+	URLs      []string `json:"urls,omitempty"`
+	ProxyURLs []string `json:"proxyUrls,omitempty"`
 }
 
 // Stack is the detail view.
@@ -64,7 +66,8 @@ func (e *Engine) ListStacks(ctx context.Context) ([]StackSummary, error) {
 		}
 		cs := byProject[ent.Name()]
 		st, running := stackStatus(cs)
-		out = append(out, StackSummary{Name: ent.Name(), Managed: true, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(ent.Name()), Self: e.IsSelf(ent.Name())})
+		urls, proxyURLs := collectStackURLs(cs)
+		out = append(out, StackSummary{Name: ent.Name(), Managed: true, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(ent.Name()), Self: e.IsSelf(ent.Name()), URLs: urls, ProxyURLs: proxyURLs})
 		seen[ent.Name()] = true
 	}
 	for p, cs := range byProject {
@@ -72,7 +75,8 @@ func (e *Engine) ListStacks(ctx context.Context) ([]StackSummary, error) {
 			continue
 		}
 		st, running := stackStatus(cs)
-		out = append(out, StackSummary{Name: p, Managed: false, Status: st, Running: running, Total: len(cs), Location: dirs[p], Self: e.IsSelf(p)})
+		urls, proxyURLs := collectStackURLs(cs)
+		out = append(out, StackSummary{Name: p, Managed: false, Status: st, Running: running, Total: len(cs), Location: dirs[p], Self: e.IsSelf(p), URLs: urls, ProxyURLs: proxyURLs})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	if dockerErr != nil {
@@ -95,8 +99,9 @@ func (e *Engine) GetStack(ctx context.Context, name string) (Stack, error) {
 		cs = []Container{}
 	}
 	st, running := stackStatus(cs)
+	urls, proxyURLs := collectStackURLs(cs)
 	s := Stack{
-		StackSummary: StackSummary{Name: name, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(name), Self: e.IsSelf(name)},
+		StackSummary: StackSummary{Name: name, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(name), Self: e.IsSelf(name), URLs: urls, ProxyURLs: proxyURLs},
 		Containers:   cs,
 	}
 	if s.Self {

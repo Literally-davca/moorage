@@ -1,52 +1,50 @@
 // App-wide reactive state: session, hash route, theme.
 import type { HostEntry, User } from './api';
 
+export type SettingsTab = 'hosts' | 'notifications' | 'audit' | 'users' | 'templates' | 'addons';
+export type MonitoringTab = 'checks' | 'status-pages' | 'maintenance';
+
 export type Route =
   | { page: 'home' }
   | { page: 'new' }
   | { page: 'deps' }
   | { page: 'templates' }
   | { page: 'template'; source: string; id: string }
-  | { page: 'templateSources' }
   | { page: 'stack'; name: string; tab?: 'history'; at?: number }
-  | { page: 'hosts' }
-  | { page: 'checks' }
+  | { page: 'settings'; tab: SettingsTab }
+  | { page: 'monitoring'; tab: MonitoringTab }
   | { page: 'check'; id: number }
   | { page: 'checkForm'; id: number | null; host?: string; stack?: string }
-  | { page: 'statusPages' }
   | { page: 'statusPageForm'; id: number | null }
   | { page: 'updates' }
-  | { page: 'notifications' }
-  | { page: 'audit' }
-  | { page: 'users' }
   | { page: 'account' }
-  | { page: 'maintenance' }
   | { page: 'maintenanceForm'; id: number | null };
 
-const globalPages = ['hosts', 'checks', 'status-pages', 'maintenance', 'updates', 'notifications', 'audit', 'template-sources', 'users', 'account'];
+const globalPages = ['settings', 'monitoring', 'hosts', 'checks', 'status-pages', 'maintenance', 'updates', 'notifications', 'audit', 'template-sources', 'users', 'account'];
 
-// Routes: #/h/<host>, #/h/<host>/new, #/h/<host>/stacks/<name>, #/hosts.
+// Routes: #/h/<host>, #/h/<host>/new, #/h/<host>/stacks/<name>, #/settings/hosts.
 // Older links without a host (#/stacks/<name>) open on the current host.
 function parse(hash: string): { route: Route; host?: string } {
   let h = hash.replace(/^#\/?/, '');
   const [path, query = ''] = h.split('?');
   const q = new URLSearchParams(query);
-  if (path === 'hosts') return { route: { page: 'hosts' } };
+  if (path === 'settings' || path === 'settings/hosts' || path === 'hosts') return { route: { page: 'settings', tab: 'hosts' } };
+  if (path === 'settings/notifications' || path === 'notifications') return { route: { page: 'settings', tab: 'notifications' } };
+  if (path === 'settings/audit' || path === 'audit') return { route: { page: 'settings', tab: 'audit' } };
+  if (path === 'settings/users' || path === 'users') return { route: { page: 'settings', tab: 'users' } };
+  if (path === 'settings/templates' || path === 'template-sources') return { route: { page: 'settings', tab: 'templates' } };
+  if (path === 'settings/addons') return { route: { page: 'settings', tab: 'addons' } };
+  if (path === 'monitoring' || path === 'monitoring/checks' || path === 'checks') return { route: { page: 'monitoring', tab: 'checks' } };
+  if (path === 'monitoring/status-pages' || path === 'status-pages') return { route: { page: 'monitoring', tab: 'status-pages' } };
+  if (path === 'monitoring/maintenance' || path === 'maintenance') return { route: { page: 'monitoring', tab: 'maintenance' } };
   if (path === 'updates') return { route: { page: 'updates' } };
-  if (path === 'notifications') return { route: { page: 'notifications' } };
-  if (path === 'audit') return { route: { page: 'audit' } };
-  if (path === 'users') return { route: { page: 'users' } };
   if (path === 'account') return { route: { page: 'account' } };
-  if (path === 'template-sources') return { route: { page: 'templateSources' } };
-  if (path === 'maintenance') return { route: { page: 'maintenance' } };
   if (path === 'maintenance/new') return { route: { page: 'maintenanceForm', id: null } };
   const mm = /^maintenance\/(\d+)$/.exec(path);
   if (mm) return { route: { page: 'maintenanceForm', id: Number(mm[1]) } };
-  if (path === 'status-pages') return { route: { page: 'statusPages' } };
   if (path === 'status-pages/new') return { route: { page: 'statusPageForm', id: null } };
   const sm = /^status-pages\/(\d+)(\/edit)?$/.exec(path);
   if (sm) return { route: { page: 'statusPageForm', id: Number(sm[1]) } };
-  if (path === 'checks') return { route: { page: 'checks' } };
   if (path === 'checks/new') {
     return { route: { page: 'checkForm', id: null, host: q.get('host') ?? undefined, stack: q.get('stack') ?? undefined } };
   }

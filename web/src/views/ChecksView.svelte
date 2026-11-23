@@ -45,7 +45,7 @@
     </div>
     {#if isAdmin()}
       <div class="head-actions">
-        <a class="btn btn-ghost" href="#/notifications">Notifications</a>
+        <a class="btn btn-ghost" href="#/settings/notifications">Notifications</a>
         <a class="btn btn-primary" href="#/checks/new"><Icon name="plus" /> Add check</a>
       </div>
     {/if}

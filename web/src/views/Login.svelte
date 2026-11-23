@@ -13,8 +13,8 @@
     setup: "Moorage isn't set up yet. The first admin must finish setup with a local account.",
     expired: 'The sign-in took too long or was started in another browser. Try again.',
     idp: 'Your identity provider cancelled the sign-in.',
-    failed: "Sign-in with your identity provider failed. An admin can see why on the Users page.",
-    unavailable: "Single sign-on isn't available right now. An admin can see why on the Users page.",
+    failed: "Sign-in with your identity provider failed. An admin can see why in Settings → Users.",
+    unavailable: "Single sign-on isn't available right now. An admin can see why in Settings → Users.",
   };
 
   const params = loginParams();

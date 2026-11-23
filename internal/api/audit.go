@@ -78,6 +78,9 @@ var auditActions = map[string]string{
 	"PUT /api/templates/sources/{id}":                        "template_source.save",
 	"DELETE /api/templates/sources/{id}":                     "template_source.delete",
 	"POST /api/templates/sources/{id}/refresh":               "template_source.refresh",
+	"POST /api/addons/install":                               "addon.install",
+	"PUT /api/addons/{id}":                                   "addon.toggle",
+	"DELETE /api/addons/{id}":                                "addon.uninstall",
 
 	// M10: invite links are public (the handler records auth.invite_accept); the OIDC
 	// routes are GETs and record auth.oidc_login / auth.oidc_denied themselves.

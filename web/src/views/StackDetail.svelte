@@ -38,7 +38,7 @@
   // A link to the timeline (#/h/<host>/stacks/<name>/history?at=…) opens the History tab.
   const routeTab = $derived(app.route.page === 'stack' ? app.route.tab : undefined);
   const routeAt = $derived(app.route.page === 'stack' ? app.route.at : undefined);
-  let tab = $state<'overview' | 'compose' | 'logs' | 'history'>(
+  let tab = $state<'overview' | 'compose' | 'logs' | 'deps' | 'history'>(
     app.route.page === 'stack' && app.route.tab === 'history' ? 'history' : 'overview',
   );
   $effect(() => {
@@ -260,6 +260,16 @@
     return d.replace(/^sha256:/, '').slice(0, 7);
   }
 
+  function shortUrlLabel(raw: string): string {
+    try {
+      const u = new URL(raw);
+      const path = u.pathname === '/' ? '' : u.pathname.replace(/\/+$/, '');
+      return u.host + path;
+    } catch {
+      return raw.replace(/^https?:\/\//, '');
+    }
+  }
+
   $effect(() => {
     load(true).then(loadStats);
     loadHealth();
@@ -421,6 +431,13 @@
             {#if !stack.managed}
               <span class="meta ro"><Icon name="lock" /> Read-only</span>
             {/if}
+            {#if stack.urls?.length}
+              {#each stack.urls.slice(0, 3) as u (u)}
+                <a class="head-url" href={u} target="_blank" rel="noopener noreferrer" title={u}>
+                  <Icon name="external" /> <span>{shortUrlLabel(u)}</span>
+                </a>
+              {/each}
+            {/if}
           </div>
         </div>
 
@@ -464,7 +481,7 @@
         <p class="note">
           Moorage runs from this stack, so it can't be stopped, taken down or deleted here. <strong>Apply & restart</strong> saves your
           changes and recreates Moorage from a helper container; if Moorage doesn't come back within 2 minutes, the previous files are
-          put back. To update Moorage itself, use <a href="#/hosts">Moorage updates</a>.
+          put back. To update Moorage itself, use <a href="#/settings/hosts">Moorage updates</a>.
         </p>
         {#if selfMsg}<p class="note" role="status">{selfMsg}</p>{/if}
         {#if stack.selfResult && !stack.selfResult.ok}
@@ -487,6 +504,7 @@
           </button>
         {/if}
         <button class="tab" role="tab" aria-selected={tab === 'logs'} onclick={() => (tab = 'logs')}>Logs</button>
+        <button class="tab" role="tab" aria-selected={tab === 'deps'} onclick={() => (tab = 'deps')}>Dependencies</button>
         {#if stack.managed}
           <button class="tab" role="tab" aria-selected={tab === 'history'} onclick={() => (tab = 'history')}>History</button>
         {/if}
@@ -556,6 +574,16 @@
                   <td>
                     <div class="cname">{c.service || c.name}</div>
                     <div class="meta mono img" title={c.image}>{c.image}</div>
+                    {#if c.urls?.length}
+                      <div class="curls" class:muted={c.state !== 'running'}>
+                        {#each c.urls as u (u)}
+                          <a class="curl" href={u} target="_blank" rel="noopener noreferrer" title={u}>
+                            <Icon name="external" />
+                            <span>{shortUrlLabel(u)}</span>
+                          </a>
+                        {/each}
+                      </div>
+                    {/if}
                   </td>
                   <td>
                     <span class="state">
@@ -742,7 +770,6 @@
           {/if}
         </section>
       {/if}
-      <StackDeps name={stack.name} />
     {:else if tab === 'compose'}
       <section class="card card-pad compose">
         <div class="ed-head">
@@ -768,6 +795,8 @@
         <EnvEditor bind:value={draftEnv} compose={draftCompose} readonly={!editable} />
         {#if dirty}<p class="meta">Save, then Deploy to apply the changes.</p>{/if}
       </section>
+    {:else if tab === 'deps'}
+      <StackDeps name={stack.name} />
     {:else if tab === 'history'}
       <HistoryView name={stack.name} at={routeAt} {editable} {dirty} refresh={historyRefresh} onRestored={(o) => { if (o) op = o; load(true); onChanged(); }} />
     {:else}
@@ -821,6 +850,27 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
+  }
+  .head-url {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: var(--buoy-wash);
+    color: var(--buoy-text);
+    font-size: 12px;
+    font-weight: 500;
+    text-decoration: none;
+    max-width: 240px;
+  }
+  .head-url span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .head-url:hover {
+    text-decoration: underline;
   }
   .actions {
     display: flex;
@@ -933,6 +983,32 @@
   }
   .cname {
     font-weight: 500;
+  }
+  .curls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    margin-top: 4px;
+  }
+  .curl {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--buoy-text);
+    text-decoration: none;
+    max-width: 280px;
+  }
+  .curl span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .curl:hover {
+    text-decoration: underline;
+  }
+  .curls.muted .curl {
+    color: var(--haze);
   }
   .img {
     max-width: 280px;

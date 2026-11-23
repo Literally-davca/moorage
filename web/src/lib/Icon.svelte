@@ -47,11 +47,12 @@
   import userCircle from '@tabler/icons/outline/user-circle.svg?raw';
   import key from '@tabler/icons/outline/key.svg?raw';
   import chevronDown from '@tabler/icons/outline/chevron-down.svg?raw';
+  import settings from '@tabler/icons/outline/settings.svg?raw';
 
   const icons = {
     anchor, search, plus, play, stop, refresh, download, trash, lock, dots, x, check, alert, logout, sun, moon,
     arrowDown, arrowUp, pause, eraser, terminal, server, power, cloudDown, wand, menu, chevronLeft, wrap, history, rollback, selector, copy, plug, pulse, bell, world, clipboardList, tool, hierarchy,
-    template, eye, eyeOff, external, users, userCircle, key, chevronDown,
+    template, eye, eyeOff, external, users, userCircle, key, chevronDown, settings,
 
   };
   export type IconName = keyof typeof icons;

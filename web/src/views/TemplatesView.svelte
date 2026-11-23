@@ -47,7 +47,7 @@
     </div>
     <div class="head-actions">
       {#if isAdmin()}
-        <a class="btn" href="#/template-sources"><Icon name="world" /> Template sources</a>
+        <a class="btn" href="#/settings/templates"><Icon name="world" /> Template sources</a>
       {/if}
       <a class="btn btn-ghost" href={link('new')}><Icon name="plus" /> Blank stack</a>
     </div>
@@ -159,7 +159,9 @@
   .search :global(.icon) {
     position: absolute;
     left: 12px;
-    top: 11px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
     color: var(--haze);
   }
   .search .field {

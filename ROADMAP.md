@@ -3,6 +3,8 @@
 Nápady mimo MVP. Pořadí v sekci = priorita.
 Stav: `v1.0 (M11)` / `v1.1` / `v1.2` (zařazeno do verze) · `líbí se` (uživatel chce, kandidát na první verzi po MVP) · `nápad` · `odloženo` · `zamítnuto`.
 
+> **Pravidlo (2026-11-23):** Jádro Moorage zůstává univerzální. Věci určené pro konkrétní skupinu uživatelů nebo vlastní potřebu (např. Trivy, Restic, specifické integrace) se řeší jako volitelné **Add-ons** v **Settings → Add-ons** nebo jako samostatná externí repozitáře.
+
 ## Plán verzí (rozhodnuto 2026-11-22)
 - **v1.0:** M10 OIDC / forward-auth a správa uživatelů (hotovo); M12 aktualizace Moorage z UI (hotovo); M11 audit log všech akcí, export/import konfigurace, hodinové agregace kontrol.
 - **v1.1 – napojení na okolí:** `/metrics` pro Prometheus/Grafanu, plánovaná údržbová okna, automatický rollback po selhání kontrol.

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"moorage/internal/deps"
@@ -28,9 +29,20 @@ type depNode struct {
 	External bool   `json:"external,omitempty"` // on another host than the one viewed
 }
 
+// depHost describes a host/device in the dependency graph.
+type depHost struct {
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	Kind      string     `json:"kind"` // "local" or "agent"
+	Connected bool       `json:"connected"`
+	ReadOnly  bool       `json:"readOnly,omitempty"`
+	LastSeen  *time.Time `json:"lastSeen,omitempty"`
+}
+
 type depsResponse struct {
 	Edges     []store.StackDep   `json:"edges"`
 	Nodes     []depNode          `json:"nodes"`
+	Hosts     []depHost          `json:"hosts"`
 	Cycles    [][]store.StackRef `json:"cycles"`
 	Detection deps.Detection     `json:"detection"`
 	// StacksError says why the host's own stack list is missing (offline).
@@ -66,7 +78,169 @@ func (s *Server) hostDeps(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	resp.Nodes, resp.StacksError = s.depNodes(ctx, hostID, edges, g)
+	seenHosts := map[string]bool{hostID: true}
+	for _, n := range resp.Nodes {
+		seenHosts[n.HostID] = true
+	}
+	resp.Hosts = s.depHosts(ctx, seenHosts)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// allDeps returns the dependency graph across all registered hosts (Hub + all agents).
+func (s *Server) allDeps(w http.ResponseWriter, r *http.Request) {
+	if s.reg == nil {
+		writeJSON(w, http.StatusOK, depsResponse{
+			Edges:  []store.StackDep{},
+			Nodes:  []depNode{},
+			Hosts:  []depHost{},
+			Cycles: [][]store.StackRef{},
+		})
+		return
+	}
+	ctx := r.Context()
+	edges, err := s.store.StackDeps(ctx)
+	if err != nil {
+		s.engErr(w, err)
+		return
+	}
+	if edges == nil {
+		edges = []store.StackDep{}
+	}
+	g := s.deps.Graph()
+	cycles := g.Cycles()
+	if cycles == nil {
+		cycles = [][]store.StackRef{}
+	}
+	hostsList, _ := s.reg.List(ctx)
+	want := map[string]map[string]bool{}
+	for _, h := range hostsList {
+		want[h.ID] = map[string]bool{}
+	}
+	for _, e := range edges {
+		for _, ref := range []store.StackRef{e.From, e.To} {
+			if want[ref.HostID] == nil {
+				want[ref.HostID] = map[string]bool{}
+			}
+			want[ref.HostID][ref.Stack] = true
+		}
+	}
+	names := s.hostNames(ctx)
+	checks := map[string]string{}
+	if s.mon != nil {
+		checks = s.mon.StackCheckStatus()
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	var out []depNode
+	var errMsgs []string
+
+	for hid, stacks := range want {
+		wg.Add(1)
+		go func(hid string, stacks map[string]bool) {
+			defer wg.Done()
+			status := map[string]string{}
+			lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			if h, _, err := s.reg.Get(lctx, hid); err == nil {
+				list, lerr := h.ListStacks(lctx)
+				for _, st := range list {
+					status[st.Name] = st.Status
+					stacks[st.Name] = true
+				}
+				if lerr != nil {
+					mu.Lock()
+					name := names[hid]
+					if name == "" {
+						name = hid
+					}
+					errMsgs = append(errMsgs, name+": "+sentence(lerr))
+					mu.Unlock()
+				}
+			} else {
+				_, msg := s.errStatus(err)
+				mu.Lock()
+				name := names[hid]
+				if name == "" {
+					name = hid
+				}
+				errMsgs = append(errMsgs, name+": "+msg)
+				mu.Unlock()
+			}
+			mu.Lock()
+			for name := range stacks {
+				ref := store.StackRef{HostID: hid, Stack: name}
+				out = append(out, depNode{
+					StackRef: ref, HostName: names[hid], Status: status[name], Checks: checks[ref.Key()],
+					InCycle: g.InCycle(ref),
+				})
+			}
+			mu.Unlock()
+		}(hid, stacks)
+	}
+	wg.Wait()
+
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.HostID != b.HostID {
+			if a.HostID == host.LocalID {
+				return true
+			}
+			if b.HostID == host.LocalID {
+				return false
+			}
+			return a.HostID < b.HostID
+		}
+		return a.Stack < b.Stack
+	})
+	if out == nil {
+		out = []depNode{}
+	}
+	sort.Strings(errMsgs)
+	seenHosts := map[string]bool{}
+	for hid := range want {
+		seenHosts[hid] = true
+	}
+	writeJSON(w, http.StatusOK, depsResponse{
+		Edges:       edges,
+		Nodes:       out,
+		Hosts:       s.depHosts(ctx, seenHosts),
+		Cycles:      cycles,
+		StacksError: strings.Join(errMsgs, " "),
+	})
+}
+
+func (s *Server) depHosts(ctx context.Context, filter map[string]bool) []depHost {
+	list, err := s.reg.List(ctx)
+	if err != nil {
+		return []depHost{}
+	}
+	out := make([]depHost, 0, len(list))
+	present := map[string]bool{}
+	for _, h := range list {
+		if len(filter) > 0 && !filter[h.ID] {
+			continue
+		}
+		present[h.ID] = true
+		dh := depHost{
+			ID:        h.ID,
+			Name:      h.Name,
+			Kind:      h.Kind,
+			Connected: h.Connected,
+			ReadOnly:  h.ReadOnly,
+		}
+		if !h.LastSeen.IsZero() {
+			t := h.LastSeen
+			dh.LastSeen = &t
+		}
+		out = append(out, dh)
+	}
+	for hid := range filter {
+		if !present[hid] {
+			out = append(out, depHost{ID: hid, Name: hid, Kind: "agent"})
+		}
+	}
+	return out
 }
 
 func cycleTouches(c []store.StackRef, hostID string) bool {

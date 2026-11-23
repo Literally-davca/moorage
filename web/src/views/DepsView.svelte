@@ -3,30 +3,33 @@
   import { api, type DepNode, type HostDeps, type StackDep } from '../lib/api';
   import { app, currentHost, isAdmin } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
-  import { detectionText, edgeKind, edgeText, layout, nodeClass, nodeText, refKey } from '../lib/deps';
+  import { detectionText, edgeKind, edgeText, layoutByHost, nodeClass, nodeText, refKey } from '../lib/deps';
 
   let data = $state<HostDeps | null>(null);
   let error = $state('');
   let detecting = $state(false);
+  let scope = $state<'current' | 'all'>('current');
 
   const hostId = $derived(app.host);
 
   async function load() {
-    const want = app.host;
+    const wantHost = app.host;
+    const wantScope = scope;
     try {
-      const d = await api.deps(want);
-      if (want !== app.host) return;
+      const d = wantScope === 'all' ? await api.allDeps() : await api.deps(wantHost);
+      if (wantScope !== scope || (wantScope === 'current' && wantHost !== app.host)) return;
       data = d;
       error = '';
     } catch (e) {
-      if (want !== app.host) return;
+      if (wantScope !== scope || (wantScope === 'current' && wantHost !== app.host)) return;
       error = (e as Error).message;
     }
   }
 
-  // reload when the host changes (a primitive key); poll every 15 s
+  // reload when the host or scope changes (primitive keys); poll every 15 s
   $effect(() => {
     void hostId;
+    void scope;
     data = null;
     untrack(() => void load());
     const t = setInterval(() => !document.hidden && void load(), 15000);
@@ -63,7 +66,26 @@
     return (data?.nodes ?? []).filter((n) => keys.has(refKey(n)));
   });
   const alone = $derived((data?.nodes ?? []).filter((n) => !n.external && !linked.some((l) => refKey(l) === refKey(n))));
-  const graph = $derived(layout(linked, data?.edges ?? [], W, H, GX, GY));
+  const aloneText = $derived.by(() => {
+    if (!alone.length) return '';
+    if (scope !== 'all') return alone.map((n) => n.stack).join(', ');
+    const byHost = new Map<string, string[]>();
+    for (const n of alone) {
+      const label = n.hostName || n.hostId;
+      const list = byHost.get(label) ?? [];
+      list.push(n.stack);
+      byHost.set(label, list);
+    }
+    return [...byHost.entries()].map(([h, s]) => `${h}: ${s.join(', ')}`).join(' · ');
+  });
+  const graph = $derived(
+    layoutByHost(linked, data?.edges ?? [], data?.hosts ?? [], {
+      nodeW: W,
+      nodeH: H,
+      gapX: GX,
+      gapY: GY,
+    }),
+  );
   const pos = $derived(new Map(graph.placed.map((p) => [refKey(p.node), p])));
 
   function edgePath(e: StackDep): string {
@@ -90,7 +112,7 @@
   }
 
   function label(n: DepNode): string {
-    return n.external ? `${n.stack} (${n.hostName || n.hostId})` : n.stack;
+    return n.external || scope === 'all' ? `${n.stack} (${n.hostName || n.hostId})` : n.stack;
   }
 
   function clip(s: string, max = 20): string {
@@ -109,25 +131,35 @@
     <div>
       <h1 class="title">Dependencies</h1>
       <p class="meta">
-        {currentHost()?.name ?? app.host} · which stacks need which. When a stack goes down, alerts of the stacks that
+        {scope === 'all' ? 'All hosts' : (currentHost()?.name ?? app.host)} · which stacks need which. When a stack goes down, alerts of the stacks that
         depend on it are folded into one message that names the cause.
       </p>
     </div>
-    {#if isAdmin() && currentHost()?.connected}
-      <button class="btn" onclick={detect} disabled={detecting || data?.detection.running}>
-        <Icon name="refresh" /> {data?.detection.running ? 'Detecting…' : 'Detect now'}
-      </button>
-    {/if}
+    <div class="head-actions">
+      {#if app.hosts.length > 1}
+        <div class="seg" role="group" aria-label="Dependency scope">
+          <button type="button" class:active={scope === 'current'} onclick={() => (scope = 'current')}>Current host</button>
+          <button type="button" class:active={scope === 'all'} onclick={() => (scope = 'all')}>All hosts</button>
+        </div>
+      {/if}
+      {#if scope === 'current' && isAdmin() && currentHost()?.connected}
+        <button class="btn" onclick={detect} disabled={detecting || data?.detection.running}>
+          <Icon name="refresh" /> {data?.detection.running ? 'Detecting…' : 'Detect now'}
+        </button>
+      {/if}
+    </div>
   </section>
 
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
   {#if data}
-    <p class="meta note" class:warn={data.detection.unsupported || !!data.detection.error}>
-      {#if data.detection.unsupported || data.detection.error}<Icon name="alert" />{/if}
-      {detectionText(data.detection)}
-      {#if data.stacksError}<span> {data.stacksError}</span>{/if}
-    </p>
+    {#if scope === 'current' || data.stacksError}
+      <p class="meta note" class:warn={data.detection?.unsupported || !!data.detection?.error}>
+        {#if data.detection?.unsupported || data.detection?.error}<Icon name="alert" />{/if}
+        {#if scope === 'current'}{detectionText(data.detection)}{/if}
+        {#if data.stacksError}<span> {data.stacksError}</span>{/if}
+      </p>
+    {/if}
 
     {#if data.cycles.length}
       <section class="card card-pad loop" role="alert">
@@ -170,6 +202,15 @@
                 <path d="M0,0 L8,4 L0,8 z" class="arrow" />
               </marker>
             </defs>
+            {#each graph.boxes as b (b.host.id)}
+              {@const roleTag = b.host.kind === 'local' ? 'Hub' : b.host.connected ? 'Agent' : 'Agent · offline'}
+              <g class="host-box" class:offline={!b.host.connected}>
+                <rect x={b.x + PAD} y={b.y + PAD} width={b.width} height={b.height} rx="12" class="hbox" />
+                <circle cx={b.x + PAD + 16} cy={b.y + PAD + 18} r="4" class="hst" class:up={b.host.connected} />
+                <text x={b.x + PAD + 26} y={b.y + PAD + 22} class="hname">{clip(b.host.name || b.host.id, 22)}</text>
+                <text x={b.x + PAD + b.width - 14} y={b.y + PAD + 22} text-anchor="end" class="hkind">{roleTag}</text>
+              </g>
+            {/each}
             {#each data.edges as e (e.id)}
               {@const d = edgePath(e)}
               {#if d}<path {d} class="e {edgeKind(e)}" marker-end="url(#dep-arrow)"><title>{e.from.stack} depends on {e.to.stack} · {edgeText(e)}</title></path>{/if}
@@ -180,7 +221,7 @@
                 <title>{label(p.node)}: {nodeText(p.node)}{p.node.inCycle ? ' · in a dependency loop' : ''}</title>
                 <rect x={p.x + PAD} y={p.y + PAD} width={W} height={H} rx="8" class="box {cls}" class:loop={p.node.inCycle} />
                 <circle cx={p.x + PAD + 14} cy={p.y + PAD + 16} r="4" class="st {cls}" />
-                <text x={p.x + PAD + 24} y={p.y + PAD + 20} class="nname">{clip(label(p.node))}</text>
+                <text x={p.x + PAD + 24} y={p.y + PAD + 20} class="nname">{clip(p.node.stack)}</text>
                 <text x={p.x + PAD + 24} y={p.y + PAD + 36} class="nstat">{clip(nodeText(p.node) + (p.node.inCycle ? ' · loop' : ''), 24)}</text>
               </a>
             {/each}
@@ -209,7 +250,7 @@
     {/if}
 
     {#if alone.length && linked.length}
-      <p class="meta note">Without dependencies: {alone.map((n) => n.stack).join(', ')}</p>
+      <p class="meta note">Without dependencies: {aloneText}</p>
     {/if}
   {:else if !error}
     <section class="card card-pad" aria-busy="true"><div class="skeleton" style="height:14px;width:50%"></div></section>
@@ -228,6 +269,33 @@
     align-items: center;
     gap: 16px;
     flex-wrap: wrap;
+  }
+  .head-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .seg {
+    display: inline-flex;
+    padding: 2px;
+    border-radius: var(--r-md);
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--rope);
+  }
+  .seg button {
+    border: 0;
+    background: transparent;
+    color: var(--mist);
+    font: 500 12px var(--font);
+    padding: 5px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .seg button.active {
+    background: var(--pier-raised);
+    color: var(--foam);
+    box-shadow: 0 0 0 1px var(--rope-strong);
   }
   .head .meta {
     max-width: 70ch;
@@ -340,6 +408,29 @@
   .nstat {
     fill: var(--haze);
     font: 400 11px var(--font);
+  }
+  .hbox {
+    fill: var(--well);
+    stroke: var(--rope-strong);
+    stroke-width: 1;
+  }
+  .host-box.offline .hbox {
+    stroke-dasharray: 4 3;
+    opacity: 0.75;
+  }
+  .hst {
+    fill: var(--becalmed);
+  }
+  .hst.up {
+    fill: var(--afloat);
+  }
+  .hname {
+    fill: var(--foam);
+    font: 600 12px var(--font);
+  }
+  .hkind {
+    fill: var(--haze);
+    font: 500 11px var(--font);
   }
   .list {
     padding: 4px 0;
