@@ -45,6 +45,60 @@ export interface UserLink {
   kind: 'invite' | 'reset';
   expires: string;
 }
+export interface DeletedStack {
+  name: string;
+  deletedAt: string;
+  hash: string;
+  author: string;
+}
+export interface PrunePreview {
+  imagesCount: number;
+  imagesBytes: number;
+  volumesCount: number;
+  volumesBytes: number;
+  containersCount: number;
+  containersBytes: number;
+  buildCacheBytes: number;
+  totalBytes: number;
+}
+export interface PruneRequest {
+  images: boolean;
+  volumes: boolean;
+  containers: boolean;
+  buildCache: boolean;
+}
+export interface PruneResult {
+  reclaimedBytes: number;
+  deleted?: string[];
+}
+export interface AutoRollback {
+  id: number;
+  hostId: string;
+  stack: string;
+  updateId: number;
+  checkName: string;
+  reason: string;
+  at: string;
+  acknowledged: boolean;
+}
+export interface DiagnosticItem {
+  level: 'warn' | 'info';
+  id: string;
+  title: string;
+  detail: string;
+}
+export interface SettingsConfig {
+  publicUrl: string;
+  metricsTokenSet: boolean;
+  metricsUrl: string;
+  updateChannel: 'stable' | 'pre';
+  cleanupEnabled: boolean;
+  cleanupSchedule: string;
+  cleanupVolumes: boolean;
+  fromEnv: { publicUrl?: boolean; metricsToken?: boolean; updateChannel?: boolean };
+  envLocks: { readOnly?: boolean; terminal?: boolean; trustedProxies?: boolean; oidc?: boolean; selfUpdate?: boolean };
+  diagnostics: DiagnosticItem[];
+}
 export interface OIDCStatus {
   configured: boolean;
   ready: boolean;
@@ -383,7 +437,7 @@ export interface StackMaintenance {
   active?: ActiveMaintenance;
   events: { at: string; detail: string }[];
 }
-export type ChannelKind = 'webhook' | 'ntfy' | 'telegram' | 'discord' | 'smtp';
+export type ChannelKind = 'webhook' | 'ntfy' | 'telegram' | 'discord' | 'smtp' | 'slack' | 'gotify' | 'pushover' | 'matrix';
 export interface ChannelConfig {
   url?: string;
   token?: string;
@@ -395,6 +449,8 @@ export interface ChannelConfig {
   password?: string;
   from?: string;
   to?: string;
+  headers?: Record<string, string>;
+  events?: string[];
 }
 export interface Channel {
   id: number;
@@ -1091,6 +1147,36 @@ export const api = {
   installAddon: (id: string, hostId?: string) => request<void>('POST', '/api/addons/install', { id, hostId }),
   setAddon: (id: string, enabled: boolean) => request<void>('PUT', `/api/addons/${enc(id)}`, { enabled }),
   uninstallAddon: (id: string) => request<void>('DELETE', `/api/addons/${enc(id)}`),
+  settingsConfig: () => request<SettingsConfig>('GET', '/api/settings/config'),
+  saveSettingsConfig: (patch: Partial<{ publicUrl: string; metricsToken: string; updateChannel: string; cleanupEnabled: boolean; cleanupSchedule: string; cleanupVolumes: boolean }>) =>
+    request<SettingsConfig>('PUT', '/api/settings/config', patch),
+  generateMetricsToken: () => request<{ token: string }>('POST', '/api/settings/metrics-token'),
+  exportBackupURL: () => '/api/settings/backup/export',
+  importBackup: async (file: File) => {
+    const res = await fetch('/api/settings/backup/import', {
+      method: 'POST',
+      headers: { 'X-Moorage': '1' },
+      body: file,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      let msg = res.statusText;
+      try {
+        msg = (JSON.parse(text) as { error?: string }).error || msg;
+      } catch {
+        if (text) msg = text;
+      }
+      throw new Error(msg);
+    }
+    return (await res.json()) as { restoredStacks: number; dbStaged: boolean; message: string };
+  },
+  deletedStacks: (host?: string) => request<DeletedStack[]>('GET', `/api/hosts/${enc(host ?? app.host)}/deleted-stacks`),
+  restoreDeletedStack: (name: string, hash: string, deploy = false, host?: string) =>
+    request<void>('POST', `/api/hosts/${enc(host ?? app.host)}/deleted-stacks/${enc(name)}/restore`, { hash, deploy }),
+  prunePreview: (hostId: string) => request<PrunePreview>('GET', `/api/hosts/${enc(hostId)}/prune/preview`),
+  pruneDisk: (hostId: string, body: PruneRequest) => request<PruneResult>('POST', `/api/hosts/${enc(hostId)}/prune`, body),
+  autoRollbacks: () => request<AutoRollback[]>('GET', '/api/auto-rollbacks'),
+  ackAutoRollback: (id: number) => request<void>('POST', `/api/auto-rollbacks/${id}/ack`),
   deps: (host?: string) => request<HostDeps>('GET', `/api/hosts/${enc(host ?? app.host)}/deps`),
   detectDeps: (host?: string) => request<DepDetection>('POST', `/api/hosts/${enc(host ?? app.host)}/deps/detect`),
   addDep: (name: string, to: StackRef) => request<StackDep>('POST', `${H()}/stacks/${enc(name)}/deps`, to),

@@ -97,6 +97,9 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 			RevokeCheckInt: 30 * time.Second,
 		},
 	}
+	if mon != nil && s.upd != nil {
+		mon.OnStackDown = s.upd.HandleStackCheckDown
+	}
 	return s
 }
 
@@ -277,6 +280,17 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/addons/install", s.admin(s.installAddon))
 	mux.Handle("PUT /api/addons/{id}", s.admin(s.setAddon))
 	mux.Handle("DELETE /api/addons/{id}", s.admin(s.uninstallAddon))
+	mux.Handle("GET /api/settings/config", s.admin(s.getSettingsConfig))
+	mux.Handle("PUT /api/settings/config", s.admin(s.putSettingsConfig))
+	mux.Handle("POST /api/settings/metrics-token", s.admin(s.generateMetricsToken))
+	mux.Handle("GET /api/settings/backup/export", s.admin(s.exportBackup))
+	mux.Handle("POST /api/settings/backup/import", s.admin(s.importBackup))
+	mux.Handle("GET /api/hosts/{id}/deleted-stacks", s.admin(s.listDeletedStacks))
+	mux.Handle("POST /api/hosts/{id}/deleted-stacks/{name}/restore", s.admin(s.restoreDeletedStack))
+	mux.Handle("GET /api/hosts/{id}/prune/preview", s.admin(s.prunePreview))
+	mux.Handle("POST /api/hosts/{id}/prune", s.admin(s.pruneDisk))
+	mux.Handle("GET /api/auto-rollbacks", s.view(s.listAutoRollbacks))
+	mux.Handle("POST /api/auto-rollbacks/{id}/ack", s.admin(s.ackAutoRollback))
 	mux.Handle("POST /api/users", s.admin(s.createUser))
 	mux.Handle("PUT /api/users/{id}/role", s.admin(s.setUserRole))
 	mux.Handle("POST /api/users/{id}/disable", s.admin(s.disableUser))
@@ -295,7 +309,7 @@ func (s *Server) Handler() http.Handler {
 	// /metrics sits outside the session and CSRF layers: Prometheus authenticates with
 	// a bearer token. It comes after the custom-domain check, so a status page domain
 	// never serves it (and the status listener has its own handler without it).
-	metricsHandler := s.metrics.Handler(s.cfg.MetricsToken)
+	metricsHandler := s.metrics.HandlerFunc(func() string { return s.effectiveMetricsToken(context.Background()) })
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.status.ServeCustomDomain(w, r) {
 			return
@@ -485,7 +499,18 @@ func (s *Server) setCookie(w http.ResponseWriter, r *http.Request, tok string) {
 	})
 }
 
-func (s *Server) secureCookie(r *http.Request) bool { return s.cfg.SecureCookies || r.TLS != nil }
+func (s *Server) secureCookie(r *http.Request) bool {
+	if s.cfg.SecureCookiesSet {
+		return s.cfg.SecureCookies
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		return true
+	}
+	return strings.HasPrefix(s.effectivePublicURL(r.Context()), "https://")
+}
 
 func (s *Server) authErr(w http.ResponseWriter, err error) {
 	var ve auth.ValidationError
@@ -568,16 +593,16 @@ func (s *Server) listHosts(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"hosts": list, "agentPort": s.agentPort(), "acceptsAgents": s.hub != nil,
-		"metrics": s.metricsInfo(),
+		"metrics": s.metricsInfo(r.Context()),
 	})
 }
 
 // metricsInfo tells the UI whether /metrics is on and where, never the token. Without
 // MOORAGE_PUBLIC_URL the UI builds the URL from the address it was opened at.
-func (s *Server) metricsInfo() map[string]any {
-	info := map[string]any{"enabled": s.cfg.MetricsToken != ""}
-	if s.cfg.PublicURL != "" {
-		info["url"] = strings.TrimRight(s.cfg.PublicURL, "/") + "/metrics"
+func (s *Server) metricsInfo(ctx context.Context) map[string]any {
+	info := map[string]any{"enabled": s.effectiveMetricsToken(ctx) != ""}
+	if pub := s.effectivePublicURL(ctx); pub != "" {
+		info["url"] = pub + "/metrics"
 	}
 	return info
 }

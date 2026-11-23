@@ -45,6 +45,21 @@ func (l Local) SelfApply(ctx context.Context, name, compose, env, author string)
 	return l.E.SelfApply(ctx, name, compose, env, author)
 }
 
+func (l Local) DeletedStacks(_ context.Context) ([]engine.DeletedStack, error) {
+	return l.E.DeletedStacks()
+}
+
+func (l Local) PrunePreview(ctx context.Context) (engine.PrunePreview, error) {
+	return l.E.PrunePreview(ctx)
+}
+
+func (l Local) PruneDisk(ctx context.Context, req engine.PruneRequest) (engine.PruneResult, error) {
+	if l.ReadOnly {
+		return engine.PruneResult{}, ErrHostReadOnly
+	}
+	return l.E.PruneDisk(ctx, req)
+}
+
 func (l Local) Delete(ctx context.Context, name, author string) error {
 	return l.E.DeleteStack(ctx, name, author)
 }

@@ -44,6 +44,20 @@
 
   // Revealed secret rows, by key, for this view only.
   let revealed = $state<Record<string, boolean>>({});
+  let dismissedAuto = new Set<string>();
+
+  $effect(() => {
+    if (readonly || !compose) return;
+    const toAdd: EnvLine[] = [];
+    for (const k of used.all) {
+      if (!keyCount.has(k) && !dismissedAuto.has(k)) {
+        toAdd.push({ kind: 'var', key: k, value: used.defaults.get(k) ?? '' });
+      }
+    }
+    if (toAdd.length > 0) {
+      write([...lines, ...toAdd]);
+    }
+  });
 
   function write(next: EnvLine[]) {
     value = serializeEnv(next);
@@ -55,9 +69,12 @@
     write(next);
   }
   function remove(i: number) {
+    const cur = lines[i];
+    if (cur?.kind === 'var' && cur.key) dismissedAuto.add(cur.key);
     write(lines.filter((_, j) => j !== i));
   }
   function add(key = '', val = '') {
+    if (key) dismissedAuto.delete(key);
     write([...lines, { kind: 'var', key, value: val }]);
   }
 
@@ -115,6 +132,8 @@
         {@const problem = keyProblem(l.key)}
         {@const secret = looksSecret(l.key)}
         {@const masked = secret && !revealed[l.key]}
+        {@const svcs = used.servicesByVar.get(l.key) ?? []}
+        {@const defVal = used.defaults.get(l.key)}
         <div class="row" role="row">
           <input class="field mono key" class:bad={!!problem && !!l.key} value={l.key} placeholder="NAME" {readonly}
             aria-label="Variable name" spellcheck="false" autocomplete="off" aria-invalid={!!problem}
@@ -126,7 +145,7 @@
                 aria-label="Value of {l.key}" spellcheck="false" class:masked
                 onchange={(e) => update(i, { value: e.currentTarget.value })}></textarea>
             {:else}
-              <input class="field mono" type={masked ? 'password' : 'text'} value={l.value} placeholder="value" {readonly}
+              <input class="field mono" type={masked ? 'password' : 'text'} value={l.value} placeholder={defVal ? `default: ${defVal}` : 'value'} {readonly}
                 aria-label="Value of {l.key || 'variable'}" spellcheck="false" autocomplete="off"
                 onchange={(e) => update(i, { value: e.currentTarget.value })} />
             {/if}
@@ -138,8 +157,17 @@
           {#if !readonly}
             <button type="button" class="btn btn-ghost btn-icon" aria-label="Remove {l.key || 'variable'}" title="Remove" onclick={() => remove(i)}><Icon name="trash" /></button>
           {/if}
-          {#if (problem && l.key) || unused(l.key)}
-            <p class="note" class:warnc={!!problem}>{problem || 'Not used in the compose file'}</p>
+          {#if svcs.length > 0 || (problem && l.key) || unused(l.key)}
+            <div class="note-row">
+              {#if svcs.length > 0}
+                <span class="svc-chips">
+                  {#each svcs as s (s)}<span class="svc-chip mono">{s}</span>{/each}
+                </span>
+              {/if}
+              {#if (problem && l.key) || unused(l.key)}
+                <span class="note" class:warnc={!!problem}>{problem || 'Not used in compose'}</span>
+              {/if}
+            </div>
           {/if}
         </div>
       {:else}
@@ -239,9 +267,27 @@
   .key.bad {
     box-shadow: inset 0 0 0 1px var(--adrift);
   }
-  .note {
+  .note-row {
     grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
     margin: -2px 0 2px;
+  }
+  .svc-chips {
+    display: inline-flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .svc-chip {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--rope);
+    color: var(--mist);
+  }
+  .note {
     font-size: 12px;
     color: var(--haze);
   }

@@ -102,6 +102,7 @@ type Monitor struct {
 	deps         DepGraph
 	stackDownAt  map[string]time.Time // "host/stack" -> when its last incident opened (pruned after CascadeWindow)
 	onStackEvent func(hostID, stack, kind string)
+	OnStackDown  func(hostID, stack, checkName, cause string)
 
 	// alert deliveries per channel kind since start, for the metrics endpoint
 	alertsSent   map[string]uint64
@@ -467,6 +468,9 @@ func (m *Monitor) openIncident(c store.Check, out Outcome, now time.Time) {
 	m.mu.Unlock()
 	m.log.Warn("check down", "check", c.Name, "cause", out.Msg, "rootCause", root)
 	m.enqueue(alert{check: c, cause: out.Msg, at: now, ctx: actx, root: root})
+	if m.OnStackDown != nil && c.Stack != "" {
+		go m.OnStackDown(c.HostID, c.Stack, c.Name, out.Msg)
+	}
 }
 
 // ---- log watcher -----------------------------------------------------------

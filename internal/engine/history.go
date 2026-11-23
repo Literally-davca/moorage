@@ -603,6 +603,71 @@ func (e *Engine) StackVersion(name, hash string) (VersionDetail, error) {
 	return d, nil
 }
 
+// DeletedStack describes a stack that no longer exists on disk but has a restorable
+// commit in history.git.
+type DeletedStack struct {
+	Name      string    `json:"name"`
+	DeletedAt time.Time `json:"deletedAt"`
+	Hash      string    `json:"hash"`
+	Author    string    `json:"author"`
+}
+
+// DeletedStacks returns stacks present in history.git that have since been deleted.
+func (e *Engine) DeletedStacks() ([]DeletedStack, error) {
+	if e.hist == nil {
+		return []DeletedStack{}, nil
+	}
+	e.hist.mu.Lock()
+	defer e.hist.mu.Unlock()
+	headCommit, headTree, err := e.hist.head()
+	if err != nil || headCommit == nil || headTree == nil {
+		return []DeletedStack{}, err
+	}
+	alive := map[string]bool{}
+	for _, ent := range headTree.Entries {
+		alive[ent.Name] = true
+	}
+	seen := map[string]bool{}
+	out := []DeletedStack{}
+	c := headCommit
+	for i := 0; c != nil && i < maxWalk; i++ {
+		if len(c.ParentHashes) == 0 {
+			break
+		}
+		parent, err := c.Parent(0)
+		if err != nil {
+			return nil, err
+		}
+		curTree, err := c.Tree()
+		if err != nil {
+			return nil, err
+		}
+		prevTree, err := parent.Tree()
+		if err != nil {
+			return nil, err
+		}
+		curHas := map[string]bool{}
+		for _, ent := range curTree.Entries {
+			curHas[ent.Name] = true
+		}
+		for _, ent := range prevTree.Entries {
+			if alive[ent.Name] || seen[ent.Name] || curHas[ent.Name] {
+				continue
+			}
+			// Stack ent.Name was deleted in commit c; parent holds its last valid state.
+			seen[ent.Name] = true
+			out = append(out, DeletedStack{
+				Name:      ent.Name,
+				DeletedAt: c.Author.When.UTC(),
+				Hash:      parent.Hash.String(),
+				Author:    c.Author.Name,
+			})
+		}
+		c = parent
+	}
+	return out, nil
+}
+
 // RestoreStack writes the stack's files from version hash back to disk and
 // records that as a new version. Nothing is deployed here.
 func (e *Engine) RestoreStack(ctx context.Context, name, hash, author string) (*Version, error) {

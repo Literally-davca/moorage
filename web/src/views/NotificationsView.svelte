@@ -19,9 +19,51 @@
     { k: 'ntfy', name: 'ntfy', hint: 'Push to your phone, self-hosted or ntfy.sh' },
     { k: 'telegram', name: 'Telegram', hint: 'A bot writes to you or a group' },
     { k: 'discord', name: 'Discord', hint: 'A channel webhook' },
+    { k: 'slack', name: 'Slack', hint: 'Incoming webhook' },
+    { k: 'gotify', name: 'Gotify', hint: 'Self-hosted push server' },
+    { k: 'pushover', name: 'Pushover', hint: 'Mobile push notifications' },
+    { k: 'matrix', name: 'Matrix', hint: 'Send to a Matrix room' },
     { k: 'smtp', name: 'E-mail', hint: 'Through your SMTP server' },
     { k: 'webhook', name: 'Webhook', hint: 'JSON to any URL' },
   ];
+
+  const eventOptions = [
+    { id: 'checks', label: 'Checks (DOWN / UP)' },
+    { id: 'auto_update', label: 'Auto-updates' },
+    { id: 'rollback', label: 'Auto-rollbacks' },
+  ];
+
+  let browserAlerts = $state(false);
+  try {
+    browserAlerts = localStorage.getItem('moorage-browser-alerts') === '1';
+  } catch {
+    /* ignore */
+  }
+
+  async function toggleBrowserAlerts() {
+    const next = !browserAlerts;
+    if (next && 'Notification' in window && Notification.permission === 'default') {
+      try {
+        await Notification.requestPermission();
+      } catch {
+        /* ignore */
+      }
+    }
+    browserAlerts = next;
+    try {
+      localStorage.setItem('moorage-browser-alerts', next ? '1' : '0');
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function toggleEvent(ev: string) {
+    if (!draft) return;
+    const cur = draft.config.events ?? ['checks'];
+    const has = cur.includes(ev);
+    const next = has ? cur.filter((x) => x !== ev) : [...cur, ev];
+    draft = { ...draft, config: { ...draft.config, events: next.length ? next : ['checks'] } };
+  }
   const kindName = Object.fromEntries(kinds.map((k) => [k.k, k.name])) as Record<ChannelKind, string>;
 
   async function load() {
@@ -103,7 +145,12 @@
       case 'telegram':
         return `chat ${c.config.chatId}`;
       case 'discord':
+      case 'slack':
         return 'webhook';
+      case 'pushover':
+        return `user ${c.config.chatId}`;
+      case 'matrix':
+        return `${c.config.chatId}`;
       default:
         return c.config.url ?? '';
     }
@@ -112,12 +159,16 @@
 
 <div class="page">
   <section class="card card-pad head">
-    <a class="back meta" href="#/checks"><Icon name="chevronLeft" /> Checks</a>
-    <h1 class="title">Notifications</h1>
-    <p class="meta">
-      Where alerts go. Each check picks its channels. Alerts of one stack within 10 seconds arrive as one message, with the
-      stack's last log lines. Secrets are never shown again after saving.
-    </p>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div>
+        <a class="back meta" href="#/checks"><Icon name="chevronLeft" /> Checks</a>
+        <h1 class="title">Notifications</h1>
+      </div>
+      <label class="check" style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+        <input type="checkbox" checked={browserAlerts} onchange={toggleBrowserAlerts} />
+        <span>Live UI &amp; browser alerts</span>
+      </label>
+    </div>
   </section>
 
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
@@ -188,6 +239,48 @@
             <input id="url" class="field mono" bind:value={draft.config.url} placeholder="https://discord.com/api/webhooks/…" autocomplete="off" required />
             <p class="hint">Channel settings → Integrations → Webhooks. Mentions in log lines are disabled, so a log can't ping @everyone.</p>
           </div>
+        {:else if draft.kind === 'slack'}
+          <div>
+            <label class="label" for="url">Webhook URL</label>
+            <input id="url" class="field mono" bind:value={draft.config.url} placeholder="https://hooks.slack.com/services/…" autocomplete="off" required />
+          </div>
+        {:else if draft.kind === 'gotify'}
+          <div class="two">
+            <div>
+              <label class="label" for="url">Gotify URL</label>
+              <input id="url" class="field mono" bind:value={draft.config.url} placeholder="https://gotify.example.com" required />
+            </div>
+            <div>
+              <label class="label" for="tok">App token</label>
+              <input id="tok" class="field mono" bind:value={draft.config.token} autocomplete="off" required />
+            </div>
+          </div>
+        {:else if draft.kind === 'pushover'}
+          <div class="two">
+            <div>
+              <label class="label" for="chat">User key</label>
+              <input id="chat" class="field mono" bind:value={draft.config.chatId} autocomplete="off" required />
+            </div>
+            <div>
+              <label class="label" for="tok">API token</label>
+              <input id="tok" class="field mono" bind:value={draft.config.token} autocomplete="off" required />
+            </div>
+          </div>
+        {:else if draft.kind === 'matrix'}
+          <div>
+            <label class="label" for="url">Homeserver URL</label>
+            <input id="url" class="field mono" bind:value={draft.config.url} placeholder="https://matrix.org" required />
+          </div>
+          <div class="two">
+            <div>
+              <label class="label" for="chat">Room ID</label>
+              <input id="chat" class="field mono" bind:value={draft.config.chatId} placeholder="!roomId:example.org" required />
+            </div>
+            <div>
+              <label class="label" for="tok">Access token</label>
+              <input id="tok" class="field mono" bind:value={draft.config.token} autocomplete="off" required />
+            </div>
+          </div>
         {:else if draft.kind === 'webhook'}
           <div>
             <label class="label" for="url">URL</label>
@@ -238,6 +331,22 @@
           </div>
           <p class="hint">Moorage only sends over an encrypted connection.</p>
         {/if}
+
+        <div>
+          <span class="label">Events</span>
+          <div style="display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:4px">
+            {#each eventOptions as ev (ev.id)}
+              <label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+                <input
+                  type="checkbox"
+                  checked={(draft.config.events ?? ['checks']).includes(ev.id)}
+                  onchange={() => toggleEvent(ev.id)}
+                />
+                <span>{ev.label}</span>
+              </label>
+            {/each}
+          </div>
+        </div>
 
         {#if formMsg}
           <div class="msg {formMsg.ok ? 'ok' : 'bad'}" role="status"><Icon name={formMsg.ok ? 'check' : 'alert'} /><span>{formMsg.text}</span></div>

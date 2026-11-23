@@ -101,18 +101,63 @@ export const looksSecret = (k: string) => /pass|secret|token|key|private|credent
  * default) and the rest, skipping `$$` escapes. envFile is true when the compose file
  * also loads .env into containers (env_file: .env), so every variable counts as used.
  */
-export function composeVars(compose: string): { required: Set<string>; all: Set<string>; envFile: boolean } {
+export function composeVars(compose: string): {
+  required: Set<string>;
+  all: Set<string>;
+  envFile: boolean;
+  servicesByVar: Map<string, string[]>;
+  defaults: Map<string, string>;
+} {
   const required = new Set<string>();
   const all = new Set<string>();
+  const servicesByVar = new Map<string, string[]>();
+  const defaults = new Map<string, string>();
   const text = compose.replace(/\$\$/g, '');
   const re = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)([^}]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
-  for (const m of text.matchAll(re)) {
-    const name = m[1] ?? m[3];
-    all.add(name);
-    const mod = m[2] ?? '';
-    // ${VAR:-x} / ${VAR-x} have a default; ${VAR:+x} only applies when set.
-    if (!/^:?[-+]/.test(mod)) required.add(name);
+
+  let inServices = false;
+  let svcIndent = -1;
+  let currentSvc = '';
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const trimmed = rawLine.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const indent = rawLine.search(/\S/);
+    if (indent === 0) {
+      inServices = /^services\s*:/.test(trimmed);
+      svcIndent = -1;
+      currentSvc = '';
+    } else if (inServices) {
+      if (svcIndent < 0 || indent <= svcIndent) {
+        const svcMatch = /^([A-Za-z0-9_.-]+)\s*:/.exec(trimmed);
+        if (svcMatch) {
+          svcIndent = indent;
+          currentSvc = svcMatch[1];
+        }
+      }
+    }
+
+    for (const m of rawLine.matchAll(re)) {
+      const name = m[1] ?? m[3];
+      all.add(name);
+      const mod = m[2] ?? '';
+      // ${VAR:-x} / ${VAR-x} have a default; ${VAR:+x} only applies when set.
+      if (!/^:?[-+]/.test(mod)) {
+        required.add(name);
+      } else if (/^:?-(.*)$/.test(mod)) {
+        const def = mod.replace(/^:?-/, '');
+        if (def && !defaults.has(name)) defaults.set(name, def);
+      }
+      if (currentSvc) {
+        const list = servicesByVar.get(name) ?? [];
+        if (!list.includes(currentSvc)) {
+          list.push(currentSvc);
+          servicesByVar.set(name, list);
+        }
+      }
+    }
   }
+
   const envFile = /env_file\s*:[\s\S]*?(^|[\s'"/-])\.env(['"\s]|$)/m.test(compose);
-  return { required, all, envFile };
+  return { required, all, envFile, servicesByVar, defaults };
 }

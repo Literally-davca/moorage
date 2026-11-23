@@ -15,14 +15,23 @@ const ContentType = "text/plain; version=0.0.4; charset=utf-8"
 // every request needs "Authorization: Bearer <token>". It is not behind the session
 // cookie because Prometheus can't sign in.
 func (c *Collector) Handler(token string) http.Handler {
-	want := sha256.Sum256([]byte(token))
+	return c.HandlerFunc(func() string { return token })
+}
+
+// HandlerFunc serves /metrics using a dynamic token lookup (env or DB).
+func (c *Collector) HandlerFunc(tokenFn func() string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Cache-Control", "no-store")
+		token := ""
+		if tokenFn != nil {
+			token = tokenFn()
+		}
 		if token == "" {
 			http.Error(w, "404 page not found", http.StatusNotFound)
 			return
 		}
+		want := sha256.Sum256([]byte(token))
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "Method not allowed.", http.StatusMethodNotAllowed)

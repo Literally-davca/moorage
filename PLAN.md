@@ -587,4 +587,70 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
   - **[U]** Životní cyklus add-onů (**Install / Enable / Disable / Uninstall**):
     - `builtin` add-ony se zapínají/vypínají v DB (`0 MB` když jsou vypnuté).
     - `sidecar` add-ony se instalují stažením `compose.yaml` z `moorage-addons` (přes `netguard`) jako spravovaný stack `addon-<id>`; vypnutí = `stop` stacku (`0 MB` RAM), odinstalace = `down` + smazání stacku a záznamu v `installed_addons`.
-    - Katalog `moorage-addons/index.json` se načítá jen na vyžádání v **Settings → Add-ons** (s krátkou paměťovou cache, žádný nechtěný provoz při startu).
+    - **[U]** Katalog `moorage-addons/index.json` se načítá automaticky při otevření stránky **Settings → Add-ons** (s krátkou paměťovou cache, žádný nechtěný provoz při startu samotného hubu).
+
+## Další vlna vylepšení a jádrové funkce z roadmapy (návrh 2026-11-23, čeká na schválení)
+
+**Cíl:** Zpřehlednit správu add-onů (filtry, automatický katalog, jeden společný stack `add-ons` pro sidecary) a stránku Hosts, zrychlit práci s `.env` po vzoru Coolify, rozšířit notifikace a převést klíčové položky z roadmapy do jádra.
+
+### 1. Add-ons (`AddonsView.svelte`, `internal/api/addons.go`)
+- **[U]** **Automatické načítání katalogu:** při otevření **Settings → Add-ons** se automaticky načte i katalog z `moorage-addons/index.json` (využívá stávající in-memory cache na hubu, tlačítko *Refresh catalog* vynutí čerstvé stažení).
+- **[U]** **Filtrování:** lišta filtrů podle stavu (`All`, `Installed`, `Enabled`, `Disabled`, `Not installed`), druhu (`Built-in`, `Sidecar`) a kategorie (`Integrations`, `Observability`, `Backups`, `Security`, `Templates`). Prázdný výsledek nabídne reset filtrů.
+- **[U]** **Společný stack `add-ons` pro sidecary:** místo samostatného stacku `addon-<id>` se všechny sidecar add-ony na vybraném hostu přidávají jako pojmenované služby (`services.<id>`) do jednoho společného stacku `add-ons` (sloučení `services`, `volumes`, `networks` s kontrolou kolizí).
+  - **[A]** Zapnutí/vypnutí jednoho sidecaru spouští/zastavuje jen jeho službu (`up -d <service>` / `stop <service>`). Odinstalace odstraní jeho definici ze společného `compose.yaml` a provede `up -d --remove-orphans` (celý stack `add-ons` se smaže až po odebrání posledního sidecaru).
+  - **[A]** Zpětná kompatibilita: již existující stacky `addon-<id>` zůstanou funkční, dokud se neodinstalují.
+
+### 2. `.env` v compose po vzoru Coolify (`EnvEditor.svelte`, `dotenv.ts`)
+- **[U]** **Automatické doplnění z `compose.yaml`:** každá proměnná `${VAR}` i `${VAR:-default}` nalezená v `compose.yaml` se automaticky přidá do `.env` (pokud tam ještě není; u `${VAR:-default}` volitelně s prázdnou hodnotou nebo zobrazeným výchozím placeholderem), bez nutnosti klikat po jedné.
+- **[U]** **Přehled služeb v tabulce:** u každého řádku `.env` se zobrazí štítky služeb z `compose.yaml`, které danou proměnnou používají (např. `app`, `worker`). Zůstává maskování tajných hodnot a vložení více řádků `KEY=VALUE` přes schránku.
+- **Mimo rozsah:** globální sdílené proměnné napříč různými stacky (zůstává v `ROADMAP.md`).
+
+### 3. Rozšíření notifikací (`internal/notify/`, `NotificationsView.svelte`, `Shell.svelte`)
+- **[U]** **Nové události pro stávající i nové kanály:** kromě `DOWN`/`Back up` kontrol a watchdogu přidat volitelné odběry událostí: `auto-update` (nový digest/aktualizace), `rollback` (vč. automatického), `deploy.failed` (selhání operace stacku) a `agent.offline` / `agent.online`.
+- **[U]** **Další notifikační kanály:** `Slack` (webhook), `Gotify` (server URL + app token), `Pushover` (user + app token), `Matrix` (homeserver + room + access token) a rozšířený `Webhook` (vlastní HTTP hlavičky / metoda). Vše nad `netguard`, bez externích CLI a bez uživatelských šablon.
+- **[U]** **Oznámení v otevřeném UI + Web Push (po vzoru Kumy):** živé toast notifikace + volitelný zvuk / browser Notification API při otevřeném UI přes stávající WebSocket, plus volitelný Web Push (PWA service worker + VAPID klíče uložené v SQLite) pro upozornění na telefon/desktop i při zavřeném prohlížeči.
+
+### 4. Zpřehlednění stránky `Hosts` (`HostsView.svelte`, `AuditView.svelte`)
+- **[U]** **Čisté rozdělení:**
+  - Hlavní pohled **Hosts** ukazuje jen přehledný seznam hostů (stav online/offline, verze, read-only, typ enginu, rychlé akce přejmenování/odebrání/aktualizace) a v hlavičce tlačítko **+ Add host** (otevře modal/drawer s tokenem a `compose.yaml` pro agenta).
+  - **Hub watchdog** přesunout do samostatné sbalitelné karty nebo podzáložky *Watchdog* (se souhrnným stavem v hlavičce).
+  - **Terminal sessions** přesunout ze stránky Hosts pod **Settings → Audit** (kam logicky patří k ostatním auditním záznamům).
+
+### 5. Jádrové funkce z roadmapy
+1. **Obnova smazaného stacku z historie:**
+   - Využívá existující `history.git` (M2 už ukládá poslední stav smazaného stacku). Přidat API pro výpis smazaných stacků v historii hostu a obnovu posledního commitu jedním klikem (`CreateNoted` + volitelně `up`), s auditem `stack.restore`.
+2. **Úklid disku s náhledem + denní úloha v nastavení:**
+   - Na agentovi (`host` / `engine`) endpoint pro náhled nepoužitých objektů (`images`, `volumes`, `build cache`, odhad uvolněných bytů) a spuštění úklidu po potvrzení adminem (volitelně per typ).
+   - V **Settings** (per host nebo globálně) přepínač **Daily automatic cleanup** (výchozí zapnuto nebo volitelné v základu – denní cron např. v 03:30 pro nepoužité images a build cache; volumes raději jen na explicitní zaškrtnutí, aby se nesmazala data zastaveného stacku).
+3. **Export a import konfigurace i dat (`M11`):**
+   - Export do jednoho archivu (`.tar.gz`): SQLite databáze hubu (konfigurace, uživatelé, sondy, incidenty, audit log, nastavení, kanály) + definice stacků (`compose.yaml`, `.env`) a `history.git` z připojených hostů. Tajemství v exportu šifrovaná heslem/klíčem zadaným při exportu (nebo jasné varování).
+   - Import s náhledem co se přepíše, validací schématu a bezpečným restartem/obnovou DB. (Aplikační Docker volumes zůstávají mimo jádro – řeší sidecar `restic-backup`.)
+4. **Automatický rollback při selhání kontrol po auto-update (`v1.1`):**
+   - Navazuje na M8 (`image_updates`) a M4 (`monitor`). Pokud po automatické aktualizaci stacku přejde některá jeho navázaná kontrola (po vypršení 3min deploy ztišení a v definovaném okně, např. 10 min) do stavu `DOWN`, hub automaticky provede rollback na předchozí digest/commit z historie, přepne politiku aktualizace stacku na `notify` (aby se nesmyčkoval) a pošle notifikaci o automatickém rollbacku.
+   - **[U]** **Viditelnost v UI:** o automatickém rollbacku musí uživatel v UI jasně vědět — zobrazí se výrazný upozorňující banner v detailu stacku i na Home dashboardu (s důvodem, kdy k rollbacku došlo a možností potvrdit/skrýt), plus záznam v Logbooku a Auditu.
+
+### 6. Zjednodušení konfigurace, rozumné výchozí hodnoty a pročištění UI
+- **[U]** **Autodetekce a rozumné výchozí hodnoty:**
+  - `SecureCookies`: automaticky `true`, pokud `PublicURL` začíná `https://` nebo požadavek přichází přes HTTPS / důvěryhodné `X-Forwarded-Proto: https` (explicitní `MOORAGE_SECURE_COOKIES` má přednost).
+  - `PublicURL`: pokud není v envu ani v DB, nabídne se/odvodí z prvního přístupu admina (s možností úpravy v UI).
+  - `WatchdogListen`: na agentovi výchozí `:5082` zapnuto v základu (místo nutnosti ručně nastavovat env).
+- **[U]** **Nekritické proměnné v Settings UI (env jako override):**
+  - Přesunout správu `PublicURL`, `MetricsToken` (včetně generátoru tokenu a přepínače přímo v UI / add-onu Prometheus), `UpdateChannel` (`stable`/`pre`), denního úklidu disku a notifikací do **Settings** v DB. Pokud je nastavena příslušná `MOORAGE_*` env proměnná, slouží jako read-only override (v UI označeno štítkem *from env*).
+- **[U]** **Bezpečnostní přepínače zůstávají přísně v envu:**
+  - `MOORAGE_READ_ONLY`, `MOORAGE_TERMINAL`, `MOORAGE_TRUSTED_PROXIES`, `MOORAGE_PROXY_*`, `MOORAGE_OIDC_*` a `MOORAGE_SELF_UPDATE` nelze měnit z UI (prevence eskalace při prolomení účtu).
+- **[U]** **Configuration / Diagnostics v Settings:**
+  - Stručná diagnostická karta ukazující jen reálné problémy a varování (např. `HTTPS proxy bez SecureCookies`, chybějící `PublicURL` pro odkazy v alertech/RSS, chyba v `MOORAGE_OIDC_*`, chybějící `WatchdogAddr` při 2+ agentech).
+- **[U]** **Pročištění popisků v UI:**
+  - Odstranit dlouhé úvodní odstavce pod nadpisy stránek a zřejmé popisky u běžných tlačítek/polí (`Hosts`, `Add-ons`, `Notifications`, `Monitoring`, `Settings`).
+  - Ponechat nebo doplnit jen stručné inline nápovědy / tooltipy `?` tam, kde je to opravdu potřeba (regex v log kontrolách, Watchdog kvorum, `Read-only`, proxy hlavičky, cron úklidu disku).
+
+### Okrajové stavy a bezpečnost
+- **Sidecar `add-ons` stack:** pokud instalace nového sidecaru selže při `up`, vrátit `compose.yaml` do předchozího stavu, aby nepoškodil už běžící sidecary ve stejném stacku.
+- **Denní úklid disku:** nikdy nemazat volumes automaticky bez explicitního povolení (zastavený stack by přišel o data); respektovat `readOnly` agenta.
+- **Automatický rollback:** spustit maximálně jednou na jednu aktualizaci (`auto_rollback_attempted`), aby při trvalé externí chybě nedošlo k nekonečné smyčce.
+- **Import dat:** atomická výměna SQLite (přes `VACUUM INTO` / zálohu předchozího souboru) a odmítnutí nekompatibilní verze schématu.
+
+### Pořadí realizace (po schválení)
+1. UI úklid: **Hosts** + **Add-ons** (filtry, auto-katalog, společný stack `add-ons`) + **`.env` editor**.
+2. Jádro z roadmapy: **Obnova smazaného stacku** → **Úklid disku s náhledem a denní úlohou** → **Automatický rollback po auto-update** → **Export/import konfigurace i dat**.
+3. **Rozšíření notifikací** (události, kanály, UI toasty / Web Push).

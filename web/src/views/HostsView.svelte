@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, engineLabel, type Channel, type HostEntry, type TerminalAuditRow, type WatchdogAgent } from '../lib/api';
+  import { api, engineLabel, formatBytes, type Channel, type HostEntry, type PrunePreview, type WatchdogAgent } from '../lib/api';
   import { app, isAdmin, setHost } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
@@ -12,11 +12,10 @@
   let hosts = $state<HostEntry[] | null>(null);
   let agentPort = $state('5081');
   let acceptsAgents = $state(true);
-  let metricsOn = $state(false);
-  let metricsURL = $state('');
   let error = $state('');
 
   // add host
+  let showAdd = $state(false);
   let newName = $state('');
   let adding = $state(false);
   let addError = $state('');
@@ -31,7 +30,48 @@
   let removing = $state<HostEntry | null>(null);
   let confirmRemove = $state(false);
 
+  // disk cleanup
+  let pruneHost = $state<HostEntry | null>(null);
+  let pruneData = $state<PrunePreview | null>(null);
+  let pruneLoading = $state(false);
+  let pruneRunning = $state(false);
+  let pruneMsg = $state('');
+  let pruneError = $state('');
+  let pruneOpts = $state({ images: true, containers: true, buildCache: true, volumes: false });
+
+  async function openPrune(h: HostEntry) {
+    pruneHost = h;
+    pruneData = null;
+    pruneMsg = '';
+    pruneError = '';
+    pruneLoading = true;
+    try {
+      pruneData = await api.prunePreview(h.id);
+    } catch (e) {
+      pruneError = (e as Error).message;
+    } finally {
+      pruneLoading = false;
+    }
+  }
+
+  async function runPrune() {
+    if (!pruneHost) return;
+    pruneRunning = true;
+    pruneError = '';
+    pruneMsg = '';
+    try {
+      const res = await api.pruneDisk(pruneHost.id, pruneOpts);
+      pruneMsg = `Reclaimed ${formatBytes(res.reclaimedBytes)}.`;
+      pruneData = await api.prunePreview(pruneHost.id);
+    } catch (e) {
+      pruneError = (e as Error).message;
+    } finally {
+      pruneRunning = false;
+    }
+  }
+
   // hub watchdog
+  let wdOpen = $state(false);
   let wdLoaded = $state(false);
   let wdDirty = $state(false);
   let wdEnabled = $state(false);
@@ -48,8 +88,6 @@
   let wdTestMsg = $state('');
   let wdMaintBusy = $state(false);
 
-  // terminal audit log
-  let termSessions = $state<TerminalAuditRow[]>([]);
   let sysUpdateAvail = $state(false);
 
   async function load() {
@@ -59,8 +97,6 @@
       app.hosts = r.hosts;
       agentPort = r.agentPort || '5081';
       acceptsAgents = r.acceptsAgents ?? false;
-      metricsOn = r.metrics?.enabled ?? false;
-      metricsURL = r.metrics?.url || `${location.origin}/metrics`;
       if (!hubAddr) hubAddr = `${location.hostname}:${agentPort}`;
       error = '';
     } catch (e) {
@@ -68,14 +104,12 @@
     }
     if (isAdmin()) {
       try {
-        const [w, chs, ts] = await Promise.all([
+        const [w, chs] = await Promise.all([
           api.watchdog(),
           api.channels(),
-          api.terminalSessions().catch(() => []),
         ]);
         channels = chs.filter((c) => c.enabled);
         wdAgents = w.agents;
-        termSessions = ts ?? [];
         wdMaintenanceUntil = w.maintenanceUntil && Date.parse(w.maintenanceUntil) > Date.now() ? w.maintenanceUntil : '';
         if (!wdLoaded || !wdDirty) {
           wdEnabled = w.enabled;
@@ -181,13 +215,7 @@ volumes:
     return 'Offline since ' + new Date(h.lastSeen).toLocaleString();
   }
 
-  function fmtTermDuration(row: TerminalAuditRow): string {
-    if (!row.endedAt || row.endedAt.startsWith('0001-')) return 'active';
-    const sec = Math.max(0, Math.round((new Date(row.endedAt).getTime() - new Date(row.startedAt).getTime()) / 1000));
-    if (sec < 60) return `${sec} s`;
-    if (sec < 3600) return `${Math.floor(sec / 60)} m ${sec % 60} s`;
-    return `${Math.floor(sec / 3600)} h ${Math.floor((sec % 3600) / 60)} m`;
-  }
+  function fmtTermDuration() {}
 
   const wdSelectedCount = $derived(wdAgents.filter((a) => wdSelected[a.id]).length);
   const wdSelectedWithAddr = $derived(wdAgents.filter((a) => wdSelected[a.id] && a.addr).length);
@@ -268,20 +296,14 @@ volumes:
 
 <div class="hosts">
   <section class="card card-pad head">
-    <h1 class="title">Hosts</h1>
-    <p class="meta">
-      Each Docker host runs a Moorage agent that connects out to this hub over mutual TLS. An agent offers only stack
-      operations, never the raw Docker API.
-    </p>
-    {#if isAdmin() && hosts}
-      <p class="meta metrics">
-        {#if metricsOn}
-          Prometheus metrics: on at <span class="mono">{metricsURL}</span> (bearer token from <code>MOORAGE_METRICS_TOKEN</code>)
-        {:else}
-          Prometheus metrics: off. Set <code>MOORAGE_METRICS_TOKEN</code> to serve <span class="mono">/metrics</span>.
-        {/if}
-      </p>
-    {/if}
+    <div class="head-bar">
+      <h1 class="title">Hosts</h1>
+      {#if isAdmin()}
+        <button type="button" class="btn {showAdd || joined ? '' : 'btn-primary'}" onclick={() => (showAdd = !showAdd)}>
+          <Icon name={showAdd || joined ? 'x' : 'plus'} /> {showAdd || joined ? 'Close' : 'Add host'}
+        </button>
+      {/if}
+    </div>
   </section>
 
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
@@ -318,10 +340,15 @@ volumes:
               {#if h.stacksDir}<span class="mono">{h.stacksDir}</span>{/if}
             </div>
           </div>
-          {#if isAdmin() && h.kind === 'agent' && editing !== h.id}
+          {#if isAdmin() && editing !== h.id}
             <div class="row-actions">
-              <button class="btn btn-ghost" onclick={() => { editing = h.id; editName = h.name; }}>Rename</button>
-              <button class="btn btn-ghost danger" onclick={() => { removing = h; confirmRemove = true; }}>Remove</button>
+              {#if h.connected && !h.readOnly}
+                <button class="btn btn-ghost" onclick={() => openPrune(h)}>Disk cleanup</button>
+              {/if}
+              {#if h.kind === 'agent'}
+                <button class="btn btn-ghost" onclick={() => { editing = h.id; editName = h.name; }}>Rename</button>
+                <button class="btn btn-ghost danger" onclick={() => { removing = h; confirmRemove = true; }}>Remove</button>
+              {/if}
             </div>
           {/if}
         </div>
@@ -329,9 +356,55 @@ volumes:
     {/if}
   </section>
 
+  {#if isAdmin() && pruneHost}
+    <section class="card card-pad prune-card">
+      <div class="head-bar">
+        <h2 class="section-title">Disk cleanup · {pruneHost.name}</h2>
+        <button type="button" class="btn btn-ghost" onclick={() => (pruneHost = null)}><Icon name="x" /> Close</button>
+      </div>
+      {#if pruneLoading}
+        <div class="skeleton" style="height:14px;width:45%"></div>
+      {:else if pruneData}
+        <div class="prune-grid">
+          <label class="check">
+            <input type="checkbox" bind:checked={pruneOpts.images} />
+            <span>Unused images ({pruneData.imagesCount}) · <span class="mono">{formatBytes(pruneData.imagesBytes)}</span></span>
+          </label>
+          <label class="check">
+            <input type="checkbox" bind:checked={pruneOpts.containers} />
+            <span>Stopped containers ({pruneData.containersCount}) · <span class="mono">{formatBytes(pruneData.containersBytes)}</span></span>
+          </label>
+          <label class="check">
+            <input type="checkbox" bind:checked={pruneOpts.buildCache} />
+            <span>Build cache · <span class="mono">{formatBytes(pruneData.buildCacheBytes)}</span></span>
+          </label>
+          <label class="check">
+            <input type="checkbox" bind:checked={pruneOpts.volumes} />
+            <span>Unused volumes ({pruneData.volumesCount}) · <span class="mono">{formatBytes(pruneData.volumesBytes)}</span></span>
+          </label>
+        </div>
+        <div class="wd-actions">
+          <span class="meta">Estimated total: <strong class="mono">{formatBytes(pruneData.totalBytes)}</strong></span>
+          <span class="grow"></span>
+          {#if pruneMsg}<span class="meta ok">{pruneMsg}</span>{/if}
+          <button
+            type="button"
+            class="btn btn-primary"
+            disabled={pruneRunning || (!pruneOpts.images && !pruneOpts.containers && !pruneOpts.buildCache && !pruneOpts.volumes)}
+            onclick={runPrune}
+          >
+            {pruneRunning ? 'Cleaning…' : 'Clean up selected'}
+          </button>
+        </div>
+      {/if}
+      {#if pruneError}<p class="error-text" role="alert">{pruneError}</p>{/if}
+    </section>
+  {/if}
+
   {#if isAdmin()}
     <SystemUpdates primaryBusy={wdDirty || editing !== null} onUpdateAvail={(v) => (sysUpdateAvail = v)} />
 
+    {#if showAdd || joined}
     <section class="card card-pad add">
       <h2 class="section-title">Add a host</h2>
       {#if !acceptsAgents}
@@ -373,25 +446,33 @@ volumes:
           {#if copied}<p class="meta ok" role="status">{copied}</p>{/if}
 
           <p class="meta">Valid until {new Date(joined.expires).toLocaleString()}. The host appears above as connected once the agent starts.</p>
-          <button class="btn" onclick={() => (joined = null)}>Done</button>
+          <button class="btn" onclick={() => { joined = null; showAdd = false; }}>Done</button>
         </div>
       {/if}
     </section>
+    {/if}
 
     <form class="card card-pad watchdog" onsubmit={saveWatchdog}>
       <div class="wd-head">
-        <div>
+        <div class="wd-summary">
           <h2 class="section-title">Hub watchdog</h2>
-          <p class="meta">
-            When this hub goes down, watching agents agree on a single emergency notice (and a recovery notice when it is back)
-            and send it directly through the chosen channel.
-          </p>
+          <span class="tag {wdEnabled ? 'ok-tag' : ''}">{wdEnabled ? 'Enabled' : 'Off'}</span>
+          {#if wdEnabled}
+            <span class="meta">{wdSelectedCount} {wdSelectedCount === 1 ? 'agent' : 'agents'}</span>
+          {/if}
         </div>
-        <label class="check wd-switch">
-          <input type="checkbox" bind:checked={wdEnabled} onchange={() => (wdDirty = true)} />
-          <span>{wdEnabled ? 'Enabled' : 'Off'}</span>
-        </label>
+        <div class="wd-summary">
+          <label class="check wd-switch">
+            <input type="checkbox" bind:checked={wdEnabled} onchange={() => { wdDirty = true; wdOpen = true; }} />
+            <span>{wdEnabled ? 'On' : 'Off'}</span>
+          </label>
+          <button type="button" class="btn btn-ghost" onclick={() => (wdOpen = !wdOpen)}>
+            {wdOpen || wdDirty || wdError ? 'Hide' : 'Configure'}
+          </button>
+        </div>
       </div>
+
+      {#if wdOpen || wdDirty || wdError}
 
       <div class="wd-grid">
         <div>
@@ -477,59 +558,10 @@ volumes:
       </div>
 
       <p class="meta wd-foot">
-        The hub counts as down when most watching agents lose it. With 1 agent it decides alone, with 2 both must lose it.
-        When only one agent loses the hub, the hub sends a normal host-offline alert instead.
+        Quorum: majority of watching agents (1 decides alone, 2 require both). Single-agent disconnect sends a normal host-offline alert.
       </p>
-    </form>
-
-    <section class="card card-pad term-audit" aria-label="Terminal sessions">
-      <h2 class="section-title">Terminal sessions</h2>
-      <p class="meta">
-        Audit log of interactive container shells across all hosts (kept for 1 year). Typed commands and terminal output are
-        never recorded.
-      </p>
-      {#if termSessions.length === 0}
-        <p class="meta" style="margin-top:8px">No terminal sessions recorded yet.</p>
-      {:else}
-        <div class="term-table-wrap">
-          <table class="term-table">
-            <thead>
-              <tr>
-                <th>Started</th>
-                <th>User · IP</th>
-                <th>Host · Stack</th>
-                <th>Container · Shell</th>
-                <th>Duration</th>
-                <th>Ended</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each termSessions as ts (ts.id)}
-                <tr>
-                  <td class="mono">{new Date(ts.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
-                  <td>
-                    <span class="foam">{ts.user}</span>
-                    <span class="meta mono"> · {ts.ip}</span>
-                  </td>
-                  <td>
-                    <a href={`#/h/${encodeURIComponent(ts.hostId)}/stacks/${encodeURIComponent(ts.stack)}`}>
-                      {ts.hostName || ts.hostId} / {ts.stack}
-                    </a>
-                  </td>
-                  <td class="mono">{ts.containerName} · {ts.shell}</td>
-                  <td class="mono">{fmtTermDuration(ts)}</td>
-                  <td>
-                    <span class="tag {ts.reason === 'revoked' || ts.reason === 'error' ? 'ro' : ''}">
-                      {ts.reason || 'open'}{ts.exitCode !== undefined ? ` (${ts.exitCode})` : ''}
-                    </span>
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
       {/if}
-    </section>
+    </form>
   {/if}
 </div>
 
@@ -548,16 +580,34 @@ volumes:
     display: grid;
     gap: 6px;
   }
+  .head-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .wd-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ok-tag {
+    background: color-mix(in srgb, var(--afloat) 16%, transparent);
+    color: var(--afloat);
+  }
+  .prune-card {
+    display: grid;
+    gap: 10px;
+  }
+  .prune-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px;
+  }
   .title {
     font-size: 22px;
     font-weight: 600;
     letter-spacing: -0.015em;
-  }
-  .head .meta {
-    max-width: 70ch;
-  }
-  .metrics .mono {
-    overflow-wrap: anywhere;
   }
   .list {
     padding: 4px 0;

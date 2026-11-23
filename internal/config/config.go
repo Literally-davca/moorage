@@ -13,12 +13,13 @@ import (
 
 // Config holds runtime settings. All fields come from MOORAGE_* variables.
 type Config struct {
-	Listen        string // MOORAGE_LISTEN, default ":5080"
-	DataDir       string // MOORAGE_DATA_DIR, default "/data"
-	StacksDir     string // MOORAGE_STACKS_DIR, default "/opt/stacks"
-	SecureCookies bool   // MOORAGE_SECURE_COOKIES, set true behind HTTPS
-	PublicURL     string // MOORAGE_PUBLIC_URL, e.g. https://moorage.example.com, used for links in alerts
-	PUID, PGID    int    // MOORAGE_PUID / MOORAGE_PGID, owner of written stack files (-1 = leave as is)
+	Listen           string // MOORAGE_LISTEN, default ":5080"
+	DataDir          string // MOORAGE_DATA_DIR, default "/data"
+	StacksDir        string // MOORAGE_STACKS_DIR, default "/opt/stacks"
+	SecureCookies    bool   // MOORAGE_SECURE_COOKIES, auto-detected from HTTPS when unset
+	SecureCookiesSet bool   // true when MOORAGE_SECURE_COOKIES was explicitly set in env
+	PublicURL        string // MOORAGE_PUBLIC_URL, e.g. https://moorage.example.com, used for links in alerts
+	PUID, PGID       int    // MOORAGE_PUID / MOORAGE_PGID, owner of written stack files (-1 = leave as is)
 
 	// hub
 	AgentListen  string // MOORAGE_AGENT_LISTEN, default ":5081"; "off" disables pairing agents
@@ -38,9 +39,10 @@ type Config struct {
 	Probes bool
 
 	// Self-update (MOORAGE_UPDATE_URL, MOORAGE_UPDATE_CHANNEL, MOORAGE_SELF_UPDATE).
-	UpdateURL     string // MOORAGE_UPDATE_URL, default GitHub releases API of Literally-davca/moorage
-	UpdateChannel string // MOORAGE_UPDATE_CHANNEL: "stable" (default) or "pre"
-	SelfUpdate    bool   // MOORAGE_SELF_UPDATE (default true), enforced on each node
+	UpdateURL        string // MOORAGE_UPDATE_URL, default GitHub releases API of Literally-davca/moorage
+	UpdateChannel    string // MOORAGE_UPDATE_CHANNEL: "stable" (default) or "pre"
+	UpdateChannelSet bool   // true when MOORAGE_UPDATE_CHANNEL was explicitly set in env
+	SelfUpdate       bool   // MOORAGE_SELF_UPDATE (default true), enforced on each node
 
 	// OIDC sign-in (MOORAGE_OIDC_*). A broken setting never stops Moorage: it is kept in
 	// OIDC.Err, logged, and shown to admins, and the SSO button stays hidden.
@@ -95,15 +97,19 @@ func FromEnv() (Config, error) {
 		PUID:      -1,
 		PGID:      -1,
 
-		AgentListen:    env("MOORAGE_AGENT_LISTEN", ":5081"),
-		StatusListen:   os.Getenv("MOORAGE_STATUS_LISTEN"),
-		PublicURL:      os.Getenv("MOORAGE_PUBLIC_URL"),
-		Hub:            os.Getenv("MOORAGE_HUB"),
-		JoinToken:      os.Getenv("MOORAGE_JOIN_TOKEN"),
-		WatchdogListen: os.Getenv("MOORAGE_WATCHDOG_LISTEN"),
-		WatchdogAddr:   os.Getenv("MOORAGE_WATCHDOG_ADDR"),
-		UpdateURL:      strings.TrimRight(env("MOORAGE_UPDATE_URL", DefaultUpdateURL), "/"),
-		UpdateChannel:  strings.ToLower(strings.TrimSpace(env("MOORAGE_UPDATE_CHANNEL", "stable"))),
+		AgentListen:      env("MOORAGE_AGENT_LISTEN", ":5081"),
+		StatusListen:     os.Getenv("MOORAGE_STATUS_LISTEN"),
+		PublicURL:        os.Getenv("MOORAGE_PUBLIC_URL"),
+		Hub:              os.Getenv("MOORAGE_HUB"),
+		JoinToken:        os.Getenv("MOORAGE_JOIN_TOKEN"),
+		WatchdogListen:   env("MOORAGE_WATCHDOG_LISTEN", ":5082"),
+		WatchdogAddr:     os.Getenv("MOORAGE_WATCHDOG_ADDR"),
+		UpdateURL:        strings.TrimRight(env("MOORAGE_UPDATE_URL", DefaultUpdateURL), "/"),
+		UpdateChannel:    strings.ToLower(strings.TrimSpace(env("MOORAGE_UPDATE_CHANNEL", "stable"))),
+		UpdateChannelSet: strings.TrimSpace(os.Getenv("MOORAGE_UPDATE_CHANNEL")) != "",
+	}
+	if c.WatchdogListen == "off" {
+		c.WatchdogListen = ""
 	}
 	if c.UpdateChannel != "stable" && c.UpdateChannel != "pre" {
 		return c, fmt.Errorf("MOORAGE_UPDATE_CHANNEL must be stable or pre, not %q", c.UpdateChannel)
@@ -112,6 +118,9 @@ func FromEnv() (Config, error) {
 		c.AgentListen = ""
 	}
 	var err error
+	if strings.TrimSpace(os.Getenv("MOORAGE_SECURE_COOKIES")) != "" {
+		c.SecureCookiesSet = true
+	}
 	if c.SecureCookies, err = boolEnv("MOORAGE_SECURE_COOKIES"); err != nil {
 		return c, err
 	}

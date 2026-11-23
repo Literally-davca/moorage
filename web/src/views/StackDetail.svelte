@@ -5,6 +5,7 @@
     formatBytes,
     statusLabel,
     type Anchor,
+    type AutoRollback,
     type Check,
     type ImageCheckRow,
     type ImagePolicy,
@@ -35,6 +36,26 @@
 
   let stack = $state<Stack | null>(null);
   let loadError = $state('');
+  let autoRollbacks = $state<AutoRollback[]>([]);
+
+  $effect(() => {
+    const h = app.host;
+    const st = name;
+    api.autoRollbacks()
+      .then((list) => {
+        autoRollbacks = list.filter((r) => r.hostId === h && r.stack === st);
+      })
+      .catch(() => (autoRollbacks = []));
+  });
+
+  async function ackAutoRollback(id: number) {
+    try {
+      await api.ackAutoRollback(id);
+      autoRollbacks = autoRollbacks.filter((r) => r.id !== id);
+    } catch {
+      /* ignore */
+    }
+  }
   // A link to the timeline (#/h/<host>/stacks/<name>/history?at=…) opens the History tab.
   const routeTab = $derived(app.route.page === 'stack' ? app.route.tab : undefined);
   const routeAt = $derived(app.route.page === 'stack' ? app.route.at : undefined);
@@ -413,6 +434,25 @@
   </section>
 {:else}
   <div class="stackview">
+    {#if autoRollbacks.length > 0}
+      <section class="card card-pad" style="box-shadow:inset 3px 0 0 var(--signal)" role="alert">
+        {#each autoRollbacks as rb (rb.id)}
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div style="display:flex;align-items:flex-start;gap:10px">
+              <Icon name="alert" />
+              <div>
+                <strong>Auto-rollback triggered ({new Date(rb.at).toLocaleString()})</strong>
+                <div class="meta">Check <code>{rb.checkName}</code> failed after auto-update ({rb.reason}). Rolled back and switched update policy to notify.</div>
+              </div>
+            </div>
+            {#if canEdit()}
+              <button type="button" class="btn" onclick={() => ackAutoRollback(rb.id)}>Acknowledge</button>
+            {/if}
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     <section class="card card-pad head">
       <div class="head-row">
         <div class="ident">

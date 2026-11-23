@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"go.yaml.in/yaml/v4"
+
 	"moorage/internal/engine"
 	"moorage/internal/host"
 	"moorage/internal/netguard"
@@ -30,6 +32,7 @@ const (
 	addonOfficialTemplates = "official-templates"
 	addonPrometheusGrafana = "prometheus-grafana"
 	addonPrometheusLegacy  = "prometheus-metrics"
+	addonsStackName        = "add-ons"
 )
 
 // AddonInfo describes one built-in or installed add-on in Settings -> Add-ons.
@@ -101,13 +104,15 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	pubURL := s.effectivePublicURL(ctx)
 	metricsURL := "/metrics"
-	if s.cfg.PublicURL != "" {
-		metricsURL = strings.TrimRight(s.cfg.PublicURL, "/") + "/metrics"
+	if pubURL != "" {
+		metricsURL = pubURL + "/metrics"
 	}
-	metricsDetail := "Set MOORAGE_METRICS_TOKEN (min. 16 characters) in the hub environment to enable /metrics. Grafana dashboard JSON lives in deploy/grafana/moorage-dashboard.json."
-	if s.cfg.MetricsToken != "" {
-		metricsDetail = "Serving Prometheus metrics at " + metricsURL + " (bearer auth). Grafana dashboard JSON: deploy/grafana/moorage-dashboard.json."
+	metricsTok := s.effectiveMetricsToken(ctx)
+	metricsDetail := "Enable to generate a bearer token for /metrics (or set MOORAGE_METRICS_TOKEN in environment). Grafana dashboard: deploy/grafana/moorage-dashboard.json."
+	if metricsTok != "" {
+		metricsDetail = "Serving Prometheus metrics at " + metricsURL + " (bearer auth). Configure token in Settings -> General."
 	}
 
 	list := []AddonInfo{
@@ -146,10 +151,12 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Kind:        "builtin",
 			RAM:         "+1–3 MB",
 			CPU:         "< 1%",
-			Enabled:     s.cfg.MetricsToken != "",
+			Enabled:     metricsTok != "",
 			Installed:   true,
-			Toggleable:  false,
+			Toggleable:  s.cfg.MetricsToken == "",
 			Detail:      metricsDetail,
+			LinkHref:    "#/settings/general",
+			LinkLabel:   "General settings",
 		},
 	}
 
@@ -296,20 +303,43 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stackName := "addon-" + entry.ID
+	stackName := addonsStackName
 	user := currentUser(r).Username
 	note := "Installed add-on " + entry.Name
-	if nc, ok := h.(host.NotedCreator); ok {
-		err = nc.CreateNoted(ctx, stackName, string(composeRaw), "", user, note)
+
+	var prevCompose, prevEnv string
+	existed := false
+	if cur, err := h.GetStack(ctx, stackName); err == nil {
+		existed = true
+		prevCompose = cur.Compose
+		prevEnv = cur.Env
+	}
+
+	merged, err := mergeAddonCompose(prevCompose, entry.ID, composeRaw)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "Invalid add-on compose.yaml: "+err.Error())
+		return
+	}
+
+	if !existed {
+		if nc, ok := h.(host.NotedCreator); ok {
+			err = nc.CreateNoted(ctx, stackName, merged, prevEnv, user, note)
+		} else {
+			err = h.Save(ctx, stackName, merged, prevEnv, user, true)
+		}
 	} else {
-		err = h.Save(ctx, stackName, string(composeRaw), "", user, true)
+		err = h.Save(ctx, stackName, merged, prevEnv, user, false)
 	}
 	if err != nil {
 		s.engErr(w, err)
 		return
 	}
 	if _, err := h.RunAction(ctx, stackName, "up", user); err != nil {
-		_ = h.Delete(ctx, stackName, user)
+		if existed {
+			_ = h.Save(ctx, stackName, prevCompose, prevEnv, user, false)
+		} else {
+			_ = h.Delete(ctx, stackName, user)
+		}
 		s.engErr(w, err)
 		return
 	}
@@ -355,7 +385,23 @@ func (s *Server) setAddon(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 
 	case addonPrometheusGrafana, addonPrometheusLegacy:
-		writeErr(w, http.StatusConflict, "Prometheus metrics are configured via MOORAGE_METRICS_TOKEN on the hub.")
+		if s.cfg.MetricsToken != "" {
+			writeErr(w, http.StatusConflict, "MOORAGE_METRICS_TOKEN is set in environment.")
+			return
+		}
+		if req.Enabled {
+			if tok := s.effectiveMetricsToken(ctx); tok == "" {
+				s.generateMetricsToken(w, r)
+				return
+			}
+		} else {
+			if err := s.store.SetSetting(ctx, store.SettingMetricsToken, ""); err != nil {
+				s.engErr(w, err)
+				return
+			}
+		}
+		setAuditTarget(r, id)
+		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		ia, err := s.store.InstalledAddonByID(ctx, id)
@@ -378,13 +424,29 @@ func (s *Server) setAddon(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusForbidden, host.ErrHostReadOnly.Error())
 				return
 			}
-			action := "stop"
-			if req.Enabled {
-				action = "up"
-			}
-			if _, err := h.RunAction(ctx, ia.StackName, action, currentUser(r).Username); err != nil {
-				s.engErr(w, err)
-				return
+			user := currentUser(r).Username
+			if ia.StackName == addonsStackName {
+				if cur, err := h.GetStack(ctx, ia.StackName); err == nil {
+					if nextCompose, changed, err := setAddonServiceDisabled(cur.Compose, ia.ID, !req.Enabled); err == nil && changed {
+						if err := h.Save(ctx, ia.StackName, nextCompose, cur.Env, user, false); err != nil {
+							s.engErr(w, err)
+							return
+						}
+						if _, err := h.RunAction(ctx, ia.StackName, "up", user); err != nil {
+							s.engErr(w, err)
+							return
+						}
+					}
+				}
+			} else {
+				action := "stop"
+				if req.Enabled {
+					action = "up"
+				}
+				if _, err := h.RunAction(ctx, ia.StackName, action, user); err != nil {
+					s.engErr(w, err)
+					return
+				}
 			}
 		}
 		ia.Enabled = req.Enabled
@@ -428,12 +490,40 @@ func (s *Server) uninstallAddon(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusForbidden, host.ErrHostReadOnly.Error())
 				return
 			}
-			if op, err := h.RunAction(ctx, ia.StackName, "down", currentUser(r).Username); err == nil && op.ID != "" {
-				_ = h.FollowOp(ctx, op.ID, func(host.OpEvent) error { return nil })
-			}
-			if err := h.Delete(ctx, ia.StackName, currentUser(r).Username); err != nil && !errors.Is(err, engine.ErrNotFound) {
-				s.engErr(w, err)
-				return
+			user := currentUser(r).Username
+			if ia.StackName == addonsStackName {
+				if cur, err := h.GetStack(ctx, ia.StackName); err == nil {
+					nextCompose, empty, err := removeAddonFromCompose(cur.Compose, ia.ID)
+					if err != nil {
+						s.engErr(w, err)
+						return
+					}
+					if empty {
+						if op, err := h.RunAction(ctx, ia.StackName, "down", user); err == nil && op.ID != "" {
+							_ = h.FollowOp(ctx, op.ID, func(host.OpEvent) error { return nil })
+						}
+						if err := h.Delete(ctx, ia.StackName, user); err != nil && !errors.Is(err, engine.ErrNotFound) {
+							s.engErr(w, err)
+							return
+						}
+					} else {
+						if err := h.Save(ctx, ia.StackName, nextCompose, cur.Env, user, false); err != nil {
+							s.engErr(w, err)
+							return
+						}
+						if op, err := h.RunAction(ctx, ia.StackName, "up", user); err == nil && op.ID != "" {
+							_ = h.FollowOp(ctx, op.ID, func(host.OpEvent) error { return nil })
+						}
+					}
+				}
+			} else {
+				if op, err := h.RunAction(ctx, ia.StackName, "down", user); err == nil && op.ID != "" {
+					_ = h.FollowOp(ctx, op.ID, func(host.OpEvent) error { return nil })
+				}
+				if err := h.Delete(ctx, ia.StackName, user); err != nil && !errors.Is(err, engine.ErrNotFound) {
+					s.engErr(w, err)
+					return
+				}
 			}
 		}
 	}
@@ -562,4 +652,169 @@ func fetchCatalogBytes(ctx context.Context, rawURL string) ([]byte, error) {
 		return nil, errors.New("add-on file exceeds 1 MiB")
 	}
 	return b, nil
+}
+
+func parseComposeMap(raw []byte) (map[string]any, error) {
+	doc := map[string]any{}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return doc, nil
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	return doc, nil
+}
+
+func asMap(v any) map[string]any {
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+func setServiceAddonLabel(svc map[string]any, addonID string) {
+	switch lbl := svc["labels"].(type) {
+	case map[string]any:
+		lbl["moorage.addon"] = addonID
+	case []any:
+		out := make([]any, 0, len(lbl)+1)
+		for _, item := range lbl {
+			if s, ok := item.(string); ok && strings.HasPrefix(s, "moorage.addon=") {
+				continue
+			}
+			out = append(out, item)
+		}
+		out = append(out, "moorage.addon="+addonID)
+		svc["labels"] = out
+	default:
+		svc["labels"] = map[string]any{"moorage.addon": addonID}
+	}
+}
+
+func hasServiceAddonLabel(svc map[string]any, addonID string) bool {
+	switch lbl := svc["labels"].(type) {
+	case map[string]any:
+		v, _ := lbl["moorage.addon"].(string)
+		return v == addonID
+	case []any:
+		want := "moorage.addon=" + addonID
+		for _, item := range lbl {
+			if s, ok := item.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func mergeAddonCompose(existingYAML string, addonID string, addonRaw []byte) (string, error) {
+	base, err := parseComposeMap([]byte(existingYAML))
+	if err != nil {
+		return "", err
+	}
+	part, err := parseComposeMap(addonRaw)
+	if err != nil {
+		return "", err
+	}
+	partSvcs := asMap(part["services"])
+	if len(partSvcs) == 0 {
+		return "", errors.New("compose.yaml defines no services")
+	}
+
+	baseSvcs := asMap(base["services"])
+	if baseSvcs == nil {
+		baseSvcs = map[string]any{}
+		base["services"] = baseSvcs
+	}
+	for name, rawSvc := range partSvcs {
+		svc := asMap(rawSvc)
+		if svc == nil {
+			continue
+		}
+		setServiceAddonLabel(svc, addonID)
+		baseSvcs[name] = svc
+	}
+
+	for _, topKey := range []string{"volumes", "networks"} {
+		partTop := asMap(part[topKey])
+		if len(partTop) == 0 {
+			continue
+		}
+		baseTop := asMap(base[topKey])
+		if baseTop == nil {
+			baseTop = map[string]any{}
+			base[topKey] = baseTop
+		}
+		for k, v := range partTop {
+			if _, exists := baseTop[k]; !exists {
+				baseTop[k] = v
+			}
+		}
+	}
+
+	out, err := yaml.Marshal(base)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func setAddonServiceDisabled(existingYAML string, addonID string, disabled bool) (string, bool, error) {
+	doc, err := parseComposeMap([]byte(existingYAML))
+	if err != nil {
+		return "", false, err
+	}
+	svcs := asMap(doc["services"])
+	if len(svcs) == 0 {
+		return existingYAML, false, nil
+	}
+	changed := false
+	for name, rawSvc := range svcs {
+		svc := asMap(rawSvc)
+		if svc == nil {
+			continue
+		}
+		if !hasServiceAddonLabel(svc, addonID) && name != addonID {
+			continue
+		}
+		if disabled {
+			svc["profiles"] = []string{"disabled"}
+		} else {
+			delete(svc, "profiles")
+		}
+		changed = true
+	}
+	if !changed {
+		return existingYAML, false, nil
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return "", false, err
+	}
+	return string(out), true, nil
+}
+
+func removeAddonFromCompose(existingYAML string, addonID string) (string, bool, error) {
+	doc, err := parseComposeMap([]byte(existingYAML))
+	if err != nil {
+		return "", false, err
+	}
+	svcs := asMap(doc["services"])
+	for name, rawSvc := range svcs {
+		svc := asMap(rawSvc)
+		if svc != nil && (hasServiceAddonLabel(svc, addonID) || name == addonID) {
+			delete(svcs, name)
+		}
+	}
+	if len(svcs) == 0 {
+		return "", true, nil
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return "", false, err
+	}
+	return string(out), false, nil
 }

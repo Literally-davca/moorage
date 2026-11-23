@@ -379,6 +379,7 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 		return nil, fmt.Errorf("stack dependencies: %w", err)
 	}
 	apiSrv.SetHubContext(ctx)
+	apiSrv.StartCleanupLoop(ctx)
 	// OIDC discovery runs in the background and retries: an IdP that is down or a broken
 	// setting never stops Moorage (the Users page shows the problem to admins).
 	apiSrv.StartSSO(ctx)

@@ -65,6 +65,17 @@ type SelfApplier interface {
 	SelfApply(ctx context.Context, name, compose, env, author string) error
 }
 
+// DeletedStacksSource is implemented by hosts that can list deleted stacks in history.git.
+type DeletedStacksSource interface {
+	DeletedStacks(ctx context.Context) ([]engine.DeletedStack, error)
+}
+
+// DiskPruner is implemented by hosts that support disk cleanup preview and execution.
+type DiskPruner interface {
+	PrunePreview(ctx context.Context) (engine.PrunePreview, error)
+	PruneDisk(ctx context.Context, req engine.PruneRequest) (engine.PruneResult, error)
+}
+
 // Errors specific to hosts (engine errors pass through unchanged).
 var (
 	ErrOffline               = errors.New("this host is offline")

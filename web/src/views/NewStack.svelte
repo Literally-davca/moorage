@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { api, type ImageLookup, type ImageCandidate } from '../lib/api';
+  import { untrack } from 'svelte';
+  import { api, type DeletedStack, type ImageLookup, type ImageCandidate } from '../lib/api';
   import { link } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import CodeEditor from '../lib/CodeEditor.svelte';
@@ -21,6 +22,27 @@
   let error = $state('');
   let busy = $state(false);
   let validation = $state('');
+  let deleted = $state<DeletedStack[]>([]);
+  let restoring = $state<string | null>(null);
+
+  $effect(() => {
+    untrack(() => {
+      api.deletedStacks().then((d) => (deleted = d)).catch(() => (deleted = []));
+    });
+  });
+
+  async function restoreDeleted(d: DeletedStack, deploy: boolean) {
+    restoring = d.name;
+    error = '';
+    try {
+      await api.restoreDeletedStack(d.name, d.hash, deploy);
+      onCreated(d.name);
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      restoring = null;
+    }
+  }
 
   // convert dialog
   let dlg: HTMLDialogElement;
@@ -161,6 +183,30 @@
       </ul>
     {/if}
   </section>
+
+  {#if deleted.length > 0}
+    <section class="card card-pad find">
+      <h2 class="section-title">Restore deleted stack</h2>
+      <ul class="cands">
+        {#each deleted as d (d.name)}
+          <li class="cand">
+            <div>
+              <span class="mono">{d.name}</span>
+              <span class="meta"> · deleted {new Date(d.deletedAt).toLocaleString()}</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button type="button" class="btn" disabled={restoring !== null} onclick={() => restoreDeleted(d, false)}>
+                {restoring === d.name ? 'Restoring…' : 'Restore'}
+              </button>
+              <button type="button" class="btn" disabled={restoring !== null} onclick={() => restoreDeleted(d, true)}>
+                Restore &amp; deploy
+              </button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 
   <div class="name">
     <label class="label" for="sname">Name</label>

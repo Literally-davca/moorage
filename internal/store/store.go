@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -404,11 +405,39 @@ var migrations = []string{
 		installed_at INTEGER NOT NULL,
 		updated_at   INTEGER NOT NULL
 	);`,
+	`CREATE TABLE app_settings (
+		key        TEXT    PRIMARY KEY,
+		value      TEXT    NOT NULL,
+		updated_at INTEGER NOT NULL
+	);`,
+	`CREATE TABLE auto_rollbacks (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		host_id      TEXT    NOT NULL,
+		stack        TEXT    NOT NULL,
+		update_id    INTEGER NOT NULL,
+		check_name   TEXT    NOT NULL,
+		reason       TEXT    NOT NULL DEFAULT '',
+		at           INTEGER NOT NULL,
+		acknowledged INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX idx_auto_rollbacks_unacked ON auto_rollbacks(acknowledged, at DESC);`,
 }
 
 // Open opens (and migrates) moorage.db in dataDir.
 func Open(dataDir string) (*Store, error) {
-	dsn := "file:" + filepath.Join(dataDir, "moorage.db") +
+	dbPath := filepath.Join(dataDir, "moorage.db")
+	restorePath := filepath.Join(dataDir, "moorage.db.restore")
+	if _, err := os.Stat(restorePath); err == nil {
+		if _, err := os.Stat(dbPath); err == nil {
+			_ = os.Rename(dbPath, dbPath+".bak")
+		}
+		_ = os.Remove(dbPath + "-wal")
+		_ = os.Remove(dbPath + "-shm")
+		if err := os.Rename(restorePath, dbPath); err != nil {
+			return nil, fmt.Errorf("apply staged restore: %w", err)
+		}
+	}
+	dsn := "file:" + dbPath +
 		"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

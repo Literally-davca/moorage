@@ -2,6 +2,7 @@
   import { isAdmin, type SettingsTab } from '../lib/state.svelte';
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import HostsView from './HostsView.svelte';
+  import GeneralSettingsView from './GeneralSettingsView.svelte';
   import NotificationsView from './NotificationsView.svelte';
   import AuditView from './AuditView.svelte';
   import UsersView from './UsersView.svelte';
@@ -14,6 +15,7 @@
     { id: 'hosts', label: 'Hosts', icon: 'server', href: '#/settings/hosts' },
     ...(isAdmin()
       ? [
+          { id: 'general' as const, label: 'General', icon: 'settings' as const, href: '#/settings/general' },
           { id: 'notifications' as const, label: 'Notifications', icon: 'bell' as const, href: '#/settings/notifications' },
           { id: 'audit' as const, label: 'Audit', icon: 'clipboardList' as const, href: '#/settings/audit' },
           { id: 'users' as const, label: 'Users', icon: 'users' as const, href: '#/settings/users' },
@@ -37,6 +39,8 @@
 
   {#if activeTab === 'hosts'}
     <HostsView onChanged={onHostsChanged} />
+  {:else if activeTab === 'general'}
+    <GeneralSettingsView />
   {:else if activeTab === 'notifications'}
     <NotificationsView />
   {:else if activeTab === 'audit'}

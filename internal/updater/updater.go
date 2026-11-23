@@ -1164,8 +1164,119 @@ func changedServices(rec store.ImageUpdate) []string {
 	return parts
 }
 
+// HandleStackCheckDown triggers an automatic rollback when a check on a stack fails
+// shortly after an automatic image update.
+func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
+	if u == nil || stack == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(u.bg(), 2*time.Minute)
+	defer cancel()
+
+	updates, err := u.st.ImageUpdates(ctx, hostID, stack, 1)
+	if err != nil || len(updates) == 0 {
+		return
+	}
+	rec := updates[0]
+	if rec.Result != "ok" || !strings.Contains(strings.ToLower(rec.Actor), "auto") {
+		return
+	}
+	refTime := rec.FinishedAt
+	if refTime.IsZero() {
+		refTime = rec.StartedAt
+	}
+	if u.now().Sub(refTime) > 15*time.Minute {
+		return
+	}
+	already, err := u.st.HasAutoRollbackForUpdate(ctx, rec.ID)
+	if err != nil || already {
+		return
+	}
+
+	if _, err := u.Rollback(ctx, hostID, stack, rec.ID, "auto-rollback"); err != nil {
+		if u.log != nil {
+			u.log.Warn("auto-rollback failed", "host", hostID, "stack", stack, "err", err)
+		}
+		return
+	}
+
+	if pol, err := u.st.StackUpdatePolicy(ctx, hostID, stack); err == nil {
+		pol.Policy = "notify"
+		_ = u.st.SaveStackUpdatePolicy(ctx, pol)
+	}
+
+	_, _ = u.st.InsertAutoRollback(ctx, store.AutoRollback{
+		HostID:    hostID,
+		Stack:     stack,
+		UpdateID:  rec.ID,
+		CheckName: checkName,
+		Reason:    cause,
+		At:        u.now(),
+	})
+	_ = u.st.Audit(ctx, store.AuditEntry{
+		At:     u.now(),
+		Actor:  "system",
+		Action: "stack.auto_rollback",
+		HostID: hostID,
+		Stack:  stack,
+		Target: fmt.Sprintf("update #%d (%s)", rec.ID, checkName),
+		Result: "ok",
+	})
+
+	var ids []int64
+	seen := map[int64]bool{}
+	if us, err := u.st.UpdateSettings(ctx); err == nil {
+		for _, id := range us.ChannelIDs {
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	if chs, err := u.st.ListChannels(ctx); err == nil {
+		for _, ch := range chs {
+			if !ch.Enabled || seen[ch.ID] {
+				continue
+			}
+			var cfg notify.Config
+			if json.Unmarshal([]byte(ch.Config), &cfg) == nil && cfg.WantsEvent("rollback") {
+				seen[ch.ID] = true
+				ids = append(ids, ch.ID)
+			}
+		}
+	}
+	if len(ids) > 0 {
+		u.deliverToChannels(ctx, ids, notify.Message{
+			Status: "down",
+			Title:  fmt.Sprintf("Auto-rollback: %s (%s)", stack, checkName),
+			Text:   fmt.Sprintf("Check %q failed after auto-update (%s). Rolled back to previous images and switched update policy to notify.", checkName, cause),
+			URL:    u.stackURL(hostID, stack),
+		})
+	}
+}
+
 func (u *Updater) sendAutoAppliedNotice(ctx context.Context, channelIDs []int64, stack string, rec store.ImageUpdate) {
-	u.deliverToChannels(ctx, channelIDs, notify.Message{
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, id := range channelIDs {
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if chs, err := u.st.ListChannels(ctx); err == nil {
+		for _, ch := range chs {
+			if !ch.Enabled || seen[ch.ID] {
+				continue
+			}
+			var cfg notify.Config
+			if json.Unmarshal([]byte(ch.Config), &cfg) == nil && cfg.WantsEvent("auto_update") {
+				seen[ch.ID] = true
+				ids = append(ids, ch.ID)
+			}
+		}
+	}
+	u.deliverToChannels(ctx, ids, notify.Message{
 		Status: "up",
 		Title:  fmt.Sprintf("Updated %s: %s", stack, strings.Join(changedServices(rec), ", ")),
 		URL:    u.stackURL(rec.HostID, stack),

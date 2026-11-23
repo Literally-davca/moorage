@@ -87,9 +87,40 @@
   const overflow = $derived(pages.slice(visibleCount));
   const overflowCurrent = $derived(overflow.find((p) => p.current));
 
+  type Toast = { id: number; title: string; body: string };
+  let toasts = $state<Toast[]>([]);
+  let prevDownIds: Set<number> | null = null;
+  let toastSeq = 0;
+
+  function pushToast(title: string, body: string) {
+    const id = ++toastSeq;
+    toasts = [...toasts.slice(-3), { id, title, body }];
+    setTimeout(() => {
+      toasts = toasts.filter((t) => t.id !== id);
+    }, 8000);
+    try {
+      if (localStorage.getItem('moorage-browser-alerts') === '1' && 'Notification' in window && Notification.permission === 'granted') {
+        new Notification(title, { body });
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   async function loadCheckCount() {
     try {
-      checksDown = (await api.checks()).filter((c) => c.state.status === 'down').length;
+      const list = await api.checks();
+      const down = list.filter((c) => c.enabled && c.state.status === 'down');
+      checksDown = down.length;
+      const curIds = new Set(down.map((c) => c.id));
+      if (prevDownIds !== null) {
+        for (const c of down) {
+          if (!prevDownIds.has(c.id)) {
+            pushToast(`Check down: ${c.name}`, c.state.last?.msg || c.stack || c.kind);
+          }
+        }
+      }
+      prevDownIds = curIds;
     } catch {
       /* not important */
     }
@@ -556,6 +587,23 @@
   </div>
 {/if}
 
+{#if toasts.length > 0}
+  <div class="toasts" aria-live="polite">
+    {#each toasts as t (t.id)}
+      <div class="toast card">
+        <Icon name="alert" />
+        <div class="toast-body">
+          <div class="toast-title">{t.title}</div>
+          {#if t.body}<div class="meta">{t.body}</div>{/if}
+        </div>
+        <button type="button" class="btn btn-ghost btn-icon" aria-label="Dismiss" onclick={() => (toasts = toasts.filter((x) => x.id !== t.id))}>
+          <Icon name="x" />
+        </button>
+      </div>
+    {/each}
+  </div>
+{/if}
+
 <style>
   .shell {
     display: grid;
@@ -565,6 +613,32 @@
     min-height: 100vh;
     max-width: 1464px;
     margin: 0 auto;
+  }
+  .toasts {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 60;
+    display: grid;
+    gap: 8px;
+    width: min(360px, calc(100vw - 32px));
+  }
+  .toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 12px;
+    background: var(--pier-raised);
+    box-shadow: 0 0 0 1px var(--rope-strong), inset 3px 0 0 var(--adrift);
+  }
+  .toast-body {
+    flex: 1;
+    min-width: 0;
+  }
+  .toast-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--foam);
   }
   .side {
     position: sticky;

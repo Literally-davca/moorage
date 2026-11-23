@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, type AuditEntry } from '../lib/api';
+  import { api, type AuditEntry, type TerminalAuditRow } from '../lib/api';
   import { app } from '../lib/state.svelte';
   import { auditGroups } from '../lib/audit';
   import AuditList from '../lib/AuditList.svelte';
@@ -9,6 +9,7 @@
   const pageSize = 100;
 
   let entries = $state<AuditEntry[] | null>(null);
+  let termSessions = $state<TerminalAuditRow[]>([]);
   let more = $state(false);
   let error = $state('');
   let loadingMore = $state(false);
@@ -30,13 +31,25 @@
   async function load() {
     error = '';
     try {
-      const r = await api.audit(filter());
+      const [r, ts] = await Promise.all([
+        api.audit(filter()),
+        api.terminalSessions().catch(() => []),
+      ]);
       entries = r.entries;
       more = r.more;
+      termSessions = ts ?? [];
     } catch (e) {
       error = (e as Error).message;
       entries = entries ?? [];
     }
+  }
+
+  function fmtTermDuration(row: TerminalAuditRow): string {
+    if (!row.endedAt || row.endedAt.startsWith('0001-')) return 'active';
+    const sec = Math.max(0, Math.round((new Date(row.endedAt).getTime() - new Date(row.startedAt).getTime()) / 1000));
+    if (sec < 60) return `${sec} s`;
+    if (sec < 3600) return `${Math.floor(sec / 60)} m ${sec % 60} s`;
+    return `${Math.floor(sec / 3600)} h ${Math.floor((sec % 3600) / 60)} m`;
   }
 
   async function loadMore() {
@@ -70,13 +83,7 @@
 
 <div class="page">
   <section class="card card-pad head">
-    <div>
-      <h1 class="title">Audit log</h1>
-      <p class="meta">
-        Every change made through Moorage: who, when, from which IP and whether it worked. Kept for 1 year. Request
-        contents such as passwords or compose files are never stored.
-      </p>
-    </div>
+    <h1 class="title">Audit log</h1>
   </section>
 
   <form class="card card-pad filters" onsubmit={(e) => { e.preventDefault(); load(); }} aria-label="Filter the audit log">
@@ -124,6 +131,49 @@
       {/if}
     </section>
   {/if}
+
+  {#if termSessions.length > 0}
+    <section class="card card-pad term-audit" aria-label="Terminal sessions">
+      <h2 class="section-title">Terminal sessions</h2>
+      <div class="term-table-wrap">
+        <table class="term-table">
+          <thead>
+            <tr>
+              <th>Started</th>
+              <th>User · IP</th>
+              <th>Host · Stack</th>
+              <th>Container · Shell</th>
+              <th>Duration</th>
+              <th>Ended</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each termSessions as ts (ts.id)}
+              <tr>
+                <td class="mono">{new Date(ts.startedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                <td>
+                  <span class="foam">{ts.user}</span>
+                  <span class="meta mono"> · {ts.ip}</span>
+                </td>
+                <td>
+                  <a href={`#/h/${encodeURIComponent(ts.hostId)}/stacks/${encodeURIComponent(ts.stack)}`}>
+                    {ts.hostName || ts.hostId} / {ts.stack}
+                  </a>
+                </td>
+                <td class="mono">{ts.containerName} · {ts.shell}</td>
+                <td class="mono">{fmtTermDuration(ts)}</td>
+                <td>
+                  <span class="tag {ts.reason === 'revoked' || ts.reason === 'error' ? 'ro' : ''}">
+                    {ts.reason || 'open'}{ts.exitCode !== undefined ? ` (${ts.exitCode})` : ''}
+                  </span>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {/if}
 </div>
 
 <style>
@@ -136,10 +186,6 @@
     font-size: 22px;
     font-weight: 600;
     letter-spacing: -0.015em;
-  }
-  .head .meta {
-    max-width: 70ch;
-    margin-top: 4px;
   }
   .filters {
     display: grid;
@@ -160,5 +206,25 @@
     justify-content: center;
     padding: 12px;
     border-top: 1px solid var(--rope);
+  }
+  .term-table-wrap {
+    overflow-x: auto;
+    margin-top: 8px;
+  }
+  .term-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .term-table th,
+  .term-table td {
+    text-align: left;
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--rope);
+    white-space: nowrap;
+  }
+  .term-table th {
+    color: var(--haze);
+    font-weight: 500;
   }
 </style>

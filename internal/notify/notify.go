@@ -21,6 +21,7 @@ import (
 	"net/mail"
 	"net/smtp"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,20 +30,40 @@ import (
 )
 
 // Kinds of channels.
-var Kinds = map[string]bool{"webhook": true, "ntfy": true, "telegram": true, "discord": true, "smtp": true}
+var Kinds = map[string]bool{
+	"webhook":  true,
+	"ntfy":     true,
+	"telegram": true,
+	"discord":  true,
+	"smtp":     true,
+	"slack":    true,
+	"gotify":   true,
+	"pushover": true,
+	"matrix":   true,
+}
 
 // Config is the kind-specific configuration of a channel.
 type Config struct {
-	URL      string `json:"url,omitempty"`      // webhook, ntfy topic URL, discord webhook
-	Token    string `json:"token,omitempty"`    // webhook bearer, ntfy access token, telegram bot token
-	ChatID   string `json:"chatId,omitempty"`   // telegram
-	Host     string `json:"host,omitempty"`     // smtp
-	Port     int    `json:"port,omitempty"`     // smtp
-	Security string `json:"security,omitempty"` // smtp: starttls (default) | tls
-	Username string `json:"username,omitempty"` // smtp
-	Password string `json:"password,omitempty"` // smtp
-	From     string `json:"from,omitempty"`     // smtp
-	To       string `json:"to,omitempty"`       // smtp, comma separated
+	URL      string            `json:"url,omitempty"`      // webhook, ntfy topic URL, discord/slack webhook, gotify/matrix server
+	Token    string            `json:"token,omitempty"`    // webhook bearer, ntfy/gotify/matrix/pushover token, telegram bot token
+	ChatID   string            `json:"chatId,omitempty"`   // telegram chat ID, pushover user key, matrix room ID
+	Host     string            `json:"host,omitempty"`     // smtp
+	Port     int               `json:"port,omitempty"`     // smtp
+	Security string            `json:"security,omitempty"` // smtp: starttls (default) | tls
+	Username string            `json:"username,omitempty"` // smtp
+	Password string            `json:"password,omitempty"` // smtp
+	From     string            `json:"from,omitempty"`     // smtp
+	To       string            `json:"to,omitempty"`       // smtp, comma separated
+	Headers  map[string]string `json:"headers,omitempty"`  // custom HTTP headers for webhook
+	Events   []string          `json:"events,omitempty"`   // subscribed event kinds (empty = checks only)
+}
+
+// WantsEvent reports whether the channel is subscribed to eventKind.
+func (c Config) WantsEvent(eventKind string) bool {
+	if len(c.Events) == 0 {
+		return eventKind == "checks"
+	}
+	return slices.Contains(c.Events, eventKind)
 }
 
 // SecretMask replaces secrets in API responses; sending it back keeps the stored value.
@@ -59,6 +80,10 @@ func secretFields(kind string) []string {
 		return []string{"token"}
 	case "discord":
 		return []string{"url"} // the webhook URL is the secret
+	case "slack":
+		return []string{"url"}
+	case "gotify", "pushover", "matrix":
+		return []string{"token"}
 	case "smtp":
 		return []string{"password"}
 	}
@@ -112,6 +137,26 @@ func Validate(kind string, c Config) error {
 		return httpURL(c.URL, "The topic URL (for example https://ntfy.sh/my-alerts)")
 	case "discord":
 		return httpURL(c.URL, "The Discord webhook URL")
+	case "slack":
+		return httpURL(c.URL, "The Slack webhook URL")
+	case "gotify":
+		if err := httpURL(c.URL, "The Gotify server URL"); err != nil {
+			return err
+		}
+		if c.Token == "" {
+			return errors.New("Gotify needs an application token")
+		}
+	case "pushover":
+		if c.Token == "" || c.ChatID == "" {
+			return errors.New("Pushover needs an app token and a user key")
+		}
+	case "matrix":
+		if err := httpURL(c.URL, "The Matrix homeserver URL"); err != nil {
+			return err
+		}
+		if c.ChatID == "" || c.Token == "" {
+			return errors.New("Matrix needs a room ID and an access token")
+		}
 	case "telegram":
 		if c.Token == "" || c.ChatID == "" {
 			return errors.New("Telegram needs the bot token and the chat ID")
@@ -204,6 +249,14 @@ func Send(ctx context.Context, kind string, c Config, m Message) error {
 		return sendDiscord(ctx, c, m)
 	case "smtp":
 		return sendSMTP(ctx, c, m)
+	case "slack":
+		return sendSlack(ctx, c, m)
+	case "gotify":
+		return sendGotify(ctx, c, m)
+	case "pushover":
+		return sendPushover(ctx, c, m)
+	case "matrix":
+		return sendMatrix(ctx, c, m)
 	}
 	return fmt.Errorf("unknown channel type %q", kind)
 }
@@ -244,10 +297,105 @@ func sendWebhook(ctx context.Context, c Config, m Message) error {
 		return err
 	}
 	h := map[string]string{}
+	for k, v := range c.Headers {
+		if k != "" && v != "" {
+			h[headerSafe(k)] = headerSafe(v)
+		}
+	}
 	if c.Token != "" {
 		h["Authorization"] = "Bearer " + c.Token
 	}
 	return post(ctx, c.URL, "application/json", body, h)
+}
+
+func sendSlack(ctx context.Context, c Config, m Message) error {
+	color := "#FF7A45"
+	switch m.Status {
+	case "down":
+		color = "#F2555A"
+	case "up":
+		color = "#4CC38A"
+	}
+	body, err := json.Marshal(map[string]any{
+		"text": m.Title,
+		"attachments": []map[string]any{{
+			"color": color,
+			"text":  m.plain(3000),
+		}},
+	})
+	if err != nil {
+		return err
+	}
+	return post(ctx, c.URL, "application/json", body, nil)
+}
+
+func sendGotify(ctx context.Context, c Config, m Message) error {
+	prio := 5
+	if m.Status == "down" {
+		prio = 8
+	} else if m.Status == "up" {
+		prio = 4
+	}
+	body, err := json.Marshal(map[string]any{
+		"title":    m.Title,
+		"message":  m.plain(4000),
+		"priority": prio,
+	})
+	if err != nil {
+		return err
+	}
+	u := strings.TrimRight(c.URL, "/") + "/message"
+	return post(ctx, u, "application/json", body, map[string]string{"X-Gotify-Key": c.Token})
+}
+
+func sendPushover(ctx context.Context, c Config, m Message) error {
+	prio := "0"
+	if m.Status == "down" {
+		prio = "1"
+	}
+	form := url.Values{
+		"token":    {c.Token},
+		"user":     {c.ChatID},
+		"title":    {clip(m.Title, 250)},
+		"message":  {m.plain(1024)},
+		"priority": {prio},
+	}
+	if m.URL != "" {
+		form.Set("url", m.URL)
+	}
+	return post(ctx, "https://api.pushover.net/1/messages.json", "application/x-www-form-urlencoded", []byte(form.Encode()), nil)
+}
+
+func sendMatrix(ctx context.Context, c Config, m Message) error {
+	var rb [8]byte
+	_, _ = rand.Read(rb[:])
+	txnID := hex.EncodeToString(rb[:])
+	u := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/send/m.room.message/%s",
+		strings.TrimRight(c.URL, "/"), url.PathEscape(c.ChatID), txnID)
+	body, err := json.Marshal(map[string]string{
+		"msgtype": "m.text",
+		"body":    m.Title + "\n\n" + m.plain(4000),
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("User-Agent", "Moorage")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return fmt.Errorf("matrix answered %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	return nil
 }
 
 func sendNtfy(ctx context.Context, c Config, m Message) error {

@@ -1,7 +1,7 @@
 // App-wide reactive state: session, hash route, theme.
 import type { HostEntry, User } from './api';
 
-export type SettingsTab = 'hosts' | 'notifications' | 'audit' | 'users' | 'templates' | 'addons';
+export type SettingsTab = 'general' | 'hosts' | 'notifications' | 'audit' | 'users' | 'templates' | 'addons';
 export type MonitoringTab = 'checks' | 'status-pages' | 'maintenance';
 
 export type Route =
@@ -29,6 +29,7 @@ function parse(hash: string): { route: Route; host?: string } {
   const [path, query = ''] = h.split('?');
   const q = new URLSearchParams(query);
   if (path === 'settings' || path === 'settings/hosts' || path === 'hosts') return { route: { page: 'settings', tab: 'hosts' } };
+  if (path === 'settings/general') return { route: { page: 'settings', tab: 'general' } };
   if (path === 'settings/notifications' || path === 'notifications') return { route: { page: 'settings', tab: 'notifications' } };
   if (path === 'settings/audit' || path === 'audit') return { route: { page: 'settings', tab: 'audit' } };
   if (path === 'settings/users' || path === 'users') return { route: { page: 'settings', tab: 'users' } };

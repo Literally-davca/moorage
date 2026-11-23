@@ -161,6 +161,23 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 			reply(w)(df.DepFacts(r.Context()))
 		})
 	}
+	if ds, ok := h.(DeletedStacksSource); ok {
+		mux.HandleFunc("GET /deleted-stacks", func(w http.ResponseWriter, r *http.Request) {
+			reply(w)(ds.DeletedStacks(r.Context()))
+		})
+	}
+	if dp, ok := h.(DiskPruner); ok {
+		mux.HandleFunc("GET /prune/preview", func(w http.ResponseWriter, r *http.Request) {
+			reply(w)(dp.PrunePreview(r.Context()))
+		})
+		mux.HandleFunc("POST /prune", write(func(w http.ResponseWriter, r *http.Request) {
+			var req engine.PruneRequest
+			if !agentRead(w, r, &req) {
+				return
+			}
+			reply(w)(dp.PruneDisk(r.Context(), req))
+		}))
+	}
 	mux.HandleFunc("GET /stacks/{name}", func(w http.ResponseWriter, r *http.Request) {
 		reply(w)(h.GetStack(r.Context(), r.PathValue("name")))
 	})
@@ -632,6 +649,24 @@ func (rm *Remote) CreateNoted(ctx context.Context, name, compose, env, author, n
 // SelfApply asks the agent to apply changes to the stack it runs from.
 func (rm *Remote) SelfApply(ctx context.Context, name, compose, env, author string) error {
 	return rm.call(ctx, http.MethodPost, p(name)+"/self-apply", saveReq{Compose: compose, Env: env, Author: author}, nil)
+}
+
+func (rm *Remote) DeletedStacks(ctx context.Context) ([]engine.DeletedStack, error) {
+	var out []engine.DeletedStack
+	err := rm.call(ctx, http.MethodGet, "/deleted-stacks", nil, &out)
+	return out, err
+}
+
+func (rm *Remote) PrunePreview(ctx context.Context) (engine.PrunePreview, error) {
+	var out engine.PrunePreview
+	err := rm.call(ctx, http.MethodGet, "/prune/preview", nil, &out)
+	return out, err
+}
+
+func (rm *Remote) PruneDisk(ctx context.Context, req engine.PruneRequest) (engine.PruneResult, error) {
+	var out engine.PruneResult
+	err := rm.call(ctx, http.MethodPost, "/prune", req, &out)
+	return out, err
 }
 
 func (rm *Remote) Delete(ctx context.Context, name, author string) error {

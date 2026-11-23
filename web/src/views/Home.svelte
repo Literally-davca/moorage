@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, engineLabel, statusLabel, type Check, type HostInfo, type StackSummary } from '../lib/api';
+  import { api, engineLabel, statusLabel, type AutoRollback, type Check, type HostInfo, type StackSummary } from '../lib/api';
   import { app, canEdit, link, setHost } from '../lib/state.svelte';
   import { checkStatusLabel } from '../lib/checks';
   import Icon from '../lib/Icon.svelte';
@@ -9,12 +9,18 @@
 
   let checks = $state<Check[]>([]);
   let updateCount = $state(0);
+  let rollbacks = $state<AutoRollback[]>([]);
 
   async function loadExtras() {
     try {
       checks = await api.checks();
     } catch {
       checks = [];
+    }
+    try {
+      rollbacks = await api.autoRollbacks();
+    } catch {
+      rollbacks = [];
     }
     try {
       const ov = await api.updates();
@@ -42,6 +48,15 @@
   const attentionChecks = $derived(checks.filter((c) => c.enabled && (c.state.status === 'down' || c.state.status === 'pending')));
   const serviceStacks = $derived((stacks ?? []).filter((s) => (s.urls?.length ?? 0) > 0));
   const runningCount = $derived((stacks ?? []).filter((s) => s.status === 'up').length);
+
+  async function ackRollback(id: number) {
+    try {
+      await api.ackAutoRollback(id);
+      rollbacks = rollbacks.filter((r) => r.id !== id);
+    } catch {
+      /* ignore */
+    }
+  }
 
   function shortUrl(raw: string): string {
     try {
@@ -75,6 +90,25 @@
   </section>
 {:else if stacks !== null}
   <div class="home">
+    {#if rollbacks.length > 0}
+      <section class="card card-pad rollback-banner" role="alert">
+        {#each rollbacks as rb (rb.id)}
+          <div class="rb-row">
+            <div class="rb-main">
+              <Icon name="alert" />
+              <div>
+                <strong>Auto-rollback triggered on <a href={`#/h/${encodeURIComponent(rb.hostId)}/stacks/${encodeURIComponent(rb.stack)}`}>{rb.stack}</a></strong>
+                <div class="meta">Check <code>{rb.checkName}</code> failed after auto-update ({rb.reason}). Rolled back and switched update policy to notify.</div>
+              </div>
+            </div>
+            {#if canEdit()}
+              <button type="button" class="btn" onclick={() => ackRollback(rb.id)}>Acknowledge</button>
+            {/if}
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     <section class="card card-pad">
       <div class="head-row">
         <div>
@@ -329,5 +363,22 @@
   }
   .svc-url:hover {
     text-decoration: underline;
+  }
+  .rollback-banner {
+    display: grid;
+    gap: 10px;
+    box-shadow: inset 3px 0 0 var(--signal);
+  }
+  .rb-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .rb-main {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
   }
 </style>
