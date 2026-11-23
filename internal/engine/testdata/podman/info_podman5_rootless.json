@@ -1,0 +1,1 @@
+{"ID": "", "Name": "fedora", "ServerVersion": "5.4.2", "OperatingSystem": "fedora", "CgroupDriver": "systemd", "CgroupVersion": "2", "SecurityOptions": ["name=seccomp,profile=default", "name=rootless", "name=selinux"]}

@@ -1,0 +1,14 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    command: ["caddy", "reverse-proxy", "--from", ":80", "--to", "${UPSTREAM}"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${PORT}:80"
+    volumes:
+      - data:/data
+
+volumes:
+  data:

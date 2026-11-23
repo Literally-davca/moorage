@@ -1,0 +1,22 @@
+id: valkey
+name: Valkey (Redis-compatible)
+version: "1"
+description: Valkey 8, the BSD-licensed Redis fork, with a generated password and persistence to a named volume.
+category: Database
+website: https://valkey.io
+notes: |
+  Connect on port ${PORT} of this host with any Redis client.
+  The password is in the stack's .env file (VALKEY_PASSWORD).
+variables:
+  - name: PASSWORD
+    label: Password
+    description: Generated for you; clients send it with AUTH.
+    secret: true
+    generate: password
+    required: true
+  - name: PORT
+    label: Host port
+    description: Port on the host. 127.0.0.1:6379 keeps it off the network.
+    default: "127.0.0.1:6379"
+    required: true
+    pattern: "([0-9.]+:)?[0-9]{1,5}"

@@ -1,0 +1,4 @@
+web/node_modules
+internal/web/dist
+.dev-credentials.local
+.git

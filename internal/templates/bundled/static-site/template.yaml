@@ -1,0 +1,16 @@
+id: static-site
+name: Static website (nginx)
+version: "1"
+description: Serves the files of the stack's html folder with nginx.
+category: Web
+website: https://nginx.org
+notes: |
+  Put your files into the html folder next to compose.yaml in the stack folder,
+  then open http://<this host>:${PORT}. An empty folder answers 403 Forbidden.
+variables:
+  - name: PORT
+    label: Host port
+    description: Port on the host that forwards to nginx.
+    default: "8082"
+    required: true
+    pattern: "[0-9]{1,5}"

@@ -1,0 +1,1 @@
+{"ID": "f7c4c3d0-7a2b-4b8e-9d55-1a2b3c4d5e6f", "Name": "pi5", "ServerVersion": "29.0.1", "OperatingSystem": "Ubuntu 24.04.3 LTS", "CgroupDriver": "systemd", "CgroupVersion": "2", "SecurityOptions": ["name=apparmor", "name=seccomp,profile=builtin", "name=cgroupns"]}

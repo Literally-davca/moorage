@@ -1,0 +1,32 @@
+id: postgres
+name: PostgreSQL
+version: "1"
+description: PostgreSQL 17 database with a generated password and a named volume for its data.
+category: Database
+website: https://www.postgresql.org
+notes: |
+  Connect with user ${DB_USER} to database ${DB_NAME} on port ${PORT} of this host.
+  The password is in the stack's .env file (POSTGRES_PASSWORD).
+variables:
+  - name: DB_USER
+    label: User
+    default: app
+    required: true
+    pattern: "[a-z_][a-z0-9_]{0,62}"
+  - name: DB_NAME
+    label: Database
+    default: app
+    required: true
+    pattern: "[a-z_][a-z0-9_]{0,62}"
+  - name: DB_PASSWORD
+    label: Password
+    description: Generated for you; replace it if you want your own.
+    secret: true
+    generate: password
+    required: true
+  - name: PORT
+    label: Host port
+    description: Port on the host. 127.0.0.1:5432 keeps the database off the network.
+    default: "127.0.0.1:5432"
+    required: true
+    pattern: "([0-9.]+:)?[0-9]{1,5}"

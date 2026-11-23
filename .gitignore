@@ -1,0 +1,13 @@
+# local secrets and dev data
+.dev-credentials.local
+/.env
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# build output (the UI is built into internal/web/dist by `npm run build` or the Dockerfile)
+web/node_modules/
+internal/web/dist
+/moorage
+*.exe

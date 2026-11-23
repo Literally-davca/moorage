@@ -1,0 +1,21 @@
+id: caddy-proxy
+name: Caddy reverse proxy
+version: "1"
+description: Forwards a host port to another web service with Caddy, without a config file.
+category: Web
+website: https://caddyserver.com
+notes: |
+  Requests to http://<this host>:${PORT} go to ${UPSTREAM}.
+  For automatic HTTPS, replace the command with a Caddyfile in the stack folder.
+variables:
+  - name: UPSTREAM
+    label: Upstream
+    description: Address of the service to forward to, as host:port. host.docker.internal is this host.
+    default: host.docker.internal:8081
+    required: true
+    pattern: "[A-Za-z0-9._-]{1,253}:[0-9]{1,5}"
+  - name: PORT
+    label: Host port
+    default: "8084"
+    required: true
+    pattern: "([0-9.]+:)?[0-9]{1,5}"

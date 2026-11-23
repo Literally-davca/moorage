@@ -1,0 +1,26 @@
+id: gitea
+name: Gitea
+version: "1"
+description: Self-hosted Git service with a web UI, using SQLite in a named volume.
+category: Development
+website: https://about.gitea.com
+notes: |
+  Open http://<this host>:${HTTP_PORT} and finish the installation page.
+  Use ${DOMAIN} as the server domain and port ${SSH_PORT} for SSH clones.
+variables:
+  - name: DOMAIN
+    label: Domain or IP
+    description: The address people use to reach this host.
+    default: localhost
+    required: true
+    pattern: "[A-Za-z0-9.-]{1,253}"
+  - name: HTTP_PORT
+    label: Web port
+    default: "3000"
+    required: true
+    pattern: "[0-9]{1,5}"
+  - name: SSH_PORT
+    label: SSH port
+    default: "2222"
+    required: true
+    pattern: "[0-9]{1,5}"

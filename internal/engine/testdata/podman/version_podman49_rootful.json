@@ -1,0 +1,17 @@
+{
+  "Platform": {"Name": "linux/amd64/ubuntu-24.04"},
+  "Components": [
+    {"Name": "Podman Engine", "Version": "4.9.3", "Details": {"APIVersion": "4.9.3", "Arch": "amd64", "BuildTime": "1970-01-01T00:00:00Z", "Experimental": "false", "GitCommit": "", "GoVersion": "go1.22.2", "KernelVersion": "6.8.0-87-generic", "MinAPIVersion": "4.0.0", "Os": "linux"}},
+    {"Name": "Conmon", "Version": "conmon version 2.1.10, commit: unknown", "Details": {"Package": "conmon_2.1.10+ds1-1build2_amd64"}},
+    {"Name": "OCI Runtime (runc)", "Version": "runc version 1.1.12-0ubuntu3", "Details": {"Package": "runc_1.1.12-0ubuntu3_amd64"}}
+  ],
+  "Version": "4.9.3",
+  "ApiVersion": "1.41",
+  "MinAPIVersion": "1.24",
+  "GitCommit": "",
+  "GoVersion": "go1.22.2",
+  "Os": "linux",
+  "Arch": "amd64",
+  "KernelVersion": "6.8.0-87-generic",
+  "BuildTime": "1970-01-01T00:00:00Z"
+}

@@ -1,0 +1,16 @@
+id: whoami
+name: whoami
+version: "1"
+description: Tiny web server that answers with the request it received. Handy as a first stack and as a target for uptime checks.
+category: Testing
+website: https://github.com/traefik/whoami
+notes: |
+  Open http://<this host>:${PORT} to see the echo.
+  Add an HTTP check for that URL to try Moorage's monitoring.
+variables:
+  - name: PORT
+    label: Host port
+    description: Port on the host that forwards to the container.
+    default: "8081"
+    required: true
+    pattern: "[0-9]{1,5}"

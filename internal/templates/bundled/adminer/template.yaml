@@ -1,0 +1,15 @@
+id: adminer
+name: Adminer
+version: "1"
+description: Database admin in one web page, for PostgreSQL, MySQL, SQLite and more.
+category: Database
+website: https://www.adminer.org
+notes: |
+  Open http://<this host>:${PORT}. To reach a database stack on the same host,
+  enter the host's address and the database's published port as the server.
+variables:
+  - name: PORT
+    label: Host port
+    default: "8083"
+    required: true
+    pattern: "([0-9.]+:)?[0-9]{1,5}"

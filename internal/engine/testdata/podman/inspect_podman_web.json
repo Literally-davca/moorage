@@ -1,0 +1,1 @@
+{"Id": "aaa1111111111111111111111111111111111111111111111111111111111111", "Name": "web-web-1", "State": {"Status": "running", "Running": true, "Pid": 4242, "ExitCode": 0, "StartedAt": "2024-05-01T10:00:00.123456789Z", "Health": {"Status": "unhealthy", "FailingStreak": 3, "Log": []}}, "Config": {"Tty": false, "Labels": {"com.docker.compose.project": "web"}}}

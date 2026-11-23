@@ -1,0 +1,22 @@
+# Example deployment of Moorage on one host (all-in-one mode).
+services:
+  moorage:
+    image: moorage:dev # build locally: docker build -t moorage:dev .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5080:5080" # put a reverse proxy with HTTPS in front, then set MOORAGE_SECURE_COOKIES=true
+      # - "5081:5081"         # agent port: publish only if other hosts run `moorage agent` (direct TLS, no proxy)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - moorage-data:/data
+      # The stacks folder must have the SAME path inside and outside the container,
+      # because compose resolves relative paths (./data, env_file) on the host.
+      - /opt/stacks:/opt/stacks
+    environment:
+      MOORAGE_STACKS_DIR: /opt/stacks
+      # MOORAGE_SECURE_COOKIES: "true"
+      # MOORAGE_PUID: "1000"   # owner of files Moorage writes in the stacks folder
+      # MOORAGE_PGID: "1000"
+
+volumes:
+  moorage-data:
