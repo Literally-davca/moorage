@@ -264,7 +264,7 @@ func (s *Server) exportBackup(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				for _, st := range stacks {
-					if st.ReadOnly {
+					if !st.Managed {
 						continue
 					}
 					det, err := h.GetStack(ctx, st.Name)

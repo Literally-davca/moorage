@@ -244,8 +244,8 @@ func (s *Server) buildDiagnostics(ctx context.Context, pubURL string) []diagnost
 		})
 	}
 	if s.hub != nil {
-		if wd, err := s.store.GetWatchdog(ctx); err == nil && wd.Enabled {
-			agents, _ := s.store.ListAgents(ctx)
+		if wd, err := s.store.Watchdog(ctx); err == nil && wd.Enabled {
+			agents, _ := s.store.Agents(ctx)
 			var participating int
 			var missingAddr []string
 			for _, a := range agents {

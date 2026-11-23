@@ -50,7 +50,7 @@ func TestMetricsOffByDefault(t *testing.T) {
 			t.Errorf("metrics off served something: %.80s", w.Body.String())
 		}
 	}
-	if info := srv.metricsInfo(); info["enabled"] != false {
+	if info := srv.metricsInfo(context.Background()); info["enabled"] != false {
 		t.Errorf("metricsInfo %v", info)
 	}
 }
@@ -100,7 +100,7 @@ func TestMetricsTokenAndListeners(t *testing.T) {
 		t.Errorf("after adding a status domain: %d", w.Code)
 	}
 
-	info := srv.metricsInfo()
+	info := srv.metricsInfo(context.Background())
 	if info["enabled"] != true || info["url"] != "https://moorage.example.com/metrics" {
 		t.Errorf("metricsInfo %v", info)
 	}
