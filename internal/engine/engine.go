@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -56,14 +57,17 @@ type Engine struct {
 	ImageBackend ImageBackend
 	// ExecBackend overrides the real Docker exec calls in tests.
 	ExecBackend ExecBackend
+	// HostShellBackend overrides the host OS terminal launcher in tests.
+	HostShellBackend HostShellBackend
 
 	imgMu    sync.Mutex
 	imgSem   chan struct{}
 	imgCache map[string]cachedRemoteImage
 	imgBusy  map[string]chan struct{} // refs being looked up right now; others wait for the result
 
-	termMu sync.Mutex
-	terms  map[*mobyTerminalSession]struct{} // open container shells, ended on Close
+	termMu     sync.Mutex
+	terms      map[*mobyTerminalSession]struct{} // open container shells, ended on Close
+	hostShells map[io.Closer]struct{}            // open host OS shells, ended on Close
 
 	selfMu sync.Mutex
 	self   *SelfStack // the stack Moorage runs from, nil for binary installs (self.go)
@@ -125,11 +129,45 @@ type HostInfo struct {
 	StacksDir     string `json:"stacksDir"`
 	Reachable     bool   `json:"reachable"`
 	Error         string `json:"error,omitempty"`
+	// Locks are the host's security switches (env only on that machine, see config.LockedVars).
+	Locks HostLocks `json:"locks"`
+	// HostIP and BaseDomain come from MOORAGE_HOST_IP / MOORAGE_BASE_DOMAIN of that host.
+	HostIP     string `json:"hostIp,omitempty"`
+	BaseDomain string `json:"baseDomain,omitempty"`
+}
+
+// HostLocks are the security switches of a host, as its own environment sets them.
+type HostLocks struct {
+	ReadOnly        bool     `json:"readOnly"`
+	ManageExternal  bool     `json:"manageExternal"`
+	ExtraStacksDirs []string `json:"extraStacksDirs,omitempty"`
+	Terminal        bool     `json:"terminal"`
+	HostTerminal    bool     `json:"hostTerminal"`
+	Exec            bool     `json:"exec"`
+	SelfUpdate      bool     `json:"selfUpdate"`
+}
+
+// Network returns MOORAGE_HOST_IP and MOORAGE_BASE_DOMAIN.
+func (e *Engine) Network() (string, string) {
+	if e == nil {
+		return "", ""
+	}
+	return e.cfg.HostIP, e.cfg.BaseDomain
+}
+
+// Locks returns this host's security switches.
+func (e *Engine) Locks() HostLocks {
+	if e == nil {
+		return HostLocks{}
+	}
+	c := e.cfg
+	return HostLocks{ReadOnly: c.ReadOnly, ManageExternal: c.ManageExternal && !c.ReadOnly, ExtraStacksDirs: c.ExtraStacksDirs,
+		Terminal: c.Terminal && !c.ReadOnly, HostTerminal: c.HostTerminal && !c.ReadOnly, Exec: (c.Exec || c.Terminal) && !c.ReadOnly, SelfUpdate: c.SelfUpdate}
 }
 
 // Host returns basic information about the Docker host.
 func (e *Engine) Host(ctx context.Context) HostInfo {
-	h := HostInfo{StacksDir: e.cfg.StacksDir}
+	h := HostInfo{StacksDir: e.cfg.StacksDir, Locks: e.Locks(), HostIP: e.cfg.HostIP, BaseDomain: e.cfg.BaseDomain}
 	if e.api == nil {
 		h.Name, _ = os.Hostname()
 		return h
@@ -182,7 +220,13 @@ func (e *Engine) stackDir(name string) (string, error) {
 	if !nameRe.MatchString(name) {
 		return "", ErrInvalidName
 	}
-	return filepath.Join(e.cfg.StacksDir, name), nil
+	def := filepath.Join(e.cfg.StacksDir, name)
+	if composeFile(def) == "" {
+		if ext := e.externalStackDir(name); ext != "" {
+			return ext, nil // MOORAGE_EXTRA_STACKS_DIRS or a usable working dir (external.go)
+		}
+	}
+	return def, nil
 }
 
 // composeFile finds the compose file in dir, or "" when there is none.

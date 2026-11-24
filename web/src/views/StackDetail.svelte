@@ -18,7 +18,7 @@
   } from '../lib/api';
   import { app, canEdit, currentHost, go, isAdmin } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
-  import CodeEditor from '../lib/CodeEditor.svelte';
+  import ComposeEditor from '../lib/ComposeEditor.svelte';
   import EnvEditor from '../lib/EnvEditor.svelte';
   import Confirm from '../lib/Confirm.svelte';
   import LogViewer from './LogViewer.svelte';
@@ -29,7 +29,7 @@
   import Strip from '../lib/Strip.svelte';
   import { checkStatusLabel, pct } from '../lib/checks';
   import { untilText } from '../lib/maintenance';
-  import type { ActiveMaintenance } from '../lib/api';
+  import type { ActiveMaintenance, DeployStrategy, LintIssue, LintResult } from '../lib/api';
   import { untrack } from 'svelte';
 
   let { name, onChanged }: { name: string; onChanged: () => void } = $props();
@@ -84,6 +84,12 @@
   let saveError = $state('');
   let saveOk = $state(false);
   let validation = $state('');
+  let issues = $state<LintIssue[]>([]);
+  // Literal environment values move to .env on save; keys .env has with another value wait
+  // for the admin's answer.
+  let envConflicts = $state<LintResult | null>(null);
+  let strategy = $state<DeployStrategy>('standard');
+  let deployMenu = $state(false);
 
   let health = $state<{ checks: Check[]; anchors: Anchor[] } | null>(null);
   let imgInfo = $state<StackImages | null>(null);
@@ -94,12 +100,68 @@
   let imgMsg = $state<{ ok: boolean; text: string } | null>(null);
   let confirmDown = $state(false);
   let confirmDelete = $state(false);
+  let confirmMoveAddons = $state(false);
+  let movingAddons = $state(false);
+  let coolifyBusy = $state(false);
+  let coolifyEnvLoaded = $state(false);
+  let coolifyEnvText = $state('');
+  let coolifyEnvSaving = $state(false);
+  let coolifyEnvMsg = $state('');
+
+  const isCoolify = $derived(!!stack?.coolifyUuid);
+  const canCoolifyControl = $derived(isCoolify && isAdmin() && !currentHost()?.readOnly);
+
+  async function runCoolify(action: string, force = false) {
+    if (!stack?.coolifyUuid) return;
+    coolifyBusy = true;
+    actionError = '';
+    try {
+      await api.coolifyAction(stack.coolifyUuid, action, { force, type: stack.coolifyType });
+      await load();
+      onChanged();
+    } catch (e) {
+      actionError = (e as Error).message;
+    } finally {
+      coolifyBusy = false;
+    }
+  }
+
+  async function loadCoolifyEnvs() {
+    if (!stack?.coolifyUuid || coolifyEnvLoaded) return;
+    try {
+      const r = await api.coolifyGetEnvs(stack.coolifyUuid);
+      coolifyEnvText = r.env;
+      coolifyEnvLoaded = true;
+    } catch {
+      /* ignore if API not configured */
+    }
+  }
+
+  async function saveCoolifyEnvs(redeploy: boolean) {
+    if (!stack?.coolifyUuid) return;
+    coolifyEnvSaving = true;
+    coolifyEnvMsg = '';
+    actionError = '';
+    try {
+      await api.coolifyPutEnvs(stack.coolifyUuid, coolifyEnvText, redeploy);
+      coolifyEnvMsg = redeploy ? 'Saved and triggered Coolify redeploy.' : 'Variables saved in Coolify.';
+    } catch (e) {
+      actionError = (e as Error).message;
+    } finally {
+      coolifyEnvSaving = false;
+    }
+  }
   let historyRefresh = $state(0); // bumped when an operation ends, so History shows it
-  let activeTerm = $state<{ containerName: string; service: string } | null>(null);
+  let activeTerm = $state<{ containerId: string; containerName: string; service: string } | null>(null);
 
   const dirty = $derived(draftCompose !== savedCompose || draftEnv !== savedEnv);
   const editable = $derived(!!stack?.managed && canEdit());
   const canTerminal = $derived(isAdmin() && !!currentHost()?.terminal && !currentHost()?.readOnly);
+  const terminalHint = $derived(
+    currentHost()?.readOnly
+      ? 'Host is read-only (MOORAGE_READ_ONLY=true)'
+      : 'Set MOORAGE_TERMINAL=true on this host to enable container terminal',
+  );
   const exitInfo = $derived.by(() => {
     const failed = stack?.containers.find((c) => c.exitCode !== undefined && c.exitCode !== 0);
     return failed ? `exit ${failed.exitCode}` : '';
@@ -310,24 +372,63 @@
     return () => clearInterval(t);
   });
 
-  // live validation while editing (debounced)
+  // live validation and lint while editing (debounced); the saved file is linted too
   $effect(() => {
     const c = draftCompose;
     const e = draftEnv;
-    if (!editable || (c === savedCompose && e === savedEnv)) {
+    if (!editable || !c) {
       validation = '';
+      issues = [];
       return;
     }
+    const unchanged = c === savedCompose && e === savedEnv;
     const t = setTimeout(async () => {
       try {
         const r = await api.validate(name, c, e);
-        validation = r.ok ? '' : (r.error ?? '');
+        issues = r.issues ?? [];
+        validation = r.ok || unchanged ? '' : (r.error ?? '');
       } catch {
         /* ignore while typing */
       }
-    }, 600);
+    }, unchanged ? 50 : 600);
     return () => clearTimeout(t);
   });
+
+  $effect(() => {
+    const n = name;
+    void app.host;
+    api.stackStrategy(n).then((r) => (strategy = r.strategy)).catch(() => (strategy = 'standard'));
+  });
+  async function setStrategy(v: DeployStrategy) {
+    deployMenu = false;
+    try {
+      await api.setStackStrategy(name, v);
+      strategy = v;
+    } catch (e) {
+      actionError = (e as Error).message;
+    }
+  }
+  async function deploy(once?: DeployStrategy) {
+    deployMenu = false;
+    actionError = '';
+    try {
+      op = await api.action(name, 'up', once);
+      onChanged();
+    } catch (e) {
+      actionError = (e as Error).message;
+    }
+  }
+  // Docker outside the stacks folder (MOORAGE_MANAGE_EXTERNAL on the host)
+  const manageExternal = $derived(!!currentHost()?.locks?.manageExternal && isAdmin() && !currentHost()?.readOnly);
+  async function runExternal(action: string) {
+    actionError = '';
+    try {
+      op = await api.externalAction(name, action);
+      onChanged();
+    } catch (e) {
+      actionError = (e as Error).message;
+    }
+  }
 
   async function run(action: string) {
     actionError = '';
@@ -383,11 +484,27 @@
     }
   }
 
-  async function save() {
+  async function save(overwrite?: boolean) {
     saving = true;
     saveError = '';
     saveOk = false;
     try {
+      if (overwrite === undefined) {
+        const moved = await api.extractEnv(name, draftCompose, draftEnv);
+        if (moved.changed) {
+          draftCompose = moved.compose;
+          draftEnv = moved.env;
+        }
+        if (moved.conflicts?.length) {
+          envConflicts = moved;
+          return;
+        }
+      } else if (overwrite) {
+        const moved = await api.extractEnv(name, draftCompose, draftEnv, true);
+        draftCompose = moved.compose;
+        draftEnv = moved.env;
+      }
+      envConflicts = null;
       await api.save(name, draftCompose, draftEnv);
       savedCompose = draftCompose;
       savedEnv = draftEnv;
@@ -407,6 +524,20 @@
       go('');
     } catch (e) {
       actionError = (e as Error).message;
+    }
+  }
+
+  async function moveToAddons() {
+    movingAddons = true;
+    actionError = '';
+    try {
+      await api.moveStackToAddons(name);
+      onChanged();
+      go('stacks/add-ons');
+    } catch (e) {
+      actionError = (e as Error).message;
+    } finally {
+      movingAddons = false;
     }
   }
 
@@ -456,12 +587,26 @@
     <section class="card card-pad head">
       <div class="head-row">
         <div class="ident">
-          <h1 class="title">{stack.name}</h1>
+          <h1 class="title">{stack.displayName || stack.name}</h1>
           <div class="sub">
             <span class="badge {stack.status}">
-              <span class="dot {stack.status}"></span>{statusLabel[stack.status]}{exitInfo && stack.status !== 'up' ? ` · ${exitInfo}` : ''}
+              <span class="dot {stack.status}"></span>{stack.coolifyDeploying ? 'Deploying (Coolify)…' : statusLabel[stack.status]}{exitInfo && stack.status !== 'up' ? ` · ${exitInfo}` : ''}
             </span>
             <span class="meta num">{stack.running}/{stack.total} running</span>
+            {#if stack.coolifyType}
+              <span class="badge info">{stack.coolifyType}{stack.coolifyPr ? ` · ${stack.coolifyPr}` : ''}</span>
+            {/if}
+            {#if stack.coolifyProject}
+              <span class="meta">{stack.coolifyProject}{stack.coolifyEnv ? ` (${stack.coolifyEnv})` : ''}</span>
+            {/if}
+            {#if stack.displayName && stack.displayName !== stack.name}
+              <span class="meta mono" title="Immutable UUID">{stack.name}</span>
+            {/if}
+            {#if stack.coolifyUrl}
+              <a class="head-url" href={stack.coolifyUrl} target="_blank" rel="noopener noreferrer">
+                <Icon name="external" /> <span>Open in Coolify</span>
+              </a>
+            {/if}
             {#if maint}
               <a class="badge maintenance" href={`#/maintenance/${maint.id}`} title={maint.title}>
                 <Icon name="tool" /> Maintenance until {untilText(maint.until)}
@@ -499,21 +644,63 @@
           <div class="actions">
             <button class="btn" onclick={() => run('restart')} disabled={stack.busy || stack.running === 0}><Icon name="refresh" /> Restart</button>
             <button class="btn" onclick={() => run('stop')} disabled={stack.busy || stack.running === 0}><Icon name="stop" /> Stop</button>
-            <button class="btn {dirty && tab === 'compose' ? '' : 'btn-primary'}" onclick={() => run('up')} disabled={stack.busy} title={dirty ? 'Save your changes first to deploy them' : ''}>
-              <Icon name="play" /> Deploy
-            </button>
+            <div class="split" use:dismiss={() => (deployMenu = false)}>
+              <button class="btn {dirty && tab === 'compose' ? '' : 'btn-primary'} split-main" onclick={() => deploy()} disabled={stack.busy}
+                title={dirty ? 'Save your changes first to deploy them' : strategy === 'rolling' ? 'Rolling / safe-swap deploy' : 'Recreate what changed'}>
+                <Icon name="play" /> Deploy{#if strategy === 'rolling'}<span class="strat">rolling</span>{/if}
+              </button>
+              <button class="btn {dirty && tab === 'compose' ? '' : 'btn-primary'} split-arrow" aria-label="Deploy options" aria-expanded={deployMenu}
+                onclick={() => (deployMenu = !deployMenu)} disabled={stack.busy}><Icon name="chevronDown" /></button>
+              {#if deployMenu}
+                <div class="menu card" role="menu">
+                  <button role="menuitem" onclick={() => deploy('standard')}><Icon name="play" /> Deploy once: standard recreate</button>
+                  <button role="menuitem" onclick={() => deploy('rolling')}><Icon name="swap" /> Deploy once: rolling / safe-swap</button>
+                  <hr />
+                  <span class="menu-label">Strategy of this stack (also for image updates)</span>
+                  <button role="menuitemradio" aria-checked={strategy === 'standard'} onclick={() => setStrategy('standard')}>
+                    <Icon name={strategy === 'standard' ? 'check' : 'x'} /> Standard recreate
+                  </button>
+                  <button role="menuitemradio" aria-checked={strategy === 'rolling'} onclick={() => setStrategy('rolling')}>
+                    <Icon name={strategy === 'rolling' ? 'check' : 'x'} /> Rolling / safe-swap with auto-rollback
+                  </button>
+                </div>
+              {/if}
+            </div>
             <div class="more" use:dismiss={() => (menuOpen = false)}>
               <button class="btn btn-icon" onclick={() => (menuOpen = !menuOpen)} aria-label="More actions" aria-expanded={menuOpen}><Icon name="dots" /></button>
               {#if menuOpen}
                 <div class="menu card" role="menu">
                   <button role="menuitem" onclick={() => run('update')}><Icon name="cloudDown" /> Update images</button>
                   <button role="menuitem" onclick={() => run('pull')}><Icon name="download" /> Pull images only</button>
+                  {#if !stack.self && stack.name !== 'add-ons'}
+                    <button role="menuitem" onclick={() => { menuOpen = false; confirmMoveAddons = true; }} disabled={movingAddons || stack.busy}>
+                      <Icon name="puzzle" /> Move to add-ons
+                    </button>
+                  {/if}
                   <hr />
                   <button role="menuitem" class="danger" onclick={() => { menuOpen = false; confirmDown = true; }}><Icon name="power" /> Down</button>
                   <button role="menuitem" class="danger" onclick={() => { menuOpen = false; confirmDelete = true; }}><Icon name="trash" /> Delete stack</button>
                 </div>
               {/if}
             </div>
+          </div>
+        {:else if canCoolifyControl}
+          <div class="actions">
+            <button class="btn" onclick={() => runCoolify('restart')} disabled={coolifyBusy}><Icon name="refresh" /> Restart</button>
+            <button class="btn" onclick={() => runCoolify('stop')} disabled={coolifyBusy || stack.running === 0}><Icon name="stop" /> Stop</button>
+            <button class="btn" onclick={() => runCoolify('start')} disabled={coolifyBusy}><Icon name="play" /> Start</button>
+            <button class="btn btn-primary" onclick={() => runCoolify('redeploy', false)} disabled={coolifyBusy}>
+              <Icon name="cloudDown" /> {coolifyBusy ? 'Working…' : 'Redeploy'}
+            </button>
+            {#if stack.coolifyType === 'application'}
+              <button class="btn" onclick={() => runCoolify('redeploy', true)} disabled={coolifyBusy} title="Force rebuild without Docker cache">Force rebuild</button>
+            {/if}
+          </div>
+        {:else if !stack.managed && manageExternal && !stack.self}
+          <div class="actions">
+            <button class="btn" onclick={() => runExternal('restart')} disabled={stack.busy || stack.running === 0}><Icon name="refresh" /> Restart</button>
+            <button class="btn" onclick={() => runExternal('stop')} disabled={stack.busy || stack.running === 0}><Icon name="stop" /> Stop</button>
+            <button class="btn" onclick={() => runExternal('start')} disabled={stack.busy}><Icon name="play" /> Start</button>
           </div>
         {/if}
       </div>
@@ -538,14 +725,14 @@
 
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" aria-selected={tab === 'overview'} onclick={() => (tab = 'overview')}>Containers</button>
-        {#if stack.managed}
-          <button class="tab" role="tab" aria-selected={tab === 'compose'} onclick={() => (tab = 'compose')}>
-            Compose{#if dirty}<span class="unsaved" title="Unsaved changes"></span>{/if}
+        {#if stack.managed || isCoolify}
+          <button class="tab" role="tab" aria-selected={tab === 'compose'} onclick={() => { tab = 'compose'; if (isCoolify) void loadCoolifyEnvs(); }}>
+            {isCoolify ? 'Variables & Compose' : 'Compose'}{#if dirty}<span class="unsaved" title="Unsaved changes"></span>{/if}
           </button>
         {/if}
         <button class="tab" role="tab" aria-selected={tab === 'logs'} onclick={() => (tab = 'logs')}>Logs</button>
         <button class="tab" role="tab" aria-selected={tab === 'deps'} onclick={() => (tab = 'deps')}>Dependencies</button>
-        {#if stack.managed}
+        {#if stack.managed || isCoolify}
           <button class="tab" role="tab" aria-selected={tab === 'history'} onclick={() => (tab = 'history')}>History</button>
         {/if}
       </div>
@@ -558,12 +745,16 @@
     {/if}
 
     {#if activeTerm && canTerminal}
-      <TerminalPanel
-        stack={stack.name}
-        containerName={activeTerm.containerName}
-        service={activeTerm.service}
-        onClose={() => (activeTerm = null)}
-      />
+      {#key activeTerm.containerId || activeTerm.containerName}
+        <TerminalPanel
+          mode={stack.managed ? 'stack' : 'container'}
+          stack={stack.name}
+          containerId={activeTerm.containerId}
+          containerName={activeTerm.containerName}
+          service={activeTerm.service}
+          onClose={() => (activeTerm = null)}
+        />
+      {/key}
     {/if}
 
     {#if tab === 'overview' && stack.managed && health}
@@ -604,7 +795,7 @@
                 <th class="r">CPU</th>
                 <th class="r">Memory</th>
                 <th>Ports</th>
-                {#if canTerminal}<th class="r"></th>{/if}
+                {#if isAdmin()}<th class="r"></th>{/if}
               </tr>
             </thead>
             <tbody>
@@ -641,15 +832,22 @@
                     {:else}–{/if}
                   </td>
                   <td class="mono ports">{c.ports?.join(', ') || '–'}</td>
-                  {#if canTerminal}
+                  {#if isAdmin()}
                     <td class="r">
                       {#if c.state === 'running'}
                         <button
                           type="button"
                           class="btn btn-sm"
-                          onclick={() => (activeTerm = { containerName: c.name || c.id, service: c.service || c.name })}
+                          disabled={!canTerminal}
+                          title={canTerminal ? 'Open container shell' : terminalHint}
+                          onclick={() =>
+                            (activeTerm = {
+                              containerId: c.id,
+                              containerName: c.name || c.id,
+                              service: c.service || c.name,
+                            })}
                         >
-                          <Icon name="terminal" /> Terminal
+                          <Icon name={canTerminal ? 'terminal' : 'lock'} /> Terminal
                         </button>
                       {/if}
                     </td>
@@ -810,19 +1008,60 @@
           {/if}
         </section>
       {/if}
-    {:else if tab === 'compose'}
+    {:else if tab === 'compose' && isCoolify}
       <section class="card card-pad compose">
-        <div class="ed-head">
-          <span class="section-title">{stack.composeFile ?? 'compose.yaml'}</span>
-          {#if editable}
-            <div class="save">
-              {#if saveOk}<span class="ok"><Icon name="check" /> Saved</span>{/if}
-              {#if dirty}<button class="btn btn-ghost" onclick={() => { draftCompose = savedCompose; draftEnv = savedEnv; }}>Discard</button>{/if}
-              <button class="btn {dirty ? 'btn-primary' : ''}" onclick={save} disabled={!dirty || saving || !!validation} aria-busy={saving}>Save</button>
-            </div>
+        <div class="ed-head env">
+          <span class="section-title">Environment variables (Coolify API)</span>
+          {#if stack.coolifyUrl}
+            <a class="btn btn-sm" href={stack.coolifyUrl} target="_blank" rel="noopener noreferrer">Edit Compose in Coolify <Icon name="external" /></a>
           {/if}
         </div>
-        <CodeEditor bind:value={draftCompose} label="Compose file" readonly={!editable} minHeight={360} />
+        <EnvEditor bind:value={coolifyEnvText} readonly={!canCoolifyControl} label="Coolify environment variables" />
+        {#if coolifyEnvMsg}<p class="ok" role="status"><Icon name="check" /> {coolifyEnvMsg}</p>{/if}
+        {#if canCoolifyControl}
+          <div class="btn-row">
+            <button type="button" class="btn" onclick={() => saveCoolifyEnvs(false)} disabled={coolifyEnvSaving}>Save</button>
+            <button type="button" class="btn btn-primary" onclick={() => saveCoolifyEnvs(true)} disabled={coolifyEnvSaving}>Save &amp; Redeploy</button>
+          </div>
+        {/if}
+        {#if stack.compose}
+          <div class="ed-head env">
+            <span class="section-title">Compose preview (read-only)</span>
+            <span class="meta">Managed by Coolify</span>
+          </div>
+          <ComposeEditor value={stack.compose} readonly={true} title="docker-compose.yaml (read-only)" />
+        {/if}
+      </section>
+    {:else if tab === 'compose'}
+      <section class="card card-pad compose">
+        <ComposeEditor bind:value={draftCompose} bind:env={draftEnv} {name} {issues} readonly={!editable} title={stack.composeFile ?? 'compose.yaml'}>
+          {#snippet actions()}
+            {#if editable}
+              <div class="save">
+                {#if saveOk}<span class="ok"><Icon name="check" /> Saved</span>{/if}
+                {#if dirty}<button class="btn btn-ghost" onclick={() => { draftCompose = savedCompose; draftEnv = savedEnv; }}>Discard</button>{/if}
+                <button class="btn {dirty ? 'btn-primary' : ''}" onclick={() => save()} disabled={!dirty || saving || !!validation} aria-busy={saving}>Save</button>
+              </div>
+            {/if}
+          {/snippet}
+        </ComposeEditor>
+        {#if envConflicts?.conflicts?.length}
+          <div class="invalid" role="alert">
+            <Icon name="alert" />
+            <div>
+              <p>Moving values into .env: {envConflicts.conflicts.length === 1 ? 'this key is' : 'these keys are'} already in .env with another value.</p>
+              <ul class="mono">
+                {#each envConflicts.conflicts as c (c.key + c.service)}
+                  <li>{c.key} ({c.service}): .env has <b>{c.envValue}</b>, compose has <b>{c.composeValue}</b></li>
+                {/each}
+              </ul>
+              <div class="btn-row">
+                <button class="btn btn-primary" onclick={() => save(true)}>Overwrite .env and save</button>
+                <button class="btn" onclick={() => save(false)}>Keep .env, leave them in compose.yaml</button>
+              </div>
+            </div>
+          </div>
+        {/if}
         {#if validation}
           <div class="invalid" role="alert"><Icon name="alert" /><span class="mono">{validation}</span></div>
         {/if}
@@ -838,7 +1077,7 @@
     {:else if tab === 'deps'}
       <StackDeps name={stack.name} />
     {:else if tab === 'history'}
-      <HistoryView name={stack.name} at={routeAt} {editable} {dirty} refresh={historyRefresh} onRestored={(o) => { if (o) op = o; load(true); onChanged(); }} />
+      <HistoryView name={stack.name} coolifyUuid={stack.coolifyUuid} at={routeAt} {editable} {dirty} refresh={historyRefresh} onRestored={(o) => { if (o) op = o; load(true); onChanged(); }} />
     {:else}
       <section class="card card-pad">
         <LogViewer stack={stack.name} containers={stack.containers} />
@@ -851,6 +1090,9 @@
   <Confirm bind:open={confirmDelete} title="Delete {stack.name}?" danger confirmLabel="Delete stack"
     body="Removes the stack folder, including any data stored inside it. The compose and .env files stay in the version history. Take the stack down first."
     onConfirm={del} />
+  <Confirm bind:open={confirmMoveAddons} title="Move {stack.name} to add-ons?" confirmLabel="Move to add-ons"
+    body="Merges this stack into add-ons on the same host. Named Docker volumes keep their existing data (name: {stack.name}_<vol>) and relative bind mounts move under add-ons/{stack.name}/ without copying."
+    onConfirm={moveToAddons} />
 {/if}
 
 <style>
@@ -922,8 +1164,43 @@
     cursor: not-allowed;
     transform: none;
   }
-  .more {
+  .more,
+  .split {
     position: relative;
+  }
+  .split {
+    display: inline-flex;
+  }
+  .split-main {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+  .split-arrow {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    padding: 0 8px;
+    margin-left: 1px;
+  }
+  .split .menu {
+    min-width: 300px;
+  }
+  .strat {
+    margin-left: 6px;
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.8;
+  }
+  .menu-label {
+    display: block;
+    padding: 6px 10px 2px;
+    font-size: 11px;
+    color: var(--haze);
+  }
+  .btn-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 8px;
   }
   .menu {
     position: absolute;

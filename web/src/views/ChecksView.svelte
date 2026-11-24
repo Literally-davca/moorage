@@ -4,7 +4,7 @@
   import { isAdmin } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Strip from '../lib/Strip.svelte';
-  import { checkStatusLabel, kindName, pct } from '../lib/checks';
+  import { checkStatusLabel, kindName, pct, targetCount } from '../lib/checks';
   import { untilText } from '../lib/maintenance';
 
   let checks = $state<Check[] | null>(null);
@@ -26,11 +26,11 @@
   });
 
   // problems first, then by name
-  const order: Record<string, number> = { down: 0, pending: 1, maintenance: 2, unknown: 3, up: 4, paused: 5 };
+  const order: Record<string, number> = { down: 0, degraded: 1, pending: 2, maintenance: 3, unknown: 4, up: 5, paused: 6 };
   const sorted = $derived(
     [...(checks ?? [])].sort((a, b) => (order[a.state.status] ?? 9) - (order[b.state.status] ?? 9) || a.name.localeCompare(b.name)),
   );
-  const down = $derived((checks ?? []).filter((c) => c.state.status === 'down').length);
+  const down = $derived((checks ?? []).filter((c) => c.state.status === 'down' || c.state.status === 'degraded').length);
 </script>
 
 <div class="page">
@@ -39,7 +39,7 @@
       <h1 class="title">Checks</h1>
       <p class="meta">
         {#if checks}
-          {checks.length} {checks.length === 1 ? 'check' : 'checks'}{#if down}<span class="bad">{` · ${down} down`}</span>{:else if checks.length} · all fine{/if}
+          {checks.length} {checks.length === 1 ? 'check' : 'checks'}{#if down}<span class="bad">{` · ${down} failing`}</span>{:else if checks.length} · all fine{/if}
         {:else}Loading…{/if}
       </p>
     </div>
@@ -72,11 +72,12 @@
             <span class="target meta">
               <span class="kind">{kindName[c.kind]}</span>
               <span class="mono">{c.kind === 'log' ? c.settings.pattern : c.target}</span>
+              {#if targetCount(c) > 1}<span>+{targetCount(c) - 1} more</span>{/if}
               {#if c.kind === 'log' && c.target}<span>in <span class="mono">{c.target}</span></span>{/if}
               {#if c.stack && c.kind !== 'stack'}<span>· {c.stack}{c.hostName ? ` on ${c.hostName}` : ''}</span>{/if}
               {#if c.kind === 'stack' && c.hostName}<span>· on {c.hostName}</span>{/if}
             </span>
-            {#if c.state.status === 'down' || c.state.status === 'pending'}
+            {#if c.state.status === 'down' || c.state.status === 'degraded' || c.state.status === 'pending'}
               <span class="why">{c.state.last?.msg}</span>
             {:else if c.maintenance}
               <span class="maint">Maintenance until {untilText(c.maintenance.until)} · {c.maintenance.title}</span>

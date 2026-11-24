@@ -473,7 +473,7 @@ func tagRows(data any, root string) any {
 // down beats pending beats maintenance beats silenced beats up. Stacks without checks (or
 // with only paused or unknown ones) are missing from the map.
 func (m *Monitor) StackCheckStatus() map[string]string {
-	rank := map[string]int{StatusUp: 1, StatusSilenced: 2, StatusMaintenance: 3, StatusPending: 4, StatusDown: 5}
+	rank := map[string]int{StatusUp: 1, StatusSilenced: 2, StatusMaintenance: 3, StatusPending: 4, StatusDegraded: 5, StatusDown: 6}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := map[string]string{}

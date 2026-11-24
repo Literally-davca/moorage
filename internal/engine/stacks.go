@@ -12,6 +12,8 @@ import (
 	"github.com/compose-spec/compose-go/v2/dotenv"
 	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
+
+	"moorage/internal/lint"
 )
 
 // MaxFileSize caps compose and .env files accepted from the UI.
@@ -31,6 +33,16 @@ type StackSummary struct {
 	Self      bool     `json:"self,omitempty"`
 	URLs      []string `json:"urls,omitempty"`
 	ProxyURLs []string `json:"proxyUrls,omitempty"`
+
+	// Optional Coolify enrichment populated by Hub when coolify-integration is active.
+	DisplayName      string `json:"displayName,omitempty"`
+	CoolifyUUID      string `json:"coolifyUuid,omitempty"`
+	CoolifyType      string `json:"coolifyType,omitempty"`
+	CoolifyProject   string `json:"coolifyProject,omitempty"`
+	CoolifyEnv       string `json:"coolifyEnv,omitempty"`
+	CoolifyURL       string `json:"coolifyUrl,omitempty"`
+	CoolifyPR        string `json:"coolifyPr,omitempty"`
+	CoolifyDeploying bool   `json:"coolifyDeploying,omitempty"`
 }
 
 // Stack is the detail view.
@@ -50,6 +62,7 @@ func (e *Engine) ListStacks(ctx context.Context) ([]StackSummary, error) {
 	if dockerErr != nil {
 		byProject, dirs = map[string][]Container{}, map[string]string{}
 	}
+	rememberWorkingDirs(dirs)
 
 	entries, err := os.ReadDir(e.cfg.StacksDir)
 	if err != nil {
@@ -70,8 +83,37 @@ func (e *Engine) ListStacks(ctx context.Context) ([]StackSummary, error) {
 		out = append(out, StackSummary{Name: ent.Name(), Managed: true, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(ent.Name()), Self: e.IsSelf(ent.Name()), URLs: urls, ProxyURLs: proxyURLs})
 		seen[ent.Name()] = true
 	}
+	// MOORAGE_EXTRA_STACKS_DIRS: more folders of fully managed stacks.
+	if e.ManageExternal() {
+		for _, root := range e.cfg.ExtraStacksDirs {
+			ents, err := os.ReadDir(root)
+			if err != nil {
+				continue
+			}
+			for _, ent := range ents {
+				n := ent.Name()
+				if !ent.IsDir() || !nameRe.MatchString(n) || seen[n] || composeFile(filepath.Join(root, n)) == "" {
+					continue
+				}
+				cs := byProject[n]
+				st, running := stackStatus(cs)
+				urls, proxyURLs := collectStackURLs(cs)
+				out = append(out, StackSummary{Name: n, Managed: true, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(n),
+					Self: e.IsSelf(n), URLs: urls, ProxyURLs: proxyURLs, Location: filepath.Join(root, n)})
+				seen[n] = true
+			}
+		}
+	}
 	for p, cs := range byProject {
 		if seen[p] || p == "" {
+			continue
+		}
+		if nameRe.MatchString(p) && e.ManageExternal() && usableWorkingDir(dirs[p]) {
+			// a compose project whose folder Moorage can read and write: fully managed
+			st, running := stackStatus(cs)
+			urls, proxyURLs := collectStackURLs(cs)
+			out = append(out, StackSummary{Name: p, Managed: true, Status: st, Running: running, Total: len(cs), Busy: e.isBusy(p),
+				Location: dirs[p], Self: e.IsSelf(p), URLs: urls, ProxyURLs: proxyURLs})
 			continue
 		}
 		st, running := stackStatus(cs)
@@ -223,6 +265,11 @@ func (e *Engine) saveStack(ctx context.Context, name, compose, env, author strin
 	if err := e.ValidateCompose(ctx, name, compose, env); err != nil {
 		return err
 	}
+	// The linter's blocking rules (no image, duplicate host ports, secrets written into
+	// commands…) hold on every host, also when an older hub sends the file.
+	if b := lint.Blocking(lint.Lint(ctx, compose, env, lint.Options{Name: name}), false); b != nil {
+		return ValidationError{b.Message}
+	}
 	// The self stack keeps Moorage's service, socket and data mounts even when only saved:
 	// a later Apply & restart or host reboot would otherwise start a Moorage cut off.
 	if err := e.ValidateSelfCompose(ctx, name, compose, env); err != nil {
@@ -280,6 +327,10 @@ func (e *Engine) DeleteStack(ctx context.Context, name, author string) error {
 	}
 	if composeFile(dir) == "" {
 		return ErrNotFound
+	}
+	if !e.inStacksDir(dir) {
+		// a stack in another folder is managed, but its folder isn't Moorage's to delete
+		return ErrReadOnly
 	}
 	if !e.lock(name) {
 		return ErrBusy

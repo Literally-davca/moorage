@@ -37,10 +37,14 @@ func clientOf(r *http.Request) auth.Client {
 }
 
 // SetOIDC replaces the OIDC provider (tests use a fake IdP).
-func (s *Server) SetOIDC(o *sso.OIDC) { s.oidc = o }
+func (s *Server) SetOIDC(o *sso.OIDC) {
+	s.oidcMu.Lock()
+	s.oidc = o
+	s.oidcMu.Unlock()
+}
 
 // StartSSO discovers the OIDC provider in the background.
-func (s *Server) StartSSO(ctx context.Context) { s.oidc.Start(ctx) }
+func (s *Server) StartSSO(ctx context.Context) { s.getOIDC().Start(ctx) }
 
 // setAuditTarget names the target of a request whose path holds only an id.
 func setAuditTarget(r *http.Request, target string) {
@@ -143,11 +147,12 @@ func (s *Server) loginRedirect(w http.ResponseWriter, r *http.Request, code stri
 }
 
 func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
-	if !s.oidc.Ready() {
+	oidcProv := s.getOIDC()
+	if !oidcProv.Ready() {
 		s.loginRedirect(w, r, "unavailable")
 		return
 	}
-	target, f, err := s.oidc.Begin()
+	target, f, err := oidcProv.Begin()
 	if err != nil {
 		s.loginRedirect(w, r, "unavailable")
 		return
@@ -162,6 +167,7 @@ func (s *Server) oidcStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
+	oidcProv := s.getOIDC()
 	http.SetCookie(w, &http.Cookie{Name: oidcStateCookie, Value: "", Path: "/api/auth/oidc", MaxAge: -1,
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.secureCookie(r)})
 	q := r.URL.Query()
@@ -173,14 +179,14 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(oidcStateCookie); err == nil {
 		cookieState = c.Value
 	}
-	res, err := s.oidc.Finish(r.Context(), q.Get("state"), cookieState, q.Get("code"))
+	res, err := oidcProv.Finish(r.Context(), q.Get("state"), cookieState, q.Get("code"))
 	if errors.Is(err, sso.ErrFlow) {
 		s.loginRedirect(w, r, "expired")
 		return
 	}
 	if err != nil {
 		s.log.Warn("OIDC sign-in failed", "err", err)
-		s.oidc.NoteError(err.Error())
+		oidcProv.NoteError(err.Error())
 		s.audit(r.Context(), store.AuditEntry{Actor: "unknown", IP: clientIP(r), Action: auditOIDCDenied,
 			Target: "token rejected", Outcome: store.AuditFailed})
 		s.loginRedirect(w, r, "failed")
@@ -215,15 +221,15 @@ func (s *Server) listUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"users": list, "self": currentUser(r).ID, "oidc": s.oidc.Status(), "proxy": s.proxy.Status(),
-		"publicUrl": strings.TrimRight(s.cfg.PublicURL, "/"),
+		"users": list, "self": currentUser(r).ID, "oidc": s.getOIDC().Status(), "proxy": s.proxy.Status(),
+		"publicUrl": s.effectivePublicURL(r.Context()),
 	})
 }
 
 func (s *Server) linkResp(info auth.UserInfo, l auth.Link) map[string]any {
 	resp := map[string]any{"user": info, "link": l}
-	if s.cfg.PublicURL != "" {
-		resp["url"] = strings.TrimRight(s.cfg.PublicURL, "/") + "/#/invite/" + l.Token
+	if pub := s.effectivePublicURL(context.Background()); pub != "" {
+		resp["url"] = pub + "/#/invite/" + l.Token
 	}
 	return resp
 }
@@ -394,9 +400,10 @@ type loginInfo struct {
 }
 
 func (s *Server) loginInfo() loginInfo {
-	li := loginInfo{LocalLogin: s.oidc.LocalLogin(), Proxy: s.proxy.Enabled()}
-	if s.oidc.Ready() {
-		li.SSO, li.SSOLabel = true, s.oidc.Label()
+	oidcProv := s.getOIDC()
+	li := loginInfo{LocalLogin: oidcProv.LocalLogin(), Proxy: s.proxy.Enabled()}
+	if oidcProv.Ready() {
+		li.SSO, li.SSOLabel = true, oidcProv.Label()
 	}
 	return li
 }
@@ -404,7 +411,8 @@ func (s *Server) loginInfo() loginInfo {
 // endSessionURL is the IdP logout for an OIDC user (RP-initiated logout, with client_id
 // and no post-logout redirect, so nothing extra must be registered at the provider).
 func (s *Server) endSessionURL(u auth.User) string {
-	ep := s.oidc.EndSessionURL()
+	oidcProv := s.getOIDC()
+	ep := oidcProv.EndSessionURL()
 	if u.Source != store.SourceOIDC || ep == "" {
 		return ""
 	}
@@ -413,7 +421,7 @@ func (s *Server) endSessionURL(u auth.User) string {
 		return ""
 	}
 	q := pu.Query()
-	q.Set("client_id", s.cfg.OIDC.ClientID)
+	q.Set("client_id", oidcProv.Status().ClientID)
 	pu.RawQuery = q.Encode()
 	return pu.String()
 }

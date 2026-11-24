@@ -2,7 +2,7 @@
   import { dismiss, menuKeys } from '../lib/dismiss';
   import { untrack } from 'svelte';
   import { api, engineLabel, statusLabel, type HostEntry, type HostInfo, type StackSummary } from '../lib/api';
-  import { app, canEdit, currentHost, go, isAdmin, link, setHost, toggleTheme } from '../lib/state.svelte';
+  import { app, canEdit, currentHost, go, isAdmin, link, monitoringBadge, setHost, toggleTheme, updatesBadge, type NavBadge } from '../lib/state.svelte';
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import StackDetail from './StackDetail.svelte';
   import NewStack from './NewStack.svelte';
@@ -15,6 +15,7 @@
   import UpdatesView from './UpdatesView.svelte';
   import MaintenanceForm from './MaintenanceForm.svelte';
   import DepsView from './DepsView.svelte';
+  import LogsView from './LogsView.svelte';
   import TemplatesView from './TemplatesView.svelte';
   import TemplateDeploy from './TemplateDeploy.svelte';
   import AccountView from './AccountView.svelte';
@@ -32,7 +33,6 @@
   let hostsLoaded = $state(false);
 
   const cur = $derived(currentHost());
-  let checksDown = $state(0);
   let availUpdateVer = $state('');
   let dismissedUpdateVer = $state('');
   try {
@@ -46,13 +46,20 @@
 
   // Pages live in the top bar (the sidebar is for hosts and stacks). Links that don't fit
   // the bar's width fold into "More" from the end (priority+), measured, not by breakpoint.
-  type PageLink = { href: string; label: string; icon: IconName; current: boolean; badge?: number };
+  type PageLink = { href: string; label: string; icon: IconName; current: boolean; badge?: NavBadge };
   const pages = $derived<PageLink[]>([
-    { href: '#/monitoring/checks', label: 'Monitoring', icon: 'pulse', current: onMonitoring, badge: checksDown },
+    { href: link('logs'), label: 'Logs', icon: 'logs', current: app.route.page === 'logs' },
+    { href: '#/monitoring/checks', label: 'Monitoring', icon: 'pulse', current: onMonitoring, badge: monitoringBadge() },
     { href: link('templates'), label: 'Templates', icon: 'template', current: ['templates', 'template'].includes(app.route.page) },
     { href: link('deps'), label: 'Dependencies', icon: 'hierarchy', current: app.route.page === 'deps' },
-    { href: '#/updates', label: 'Image updates', icon: 'cloudDown', current: app.route.page === 'updates' },
-    { href: '#/settings/hosts', label: 'Settings', icon: 'settings', current: app.route.page === 'settings' },
+    { href: '#/updates', label: 'Image updates', icon: 'cloudDown', current: app.route.page === 'updates', badge: updatesBadge() },
+    {
+      href: '#/settings/hosts',
+      label: 'Settings',
+      icon: 'settings',
+      current: app.route.page === 'settings',
+      badge: app.nav?.mcpDrafts ? { n: app.nav.mcpDrafts, tone: 'blue', title: `${app.nav.mcpDrafts} MCP drafts awaiting approval` } : undefined,
+    },
   ]);
   let barWidth = $state(0);
   let measureEl = $state<HTMLElement | null>(null);
@@ -63,7 +70,7 @@
   const GAP = 2;
   // Re-measure whenever the set of links (labels, badges) changes.
   $effect(() => {
-    void pages.map((p) => p.label + (p.badge ?? '')).join();
+    void pages.map((p) => p.label + (p.badge ? p.badge.n + p.badge.tone : '')).join();
     const el = measureEl;
     if (!el) return;
     queueMicrotask(() => {
@@ -107,16 +114,17 @@
     }
   }
 
+  // One light summary call feeds every badge (it never touches registries or hosts). On a
+  // network error or sign-out the badges keep their last value instead of jumping.
   async function loadCheckCount() {
     try {
-      const list = await api.checks();
-      const down = list.filter((c) => c.enabled && c.state.status === 'down');
-      checksDown = down.length;
-      const curIds = new Set(down.map((c) => c.id));
+      const nav = await api.navSummary();
+      app.nav = nav;
+      const curIds = new Set(nav.failing.map((c) => c.id));
       if (prevDownIds !== null) {
-        for (const c of down) {
+        for (const c of nav.failing) {
           if (!prevDownIds.has(c.id)) {
-            pushToast(`Check down: ${c.name}`, c.state.last?.msg || c.stack || c.kind);
+            pushToast(`${c.status === 'degraded' ? 'Check partially down' : 'Check down'}: ${c.name}`, c.msg || '');
           }
         }
       }
@@ -266,9 +274,64 @@
     app.restarting = null;
   }
 
-  const filtered = $derived(
-    (stacks ?? []).filter((s) => s.name.includes(query.trim().toLowerCase())),
-  );
+  const filtered = $derived.by(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return stacks ?? [];
+    return (stacks ?? []).filter((s) => {
+      const hay = [s.name, s.displayName, s.coolifyProject, ...(s.urls ?? [])].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(q);
+    });
+  });
+
+  const hasCoolifyGroups = $derived(filtered.some((s) => !!s.coolifyUuid || !!s.coolifyProject));
+  let collapsedGroups = $state<Record<string, boolean>>({});
+  try {
+    const raw = localStorage.getItem('moorage-sidebar-groups');
+    if (raw) collapsedGroups = JSON.parse(raw) as Record<string, boolean>;
+  } catch {
+    /* ignore */
+  }
+  function toggleGroup(key: string) {
+    collapsedGroups = { ...collapsedGroups, [key]: !collapsedGroups[key] };
+    try {
+      localStorage.setItem('moorage-sidebar-groups', JSON.stringify(collapsedGroups));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const groupedStacks = $derived.by(() => {
+    if (!hasCoolifyGroups) return [] as { key: string; label: string; items: StackSummary[] }[];
+    const managed: StackSummary[] = [];
+    const coolifyByProj = new Map<string, StackSummary[]>();
+    const coolifySys: StackSummary[] = [];
+    const other: StackSummary[] = [];
+    for (const s of filtered) {
+      if (s.managed) {
+        managed.push(s);
+      } else if (s.coolifyUuid || s.coolifyProject) {
+        const proj = s.coolifyProject || 'Coolify';
+        const list = coolifyByProj.get(proj) ?? [];
+        list.push(s);
+        coolifyByProj.set(proj, list);
+      } else if (s.name === 'coolify' || s.name === 'coolify-proxy') {
+        coolifySys.push(s);
+      } else {
+        other.push(s);
+      }
+    }
+    const groups: { key: string; label: string; items: StackSummary[] }[] = [];
+    if (managed.length) groups.push({ key: 'managed', label: 'Managed', items: managed });
+    for (const proj of [...coolifyByProj.keys()].sort((a, b) => a.localeCompare(b))) {
+      const items = [...(coolifyByProj.get(proj) ?? [])].sort((a, b) =>
+        (a.displayName || a.name).localeCompare(b.displayName || b.name),
+      );
+      groups.push({ key: `coolify:${proj}`, label: `Coolify · ${proj}`, items });
+    }
+    if (coolifySys.length) groups.push({ key: 'coolify-system', label: 'Coolify system', items: coolifySys });
+    if (other.length) groups.push({ key: 'other', label: 'Other', items: other });
+    return groups;
+  });
   const counts = $derived({
     up: (stacks ?? []).filter((s) => s.status === 'up').length,
     issues: (stacks ?? []).filter((s) => s.status === 'down' || s.status === 'degraded').length,
@@ -413,13 +476,34 @@
         {/each}
       {:else if filtered.length === 0}
         <p class="meta empty">{query ? 'No stack matches.' : listError ? '' : 'No stacks yet.'}</p>
+      {:else if hasCoolifyGroups}
+        {#each groupedStacks as grp (grp.key)}
+          {@const collapsed = !!collapsedGroups[grp.key] && !query.trim()}
+          <div class="sgrp">
+            <button type="button" class="sgrp-btn" onclick={() => toggleGroup(grp.key)} aria-expanded={!collapsed}>
+              <Icon name={collapsed ? 'chevronDown' : 'chevronDown'} />
+              <span class="sgrp-lbl">{grp.label}</span>
+              <span class="meta num">{grp.items.length}</span>
+            </button>
+            {#if !collapsed}
+              {#each grp.items as s (s.name)}
+                <a class="stack-item" href={link('stacks/' + encodeURIComponent(s.name))} aria-current={selected === s.name ? 'page' : undefined}>
+                  <span class="dot {s.status}" title={statusLabel[s.status]}></span>
+                  <span class="name">{s.displayName || s.name}</span>
+                  {#if s.busy || s.coolifyDeploying}<span class="busy" title="Deploying"></span>{/if}
+                  {#if !s.managed && !s.coolifyUuid}<span class="ro" title="Read-only"><Icon name="lock" /></span>{/if}
+                </a>
+              {/each}
+            {/if}
+          </div>
+        {/each}
       {:else}
         {#each filtered as s (s.name)}
           <a class="stack-item" href={link('stacks/' + encodeURIComponent(s.name))} aria-current={selected === s.name ? 'page' : undefined}>
             <span class="dot {s.status}" title={statusLabel[s.status]}></span>
-            <span class="name">{s.name}</span>
-            {#if s.busy}<span class="busy" title="Operation running"></span>{/if}
-            {#if !s.managed}<span class="ro" title="Read-only"><Icon name="lock" /></span>{/if}
+            <span class="name">{s.displayName || s.name}</span>
+            {#if s.busy || s.coolifyDeploying}<span class="busy" title="Operation running"></span>{/if}
+            {#if !s.managed && !s.coolifyUuid}<span class="ro" title="Read-only"><Icon name="lock" /></span>{/if}
           </a>
         {/each}
       {/if}
@@ -430,7 +514,7 @@
       {#each pages as p (p.href)}
         <a class="page-link" href={p.href} aria-current={p.current ? 'page' : undefined}>
           <Icon name={p.icon} /> <span class="pname">{p.label}</span>
-          {#if p.badge}<span class="cnt" title="Checks down">{p.badge}</span>{/if}
+          {#if p.badge}<span class="cnt" class:blue={p.badge.tone === 'blue'} title={p.badge.title}>{p.badge.n}</span>{/if}
         </a>
       {/each}
     </nav>
@@ -456,7 +540,7 @@
         {#each shown as p (p.href)}
           <a class="tab" href={p.href} aria-current={p.current ? 'page' : undefined}>
             <Icon name={p.icon} /> {p.label}
-            {#if p.badge}<span class="cnt" title="Checks down">{p.badge}</span>{/if}
+            {#if p.badge}<span class="cnt" class:blue={p.badge.tone === 'blue'} title={p.badge.title}>{p.badge.n}</span>{/if}
           </a>
         {/each}
         {#if overflow.length}
@@ -470,7 +554,7 @@
                 {#each overflow as p (p.href)}
                   <a role="menuitem" href={p.href} class:on={p.current} onclick={() => (moreMenu = false)}>
                     <Icon name={p.icon} /> <span class="mname">{p.label}</span>
-                    {#if p.badge}<span class="cnt">{p.badge}</span>{/if}
+                    {#if p.badge}<span class="cnt" class:blue={p.badge.tone === 'blue'} title={p.badge.title}>{p.badge.n}</span>{/if}
                   </a>
                 {/each}
               </div>
@@ -481,7 +565,7 @@
       <!-- Hidden copy used only to measure each link's natural width. -->
       <div class="tabs measure" aria-hidden="true" bind:this={measureEl}>
         {#each pages as p (p.href)}
-          <span class="tab"><Icon name={p.icon} /> {p.label}{#if p.badge}<span class="cnt">{p.badge}</span>{/if}</span>
+          <span class="tab"><Icon name={p.icon} /> {p.label}{#if p.badge}<span class="cnt">{p.badge.n}</span>{/if}</span>
         {/each}
       </div>
       <button type="button" class="tab pal-btn" onclick={() => (paletteOpen = true)} title="Quick search (Ctrl+K)" aria-label="Quick search">
@@ -544,6 +628,8 @@
       {#key app.route.source + '/' + app.route.id + '@' + app.host}
         <TemplateDeploy source={app.route.source} id={app.route.id} onCreated={refresh} />
       {/key}
+    {:else if app.route.page === 'logs'}
+      <LogsView />
     {:else if app.route.page === 'deps'}
       <DepsView />
     {:else if app.route.page === 'new'}
@@ -758,6 +844,36 @@
       transform: rotate(360deg);
     }
   }
+  .sgrp {
+    display: grid;
+    gap: 1px;
+    margin-bottom: 4px;
+  }
+  .sgrp-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--haze);
+    font: 600 11px var(--font);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    text-align: left;
+  }
+  .sgrp-btn:hover {
+    color: var(--foam);
+    background: var(--rope);
+  }
+  .sgrp-lbl {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .empty {
     padding: 8px 10px;
   }
@@ -803,6 +919,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+  }
+  .cnt.blue {
+    background: var(--info-wash);
+    color: var(--info-text);
   }
   .side-foot {
     display: grid;

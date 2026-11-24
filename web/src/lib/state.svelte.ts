@@ -1,12 +1,23 @@
 // App-wide reactive state: session, hash route, theme.
-import type { HostEntry, User } from './api';
+import type { HostEntry, NavSummary, User } from './api';
 
-export type SettingsTab = 'general' | 'hosts' | 'notifications' | 'audit' | 'users' | 'templates' | 'addons';
+export type SettingsTab =
+  | 'general'
+  | 'hosts'
+  | 'backups'
+  | 'shared-vars'
+  | 'connections'
+  | 'notifications'
+  | 'audit'
+  | 'users'
+  | 'templates'
+  | 'addons';
 export type MonitoringTab = 'checks' | 'status-pages' | 'maintenance';
 
 export type Route =
   | { page: 'home' }
   | { page: 'new' }
+  | { page: 'logs' }
   | { page: 'deps' }
   | { page: 'templates' }
   | { page: 'template'; source: string; id: string }
@@ -30,6 +41,9 @@ function parse(hash: string): { route: Route; host?: string } {
   const q = new URLSearchParams(query);
   if (path === 'settings' || path === 'settings/hosts' || path === 'hosts') return { route: { page: 'settings', tab: 'hosts' } };
   if (path === 'settings/general') return { route: { page: 'settings', tab: 'general' } };
+  if (path === 'settings/backups') return { route: { page: 'settings', tab: 'backups' } };
+  if (path === 'settings/shared-vars') return { route: { page: 'settings', tab: 'shared-vars' } };
+  if (path === 'settings/connections') return { route: { page: 'settings', tab: 'connections' } };
   if (path === 'settings/notifications' || path === 'notifications') return { route: { page: 'settings', tab: 'notifications' } };
   if (path === 'settings/audit' || path === 'audit') return { route: { page: 'settings', tab: 'audit' } };
   if (path === 'settings/users' || path === 'users') return { route: { page: 'settings', tab: 'users' } };
@@ -58,6 +72,7 @@ function parse(hash: string): { route: Route; host?: string } {
     h = hm[2];
   }
   if (h === 'new') return { route: { page: 'new' }, host };
+  if (h === 'logs') return { route: { page: 'logs' }, host };
   if (h === 'deps') return { route: { page: 'deps' }, host };
   if (h === 'templates') return { route: { page: 'templates' }, host };
   const tm = /^templates\/([^/?]+)\/([^/?]+)$/.exec(h);
@@ -102,6 +117,8 @@ export const app = $state<{
   theme: 'dark' | 'light';
   version: string;
   restarting: HubRestartState | null;
+  /** Last answer of GET /api/nav-summary (badges in the top bar and the Monitoring tabs). */
+  nav: NavSummary | null;
 }>({
   user: null,
   route: first.route,
@@ -110,7 +127,29 @@ export const app = $state<{
   theme: 'dark',
   version: '',
   restarting: null,
+  nav: null,
 });
+
+/** NavBadge is the single badge of a navigation item: red = failing, blue = information. */
+export type NavBadge = { n: number; tone: 'red' | 'blue'; title: string };
+
+/** monitoringBadge: red for failing checks outside maintenance, else blue for running windows. */
+export function monitoringBadge(): NavBadge | undefined {
+  const n = app.nav;
+  if (!n) return undefined;
+  if (n.checksFailing > 0) return { n: n.checksFailing, tone: 'red', title: `${n.checksFailing} checks failing` };
+  if (n.maintenanceActive > 0) return { n: n.maintenanceActive, tone: 'blue', title: `${n.maintenanceActive} maintenance windows running` };
+  return undefined;
+}
+
+/** updatesBadge: red for failed automatic updates, else blue for available updates. */
+export function updatesBadge(): NavBadge | undefined {
+  const n = app.nav;
+  if (!n) return undefined;
+  if (n.updatesFailed > 0) return { n: n.updatesFailed, tone: 'red', title: `${n.updatesFailed} automatic updates failed` };
+  if (n.updatesAvailable > 0) return { n: n.updatesAvailable, tone: 'blue', title: `${n.updatesAvailable} image updates available` };
+  return undefined;
+}
 
 export function startHubRestart(fromVersion: string, toVersion: string, label: string, jobId: number) {
   app.restarting = { fromVersion, toVersion, label, startedAt: Date.now(), jobId };

@@ -38,6 +38,9 @@
   --signal: #f5c451;
   --signal-wash: rgba(245, 196, 81, 0.14);
   --signal-text: #f7d27a;
+  --info: #4da3ff;
+  --info-text: #8cc4ff;
+  --info-wash: rgba(77, 163, 255, 0.16);
   --becalmed: #7d8f93;
   --becalmed-wash: rgba(125, 143, 147, 0.16);
   --lift: 0 0 0 1px var(--rope);
@@ -68,6 +71,9 @@
   --signal: #b7860b;
   --signal-wash: rgba(183, 134, 11, 0.12);
   --signal-text: #8a6508;
+  --info: #1d6fd8;
+  --info-text: #1858ac;
+  --info-wash: rgba(29, 111, 216, 0.12);
   --becalmed-wash: rgba(106, 124, 128, 0.12);
   --lift: 0 0 0 1px var(--rope), 0 1px 2px -1px rgba(20, 35, 42, 0.06), 0 2px 4px rgba(20, 35, 42, 0.04);
   --lift-raised: 0 0 0 1px var(--rope-strong), 0 8px 24px rgba(20, 35, 42, 0.1);

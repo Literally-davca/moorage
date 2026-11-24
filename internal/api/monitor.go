@@ -89,9 +89,8 @@ func (s *Server) validateCheck(ctx context.Context, in *checkInput) error {
 	st := &in.Settings
 	switch in.Kind {
 	case monitor.KindHTTP:
-		u, err := url.Parse(in.Target)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return errors.New("The URL must start with http:// or https://.")
+		if err := normalizeURLs(in); err != nil {
+			return err
 		}
 		if st.Method != "" && st.Method != http.MethodGet && st.Method != http.MethodHead {
 			return errors.New("Use GET or HEAD.")
@@ -132,11 +131,15 @@ func (s *Server) validateCheck(ctx context.Context, in *checkInput) error {
 		}
 		*st = monitor.Settings{RecordType: st.RecordType, Resolver: st.Resolver, Expect: st.Expect, AllowLinkLocal: st.AllowLinkLocal}
 	case monitor.KindStack:
+		stacks := st.Stacks
+		*st = monitor.Settings{}
+		if err := s.normalizeStacks(ctx, in, stacks); err != nil {
+			return err
+		}
 		if in.HostID == "" || !stackNameRe.MatchString(in.Target) {
 			return errors.New("Pick the host and the stack to watch.")
 		}
-		in.Stack = in.Target // silence and anchors follow the watched stack
-		*st = monitor.Settings{}
+		in.Stack = in.Target // silence and anchors follow the (first) watched stack
 	case monitor.KindLog:
 		if in.HostID == "" || !stackNameRe.MatchString(in.Stack) {
 			return errors.New("Pick the host and the stack to watch.")
@@ -167,6 +170,9 @@ func (s *Server) validateCheck(ctx context.Context, in *checkInput) error {
 			Threshold: st.Threshold, Window: st.Window,
 		}
 	}
+	if in.Kind != monitor.KindHTTP {
+		st.URLs = nil
+	}
 	if in.Stack != "" && !stackNameRe.MatchString(in.Stack) {
 		return errors.New("The linked stack name isn't valid.")
 	}
@@ -182,6 +188,79 @@ func (s *Server) validateCheck(ctx context.Context, in *checkInput) error {
 		in.HostID = ""
 	}
 	return s.validateLocations(ctx, in)
+}
+
+// normalizeURLs checks the URL(s) of an HTTP check. One URL is stored in Target only (as
+// before multi-URL checks); 2–20 URLs are stored in settings.urls with the first one
+// mirrored in Target.
+func normalizeURLs(in *checkInput) error {
+	urls := in.Settings.URLs
+	if len(urls) == 0 {
+		urls = []string{in.Target}
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range urls {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || seen[raw] {
+			continue
+		}
+		if len(raw) > 500 {
+			return errors.New("A URL can be at most 500 characters.")
+		}
+		u, err := url.Parse(raw)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%s: the URL must start with http:// or https://.", raw)
+		}
+		seen[raw] = true
+		out = append(out, raw)
+	}
+	switch {
+	case len(out) == 0:
+		return errors.New("Fill in what to check.")
+	case len(out) > monitor.MaxTargets:
+		return fmt.Errorf("One check can watch at most %d URLs.", monitor.MaxTargets)
+	}
+	in.Target = out[0]
+	in.Settings.URLs = nil
+	if len(out) > 1 {
+		in.Settings.URLs = out
+	}
+	return nil
+}
+
+// normalizeStacks checks the stacks of a stack check: like URLs, one stack lives in
+// HostID/Target only, 2–20 (on any hosts) in settings.stacks.
+func (s *Server) normalizeStacks(ctx context.Context, in *checkInput, stacks []monitor.StackTarget) error {
+	if len(stacks) == 0 {
+		return nil
+	}
+	seen := map[monitor.StackTarget]bool{}
+	var out []monitor.StackTarget
+	for _, t := range stacks {
+		t.HostID, t.Stack = strings.TrimSpace(t.HostID), strings.TrimSpace(t.Stack)
+		if seen[t] {
+			continue
+		}
+		if t.HostID == "" || !stackNameRe.MatchString(t.Stack) {
+			return errors.New("Pick the host and the stack to watch.")
+		}
+		if s.reg != nil {
+			if _, _, err := s.reg.Get(ctx, t.HostID); errors.Is(err, host.ErrUnknownHost) {
+				return errors.New("That host doesn't exist.")
+			}
+		}
+		seen[t] = true
+		out = append(out, t)
+	}
+	if len(out) > monitor.MaxTargets {
+		return fmt.Errorf("One check can watch at most %d stacks.", monitor.MaxTargets)
+	}
+	in.HostID, in.Target = out[0].HostID, out[0].Stack
+	if len(out) > 1 {
+		in.Settings.Stacks = out
+	}
+	return nil
 }
 
 // validateLocations normalises the locations of a check: only HTTP/TCP/ping/DNS checks
@@ -537,7 +616,7 @@ func (s *Server) stackEvent(r *http.Request, stack, kind, detail string) {
 }
 
 // actionEvent maps compose actions to stack events.
-var actionEvent = map[string]string{"up": "deploy", "update": "update", "restart": "restart", "stop": "stop", "down": "down", "pull": "pull"}
+var actionEvent = map[string]string{"up": "deploy", "rolling": "deploy", "rolling-update": "update", "update": "update", "restart": "restart", "stop": "stop", "down": "down", "pull": "pull"}
 
 // ---- hub watchdog ----------------------------------------------------------
 

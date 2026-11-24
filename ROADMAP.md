@@ -7,20 +7,28 @@ Přehled nápadů a budoucích funkcí mimo aktuální implementaci.
 
 ## Schválené návrhy (neimplementované)
 
-Položky schválené k realizaci do jádra Moorage (viz podrobný návrh v `PLAN.md`):
+Položky schválené k realizaci do jádra Moorage:
 
 | Nápad | Proč | Poznámka | Zdroj |
 |---|---|---|---|
-| **Add-ons: filtry, auto-katalog a společný stack `add-ons`** | Rychlejší orientace v add-onech a jediný stack `add-ons` místo desítek `addon-*` stacků. | Filtry podle stavu/kategorie, auto-načtení katalogu, správa služeb v jednom compose. | uživatel |
-| **Coolify styl `.env` v compose** | Automatické doplňování proměnných z `compose.yaml` do `.env` a přehled služeb, které je používají. | Bez nutnosti ručně přidávat každou `${VAR}`. | uživatel |
-| **Zpřehlednění stránky Hosts** | Oddělení seznamu hostů, přidání hosta (modal), Watchdogu a přesun Terminal sessions do Auditu. | Lepší čitelnost a orientace. | uživatel |
-| **Rozšíření notifikací** | Nové události (auto-update, rollback, selhání deploye, offline agent), kanály (Slack, Gotify, Pushover, Matrix, vlastní HTTP) a UI toasty / Web Push. | Po vzoru Kumy, vše pod `netguard`. | uživatel + agent |
-| **Obnova smazaného stacku z historie** | Poslední stav smazaného stacku už je v `history.git`; vrátit ho z UI jedním klikem. | Malá úprava (navazuje na M2). | agent |
-| **Úklid disku s náhledem + denní úloha** | Přehled nepoužitých image, volumes a build cache před potvrzením + volitelný denní úklid v Settings. | Volumes nikdy nemazat automaticky bez explicitního souhlasu. | agent + uživatel |
-| **Export a import konfigurace i dat** | Kompletní záloha hubu (SQLite DB) i definic stacků (`compose.yaml`, `.env`, `history.git`) pro přesun na jiný stroj. | Aplikační volumes řeší Restic add-on. | uživatel + agent |
-| **Automatický rollback po selhání kontrol** | Když po auto-update přejde kontrola stacku do `DOWN`, vrátit předchozí digest a přepnout politiku na `notify`. | Navazuje na M8 a M4 (`v1.1`). | agent |
 | **Hodinové agregace výsledků kontrol (1 rok)** | Dlouhodobý uptime bez růstu DB (M4 drží jen 30 dní surových dat). | Zbývá z M11 (`v1.0`). | agent |
 | **Podman podpora (dokončení a ověření)** | Ověřit rozpracovanou podporu z R8 proti reálnému Podmanu 4.9 / 5.x (rootful i rootless). | Částečně hotovo v R8. | uživatel + agent |
+| **Přehled obsazených portů (Port map)** | Přehled TCP/UDP portů na hostu a varování před kolizí před `up`. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
+| **Prohlížeč a editor souborů stacku** | Úprava doprovodných souborů (`Caddyfile`, `nginx.conf`…) přímo ze stacku s git historií. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
+| **Hlídání volného disku a RAM hosta** | Včasné varování před zaplněním disku nebo paměti hosta. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
+| **Hromadné operace nad stacky (Bulk actions)** | Hromadný start, stop, restart a update vybraných stacků ve frontě. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
+| **Tailscale / NetBird add-on (`vpn-expose`)** | Detekce VPN rozhraní a přepínání portů jen na VPN síť na jeden klik. | Zařazeno do M15 (`PLAN.md`). | uživatel + agent |
+| **Sidecary `log-shipper` a `node-exporter`** | Odesílání logů do VictoriaLogs/Loki a OS metriky po boku vestavěného Promethea. | Zařazeno do M15 (`moorage-addons`). | agent + uživatel |
+
+---
+
+## Návrhy do jádra (k posouzení)
+
+Univerzální funkce pro každého správce Docker/Compose hostů:
+
+| Nápad | Proč | Poznámka | Zdroj |
+|---|---|---|---|
+| **Tiché hodiny a opakované připomínky alertů** | Nerušit v noci u nekritických kontrol a připomenout trvající výpadek po X hodinách. | Malá; nastavení per kanál nebo globálně. | agent |
 
 ---
 
@@ -36,10 +44,14 @@ Vestavěné (`builtin`) funkce a integrace mimo univerzální jádro, zapínatel
 | **Automatické povyšování tagů verzí** | Volitelné přepsání tagu v `compose.yaml` (patch/minor) v časovém okně s git commitem. | nápad | agent + uživatel |
 | **MCP server pro AI agenty** | Volitelné HTTP/SSE MCP rozhraní nad API tokeny pro vzdálenou správu, vytváření a zastavování stacků agenty (pro lokální agenty stačí CLI/soubory). | nápad | uživatel + agent |
 | **API tokeny a CLI `moorage`** | Automatizace (CI nasadí stack, skript zjistí stav) bez UI; scope tokenů (`read`/`deploy`). | nápad | agent |
-| **Vyhledávání image při zakládání stacku** | Našeptávač názvů image z Docker Hubu / GHCR. | implementováno (`imagefind`) / doladit jako add-on | agent |
+| **GitOps sync (pull z Git repozitáře)** | Napojení stacku na GitHub/Gitea/Forgejo větev s automatickým nasazením po commitu nebo webhooku. | nápad | agent |
+| **Privátní registry přihlášení** | Správa přihlašovacích údajů pro soukromé registry (GHCR, Docker Hub, vlastní registry) pro pull i kontrolu aktualizací. | nápad | agent |
 | **Sdílené proměnné mezi stacky** | Centrální proměnné na úrovni hosta/hubu sdílené mezi více stacky (Coolify styl). | nápad | agent |
 | **Šifrování `.env` v historii (age/SOPS) + push na remote** | Šifrování tajných hodnot v `history.git` pro bezpečný push záloh na GitHub/Gitea. | nápad | agent |
+| **Tailscale / NetBird detekce** | Zobrazení overlay IP adres a rychlých odkazů do privátní sítě (`*.ts.net`). | nápad | agent |
+| **Export SLA / incident reportů** | Měsíční přehled výpadků a dostupnosti v Markdownu/JSON. | nápad | agent |
 | **Záložní hub (pasivní standby)** | Standby hub přebírající replikovanou SQLite (např. Litestream) s fencingem. | nápad | uživatel + agent |
+| **Vyhledávání image při zakládání stacku** | Našeptávač názvů image z Docker Hubu / GHCR. | implementováno (`imagefind`) | agent |
 
 ---
 
@@ -51,6 +63,10 @@ Samostatné kontejnerové služby v `moorage-addons` spouštěné do společnéh
 |---|---|---|---|
 | **Trivy CVE vulnerability scanner (`trivy-scanner`)** | Skenování image stacků na známé CVE zranitelnosti bez nafukování binárky Moorage. | implementováno | agent |
 | **Restic volume backups (`restic-backup`)** | Plánované šifrované a deduplikované zálohy Docker volumes jednotlivých stacků. | implementováno | agent |
+| **Log shipper (`log-shipper` / Vector / Fluent Bit)** | Dlouhodobé odesílání logů kontejnerů do VictoriaLogs / Loki (jádro Moorage logy neukládá). | nápad | agent |
+| **Node Exporter (`node-exporter`)** | Detailní metriky hosta (disk I/O, síť, teplota CPU na Pi) pro Prometheus/Grafanu. | nápad | agent |
+| **Autoheal (`autoheal`)** | Automatický restart kontejnerů ve stavu `unhealthy` podle labelu. | nápad | agent |
+| **Tunnel connector (`cloudflared` / `pangolin`)** | Bezpečné vystavení vybraných služeb bez otevírání portů na domácím routeru. | nápad | agent |
 
 ---
 
@@ -79,6 +95,8 @@ Funkce dokončené a začleněné do Moorage (podrobnosti v `PLAN.md`):
 | **Sondy z více míst (hlasování agentů)** | Kontroly z více agentů s kvórem proti falešným poplachům. | R6 |
 | **Šablony stacků** | Vestavěné šablony + vzdálené HTTPS indexy (vč. `moorage-templates`). | R7 |
 | **Webové odkazy služeb, Settings, Monitoring, `Ctrl+K`** | `moorage.url`, sjednocená navigace, globální vyhledávání. | M13+ |
+| **Add-ons (auto-katalog, filtry, společný stack `add-ons`), Coolify `.env`, čistší Hosts & General settings + Diagnostics** | Přehlednější UI, autodetekce HTTPS cookies, token pro metriky v UI. | M14 |
+| **Obnova smazaného stacku, úklid disku + denní úloha, export/import záloh, auto-rollback s UI bannerem, rozšířené notifikace** | Slack/Gotify/Pushover/Matrix, odběr událostí, živé UI/browser alerty. | M14 |
 
 ---
 

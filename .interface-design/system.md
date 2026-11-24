@@ -37,7 +37,8 @@
 | `--buoy-text` | `#FF9A6E` | akcent jako text (deploy v Logbooku) |
 | `--afloat` | `#4CC38A` | Up |
 | `--adrift` | `#F2555A` | Down (badge text `#FF8A8E`, badge bg `rgba(242,85,90,.15)`) |
-| `--signal` | `#F5C451` | Degraded / Maintenance |
+| `--signal` | `#F5C451` | Degraded / Partially down / Maintenance |
+| `--info` | `#4DA3FF` | klidný informativní stav: modrý odznak (aktivní údržba, dostupné updaty) – text `#8CC4FF`, bg `rgba(77,163,255,.16)` |
 | `--becalmed` | `#7D8F93` | Paused / Unknown |
 
 ### Světlý režim – „sailcloth“ (výchozí pro veřejnou status stránku)
@@ -53,6 +54,9 @@
 | `--buoy` / `--buoy-ink` | `#FF7A45` / `#2A1206` (stejné – tlačítko drží kontrast v obou režimech) |
 | `--buoy-wash` / `--buoy-text` | `rgba(255,122,69,.14)` / `#C2410C` |
 | `--afloat` / `--adrift` / `--signal` | `#1E8E5A` / `#D63A40` / `#B7860B` |
+| `--info` / `--info-text` / `--info-wash` | `#1D6FD8` / `#1858AC` / `rgba(29,111,216,.12)` |
+
+Odznaky v navigaci: vždy nejvýše jeden na položku. Červený (`--adrift`) = něco selhává (počet), modrý (`--info`) = jen informace (aktivní údržba, dostupné aktualizace). `0` se nikdy nevykresluje. `--info` se nesmí plést s akcentem `--buoy` ani se žlutým `--signal`.
 
 Pravidla: jeden odstín (modro-zelená hladina), mezi povrchy se mění jen světlost. Žádné gradienty. Barva = význam (stav nebo akce), nikdy dekorace. Rozložení ~60/30/10: hladina / molo / bóje + stavy.
 

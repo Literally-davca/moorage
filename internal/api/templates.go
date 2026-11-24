@@ -49,6 +49,43 @@ func (s *Server) getTemplate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "Secrets couldn't be generated. Check the Moorage log.")
 			return
 		}
+		if gen == nil {
+			gen = map[string]string{}
+		}
+		hostID := strings.TrimSpace(r.URL.Query().Get("host"))
+		shared := s.resolvedSharedMap(r.Context(), hostID)
+		var baseDomain string
+		if hostID != "" && s.reg != nil {
+			if _, ent, err := s.reg.Get(r.Context(), hostID); err == nil {
+				_, baseDomain, _, _ = s.effectiveHostNetwork(r.Context(), hostID, ent.HostIP, ent.BaseDomain)
+			}
+		}
+		for _, v := range t.Variables {
+			if sv, ok := shared[v.Name]; ok && sv.Value != "" {
+				if sv.Secret {
+					gen[v.Name] = sharedSecretPrefix + v.Name + sharedSecretSuffix
+				} else {
+					gen[v.Name] = sv.Value
+				}
+				continue
+			}
+			if baseDomain != "" {
+				def := strings.ToLower(strings.TrimSpace(v.Default))
+				isPlaceholder := def == "" || strings.Contains(def, "localhost") || strings.Contains(def, "example.com") || strings.Contains(def, ".local")
+				if !isPlaceholder {
+					continue
+				}
+				upper := strings.ToUpper(v.Name)
+				switch {
+				case upper == "BASE_DOMAIN":
+					gen[v.Name] = baseDomain
+				case upper == "DOMAIN" || strings.HasSuffix(upper, "_DOMAIN") || upper == "HOSTNAME":
+					gen[v.Name] = e.ID + "." + baseDomain
+				case upper == "URL" || upper == "PUBLIC_URL" || upper == "APP_URL":
+					gen[v.Name] = "https://" + e.ID + "." + baseDomain
+				}
+			}
+		}
 		d.Generated = gen
 	}
 	writeJSON(w, http.StatusOK, d)
@@ -79,6 +116,7 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Source string            `json:"source"`
 		ID     string            `json:"id"`
+		HostID string            `json:"hostId"`
 		Values map[string]string `json:"values"`
 	}
 	if !readJSON(w, r, &req) {
@@ -87,6 +125,9 @@ func (s *Server) renderTemplate(w http.ResponseWriter, r *http.Request) {
 	t, e, ok := s.loadTemplate(w, r, req.Source, req.ID)
 	if !ok {
 		return
+	}
+	for k, v := range req.Values {
+		req.Values[k] = s.expandSharedSecrets(r.Context(), req.HostID, v)
 	}
 	out, err := templates.Render(t, req.Values)
 	var fe *templates.FieldError

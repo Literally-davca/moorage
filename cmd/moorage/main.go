@@ -69,6 +69,12 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "host-shell-helper":
+		if err := runHostShellHelper(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "host-shell-helper: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	case "version", "--version", "-v":
 		fmt.Println(version)
 		return
@@ -363,7 +369,10 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	}, log)
 	apiSrv.SetSelfUpdate(sysUpd)
 	if hub != nil {
-		hub.OnConnect = sysUpd.OnAgentConnect
+		hub.OnConnect = func(id string) {
+			sysUpd.OnAgentConnect(id)
+			go apiSrv.SyncRegistriesToHost(id)
+		}
 		hub.MaintenanceUntil = func(now time.Time) time.Time {
 			u := mon.AllScopeUntil(now)
 			if hu := sysUpd.HubUpdateUntil(now); hu.After(u) {
@@ -385,14 +394,18 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	// Stack dependencies: cascade grouping of alerts, and re-detection on saves and deploys.
 	depSvc := apiSrv.Deps()
 	mon.SetDeps(depSvc)
-	mon.OnStackEvent(depSvc.StackEvent)
+	mon.OnStackEvent(apiSrv.StackEventHook)
 	if err := mon.Start(ctx); err != nil {
 		return nil, fmt.Errorf("checks: %w", err)
 	}
 	if err := depSvc.Start(ctx); err != nil {
 		return nil, fmt.Errorf("stack dependencies: %w", err)
 	}
+	apiSrv.StartAutoRestart(ctx)
+	apiSrv.StartCoolify(ctx)
+	apiSrv.StartScheduler(ctx)
 	apiSrv.SetHubContext(ctx)
+	apiSrv.SyncRegistries(ctx)
 	apiSrv.StartCleanupLoop(ctx)
 	// OIDC discovery runs in the background and retries: an IdP that is down or a broken
 	// setting never stops Moorage (the Users page shows the problem to admins).

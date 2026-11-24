@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type Check, type StackSummary } from './api';
+  import { api, type Check, type SisterLinks, type StackSummary } from './api';
   import { app, isAdmin, link, setHost } from './state.svelte';
   import Icon, { type IconName } from './Icon.svelte';
 
@@ -20,12 +20,13 @@
   let inputEl = $state<HTMLInputElement | null>(null);
   let allStacks = $state<{ hostId: string; hostName: string; stack: StackSummary }[]>([]);
   let checks = $state<Check[]>([]);
+  let sister = $state<SisterLinks | null>(null);
   let loading = $state(false);
 
   async function loadAll() {
     loading = true;
     const hosts = app.hosts.filter((h) => h.connected);
-    const [stackLists, checkList] = await Promise.all([
+    const [stackLists, checkList, sisterRes] = await Promise.all([
       Promise.all(
         hosts.map(async (h) => {
           try {
@@ -37,9 +38,11 @@
         }),
       ),
       api.checks().catch(() => [] as Check[]),
+      api.sisterLinks().catch(() => null),
     ]);
     allStacks = stackLists.flat();
     checks = checkList;
+    sister = sisterRes;
     loading = false;
   }
 
@@ -64,6 +67,7 @@
 
   const pageItems = $derived<PaletteItem[]>([
     { id: 'pg:home', group: 'Page', title: 'Home', sub: 'Dashboard overview', icon: 'anchor', run: () => { location.hash = link(''); } },
+    { id: 'pg:logs', group: 'Page', title: 'Logs', sub: 'Host-wide live & historical container logs', icon: 'logs', run: () => { location.hash = link('logs'); } },
     { id: 'pg:checks', group: 'Page', title: 'Monitoring · Checks', sub: 'Uptime checks', icon: 'pulse', run: () => { location.hash = '#/monitoring/checks'; } },
     { id: 'pg:status', group: 'Page', title: 'Monitoring · Status pages', sub: 'Public status pages', icon: 'world', run: () => { location.hash = '#/monitoring/status-pages'; } },
     { id: 'pg:maint', group: 'Page', title: 'Monitoring · Maintenance', sub: 'Planned maintenance windows', icon: 'tool', run: () => { location.hash = '#/monitoring/maintenance'; } },
@@ -73,6 +77,10 @@
     { id: 'pg:hosts', group: 'Page', title: 'Settings · Hosts', sub: 'Manage Hub and agents', icon: 'server', run: () => { location.hash = '#/settings/hosts'; } },
     ...(isAdmin()
       ? [
+          { id: 'pg:gen', group: 'Page' as const, title: 'Settings · General', sub: 'Hub URLs and locks', icon: 'settings' as const, run: () => { location.hash = '#/settings/general'; } },
+          { id: 'pg:bk', group: 'Page' as const, title: 'Settings · Backups', sub: 'Local .mbk and S3/WebDAV backups', icon: 'download' as const, run: () => { location.hash = '#/settings/backups'; } },
+          { id: 'pg:sv', group: 'Page' as const, title: 'Settings · Shared variables', sub: 'Global and per-host defaults', icon: 'key' as const, run: () => { location.hash = '#/settings/shared-vars'; } },
+          { id: 'pg:conn', group: 'Page' as const, title: 'Settings · Connections', sub: 'OIDC, Coolify, registries and sister panels', icon: 'link' as const, run: () => { location.hash = '#/settings/connections'; } },
           { id: 'pg:notif', group: 'Page' as const, title: 'Settings · Notifications', sub: 'Alert channels', icon: 'bell' as const, run: () => { location.hash = '#/settings/notifications'; } },
           { id: 'pg:audit', group: 'Page' as const, title: 'Settings · Audit', sub: 'Action audit log', icon: 'clipboardList' as const, run: () => { location.hash = '#/settings/audit'; } },
           { id: 'pg:users', group: 'Page' as const, title: 'Settings · Users', sub: 'Accounts and SSO', icon: 'users' as const, run: () => { location.hash = '#/settings/users'; } },
@@ -89,8 +97,8 @@
       items.push({
         id: `st:${hostId}/${stack.name}`,
         group: 'Stack',
-        title: stack.name,
-        sub: `${hostName} · ${stack.running}/${stack.total} running`,
+        title: stack.displayName || stack.name,
+        sub: [hostName, stack.coolifyProject, `${stack.running}/${stack.total} running`, stack.displayName ? stack.name : ''].filter(Boolean).join(' · '),
         icon: 'server',
         dot: stack.status,
         run: () => {
@@ -133,6 +141,36 @@
         run: () => {
           location.hash = `#/checks/${c.id}`;
         },
+      });
+    }
+    if (sister?.grafanaUrl) {
+      items.push({
+        id: 'sis:grafana',
+        group: 'Service',
+        title: 'Open Grafana',
+        sub: sister.grafanaUrl,
+        icon: 'external',
+        run: () => window.open(sister!.grafanaUrl, '_blank', 'noopener,noreferrer'),
+      });
+    }
+    if (sister?.beszelUrl) {
+      items.push({
+        id: 'sis:beszel',
+        group: 'Service',
+        title: 'Open Beszel',
+        sub: sister.beszelUrl,
+        icon: 'external',
+        run: () => window.open(sister!.beszelUrl, '_blank', 'noopener,noreferrer'),
+      });
+    }
+    for (const lk of sister?.links ?? []) {
+      items.push({
+        id: `sis:${lk.label}:${lk.url}`,
+        group: 'Service',
+        title: lk.label,
+        sub: lk.url,
+        icon: 'external',
+        run: () => window.open(lk.url, '_blank', 'noopener,noreferrer'),
       });
     }
     items.push(...pageItems);

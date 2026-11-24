@@ -16,7 +16,9 @@ import (
 )
 
 // Actions a user can run on a managed stack.
-var Actions = map[string]bool{"up": true, "down": true, "stop": true, "restart": true, "pull": true, "update": true}
+// "rolling" and "rolling-update" deploy service by service with an automatic rollback
+// (rolling.go); both pull first.
+var Actions = map[string]bool{"up": true, "down": true, "stop": true, "restart": true, "pull": true, "update": true, "rolling": true, "rolling-update": true}
 
 // opTimeout bounds one compose operation (large image pulls on a Pi can be slow).
 const opTimeout = 30 * time.Minute
@@ -197,7 +199,7 @@ func (e *Engine) runCompose(ctx context.Context, op *Op, name, dir, file, action
 	if err != nil {
 		return err
 	}
-	if (action == "up" || action == "up-local" || action == "update" || action == "restart") && e.isPodman(ctx) {
+	if (action == "up" || action == "up-local" || action == "update" || action == "restart" || action == "rolling" || action == "rolling-update") && e.isPodman(ctx) {
 		for _, w := range podmanComposeWarnings(project, e.rootless(ctx)) {
 			fmt.Fprintln(op, w)
 		}
@@ -222,6 +224,8 @@ func (e *Engine) runCompose(ctx context.Context, op *Op, name, dir, file, action
 		return svc.Restart(ctx, name, api.RestartOptions{Project: project})
 	case "pull":
 		return svc.Pull(ctx, project, api.PullOptions{IgnoreBuildable: true})
+	case "rolling", "rolling-update":
+		return e.rollingUp(ctx, op, svc, project)
 	case "update": // pull new images, then recreate what changed
 		if err := svc.Pull(ctx, project, api.PullOptions{IgnoreBuildable: true}); err != nil {
 			return err

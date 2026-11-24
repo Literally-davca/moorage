@@ -120,10 +120,25 @@ func TestDepsAPI(t *testing.T) {
 		t.Fatalf("delete through another stack: %d", w.Code)
 	}
 
-	// a loop is reported
-	if w := e.req("POST", "/api/hosts/local/stacks/pg/deps", `{"stack":"app"}`, "tok-admin"); w.Code != http.StatusCreated {
-		t.Fatalf("add reverse: %d", w.Code)
+	// duplicate and loop edges are refused on manual add, while detected loops are reported
+	if w := e.req("POST", "/api/hosts/local/stacks/app/deps", `{"stack":"pg"}`, "tok-admin"); w.Code != http.StatusConflict {
+		t.Fatalf("duplicate add: %d", w.Code)
 	}
+	if w := e.req("POST", "/api/hosts/local/stacks/pg/deps", `{"stack":"app"}`, "tok-admin"); w.Code != http.StatusConflict {
+		t.Fatalf("manual loop add: %d", w.Code)
+	}
+	if w := e.req("PUT", mpath+"/auto-restart", `{"mode":"on_recover"}`, "tok-admin"); w.Code != http.StatusNoContent {
+		t.Fatalf("set auto-restart: %d %s", w.Code, w.Body)
+	}
+	if d, _ := e.db.StackDepByID(ctx, manual.ID); d.AutoRestart != store.AutoRestartRecover {
+		t.Fatalf("auto-restart not stored: %+v", d)
+	}
+	if _, _, err := e.db.ReplaceDetected(ctx, "local", []store.StackDep{{
+		From: store.StackRef{HostID: "local", Stack: "pg"}, To: store.StackRef{HostID: "local", Stack: "app"}, Reason: "hostname", Detail: "app",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.reloadDeps(ctx)
 	r = readDeps(t, e, "tok-viewer")
 	if len(r.Cycles) != 1 || !r.Nodes[0].InCycle {
 		t.Fatalf("cycle not reported: %+v", r)
@@ -139,7 +154,7 @@ func TestDepsAPI(t *testing.T) {
 	for _, row := range auditRows(t, e.db) {
 		got[row.Action+" "+row.Stack]++
 	}
-	for _, want := range []string{"dep.add app", "dep.add pg", "dep.ignore web", "dep.remove app", "dep.detect "} {
+	for _, want := range []string{"dep.add app", "dep.auto_restart app", "dep.ignore web", "dep.remove app", "dep.detect "} {
 		if got[want] == 0 {
 			t.Errorf("audit row %q missing: %v", want, got)
 		}

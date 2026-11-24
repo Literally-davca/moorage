@@ -52,7 +52,28 @@ type Config struct {
 	// Off when Trusted is empty. A broken setting stops Moorage, because guessing what a
 	// security setting meant would be worse than not starting.
 	Proxy ProxyConfig
+
+	// Host security locks. They are env only on the machine itself: never settable from
+	// the web, so a compromised account can't widen what a host allows.
+	ManageExternal  bool     // MOORAGE_MANAGE_EXTERNAL: control compose projects and containers outside the stacks folder
+	ExtraStacksDirs []string // MOORAGE_EXTRA_STACKS_DIRS: more folders with fully managed stacks (":"-separated)
+	HostTerminal    bool     // MOORAGE_HOST_TERMINAL: a shell in the host's OS (never with MOORAGE_READ_ONLY)
+	Exec            bool     // MOORAGE_EXEC: run commands in containers for scheduled tasks
+
+	// Network addresses of this hub and host (Settings shows them; env wins over the UI).
+	StatusPublicURL string // MOORAGE_STATUS_PUBLIC_URL
+	AgentPublicAddr string // MOORAGE_AGENT_PUBLIC_ADDR, host:port agents dial (prefills MOORAGE_HUB)
+	HostIP          string // MOORAGE_HOST_IP, primary IP or host name of this host (service links)
+	BaseDomain      string // MOORAGE_BASE_DOMAIN, prefilled domain for templates on this host
+
+	// Env reads every MOORAGE_* variable of the process (for "Set via environment" in
+	// Settings). Values of secret variables are never sent to the browser.
+	Env map[string]string
 }
+
+// LockedVars are the host security locks that Settings shows but can never change.
+var LockedVars = []string{"MOORAGE_READ_ONLY", "MOORAGE_MANAGE_EXTERNAL", "MOORAGE_EXTRA_STACKS_DIRS", "MOORAGE_TERMINAL",
+	"MOORAGE_HOST_TERMINAL", "MOORAGE_EXEC", "MOORAGE_TRUSTED_PROXIES", "MOORAGE_LISTEN"}
 
 // RoleMapping turns external groups into a Moorage role: admin groups win over viewer
 // groups, then the default role ("none" refuses the sign-in, or "viewer").
@@ -149,6 +170,39 @@ func FromEnv() (Config, error) {
 	}
 	if c.MetricsToken, err = metricsToken(os.Getenv("MOORAGE_METRICS_TOKEN")); err != nil {
 		return c, err
+	}
+	if c.ManageExternal, err = boolEnv("MOORAGE_MANAGE_EXTERNAL"); err != nil {
+		return c, err
+	}
+	if c.HostTerminal, err = boolEnv("MOORAGE_HOST_TERMINAL"); err != nil {
+		return c, err
+	}
+	if c.Exec, err = boolEnv("MOORAGE_EXEC"); err != nil {
+		return c, err
+	}
+	if c.ReadOnly {
+		// read-only wins over every lock that would allow a change
+		c.ManageExternal, c.HostTerminal, c.Exec = false, false, false
+	}
+	for _, d := range filepath.SplitList(os.Getenv("MOORAGE_EXTRA_STACKS_DIRS")) {
+		if d = strings.TrimSpace(d); d == "" {
+			continue
+		}
+		abs, err := filepath.Abs(d)
+		if err != nil {
+			return c, fmt.Errorf("MOORAGE_EXTRA_STACKS_DIRS: %w", err)
+		}
+		c.ExtraStacksDirs = append(c.ExtraStacksDirs, filepath.Clean(abs))
+	}
+	c.StatusPublicURL = strings.TrimRight(os.Getenv("MOORAGE_STATUS_PUBLIC_URL"), "/")
+	c.AgentPublicAddr = strings.TrimSpace(os.Getenv("MOORAGE_AGENT_PUBLIC_ADDR"))
+	c.HostIP = strings.TrimSpace(os.Getenv("MOORAGE_HOST_IP"))
+	c.BaseDomain = strings.TrimSpace(os.Getenv("MOORAGE_BASE_DOMAIN"))
+	c.Env = map[string]string{}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "MOORAGE_") {
+			c.Env[k] = v
+		}
 	}
 	c.OIDC = oidcFromEnv()
 	if c.Proxy, err = proxyFromEnv(); err != nil {

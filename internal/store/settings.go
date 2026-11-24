@@ -10,13 +10,25 @@ import (
 
 // Setting keys stored in app_settings.
 const (
-	SettingPublicURL       = "public_url"
-	SettingMetricsToken    = "metrics_token"
-	SettingUpdateChannel   = "update_channel"
-	SettingCleanupEnabled  = "cleanup_enabled"
-	SettingCleanupSchedule = "cleanup_schedule"
-	SettingCleanupVolumes  = "cleanup_volumes"
+	SettingPublicURL        = "public_url"
+	SettingStatusPublicURL  = "status_public_url"
+	SettingAgentPublicAddr  = "agent_public_addr"
+	SettingMetricsToken     = "metrics_token"
+	SettingUpdateChannel    = "update_channel"
+	SettingCleanupEnabled   = "cleanup_enabled"
+	SettingCleanupSchedule  = "cleanup_schedule"
+	SettingCleanupVolumes   = "cleanup_volumes"
+	SettingOIDCJSON         = "oidc_config"
+	SettingCoolifyJSON      = "coolify_config"
+	SettingRegistriesJSON   = "registries_config"
+	SettingBackupRemoteJSON = "backup_remote_config"
+	SettingBackupLastStatus = "backup_remote_last"
+	SettingSisterLinksJSON  = "sister_links"
 )
+
+// HostIPKey and BaseDomainKey store per-host network overrides in app_settings.
+func HostIPKey(hostID string) string     { return "host_ip:" + hostID }
+func BaseDomainKey(hostID string) string { return "base_domain:" + hostID }
 
 // GetSetting returns a single setting value or "" if not set.
 func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {

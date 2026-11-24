@@ -12,7 +12,10 @@ import (
 // plannedHorizon is how far ahead a status page lists planned maintenance.
 const plannedHorizon = 7 * 24 * time.Hour
 
-const maxPlanned = 10
+// maxWindows bounds the maintenance windows a status page lists, running and planned
+// together: running windows first (earliest start first), the rest filled with the
+// nearest planned ones. Coverage of the items is computed before this cut.
+const maxWindows = 3
 
 type pageMaint struct {
 	active  []PublicMaintenance
@@ -67,8 +70,11 @@ func (s *Service) pageMaintenance(items []store.StatusPageItem, itemChecks [][]s
 	}
 	byStart(out.active)
 	byStart(out.planned)
-	if len(out.planned) > maxPlanned {
-		out.planned = out.planned[:maxPlanned]
+	if len(out.active) > maxWindows {
+		out.active = out.active[:maxWindows]
+	}
+	if room := maxWindows - len(out.active); len(out.planned) > room {
+		out.planned = out.planned[:room]
 	}
 	return out
 }

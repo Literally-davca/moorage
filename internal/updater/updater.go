@@ -169,6 +169,9 @@ type Updater struct {
 	unsupported map[string]time.Time // hostID -> when 404 was seen
 	nowFn       func() time.Time
 	sendFn      func(ctx context.Context, ch store.Channel, m notify.Message) error
+	// Strategy returns the deploy strategy of a stack: "rolling" runs updates as rolling
+	// deploys with an automatic rollback. Nil means standard.
+	Strategy func(ctx context.Context, hostID, stack string) string
 }
 
 // New creates an Updater.
@@ -777,7 +780,11 @@ func (u *Updater) StartUpdate(ctx context.Context, hostID, stack, actor string) 
 	}
 
 	started := u.now()
-	op, err := h.RunAction(ctx, stack, "update", actor)
+	action := "update"
+	if u.Strategy != nil && u.Strategy(ctx, hostID, stack) == store.StrategyRolling {
+		action = "rolling-update"
+	}
+	op, err := h.RunAction(ctx, stack, action, actor)
 	if err != nil {
 		return engine.OpInfo{}, nil, err
 	}
@@ -837,9 +844,13 @@ func (u *Updater) finishUpdate(
 			tail = appendTail(tail, opErr)
 		}
 		logTail = strings.Join(tail, "\n")
-		if !sawRecreated && imagesUnchanged(before, after) {
+		switch {
+		case strings.Contains(opErr, engine.ErrRolledBack.Error()):
+			// a rolling deploy already put the previous containers back
+			result = store.UpdateRolledBack
+		case !sawRecreated && imagesUnchanged(before, after):
 			result = store.UpdatePullFailed
-		} else {
+		default:
 			result = store.UpdateUpFailed
 		}
 	}
@@ -857,6 +868,27 @@ func (u *Updater) finishUpdate(
 	if !(actor == ActorAuto && result == store.UpdatePullFailed) {
 		if id, err := u.st.AddImageUpdate(ctx, rec); err == nil {
 			rec.ID = id
+		}
+	}
+	if result == store.UpdateRolledBack {
+		// A rolling update put the previous containers back: like a rollback, the stack
+		// switches to notify and skips the new digests, so the next window doesn't retry.
+		pol, _ := u.st.StackUpdatePolicy(ctx, he.ID, stack)
+		pol.HostID, pol.Stack = he.ID, stack
+		if actor == ActorAuto {
+			pol.Policy = store.PolicyNotify
+		}
+		if pol.SkippedDigests == nil {
+			pol.SkippedDigests = map[string]string{}
+		}
+		for _, svc := range rec.Services {
+			if svc.NewDigest != "" && svc.NewDigest != svc.OldDigest {
+				pol.SkippedDigests[svc.Service] = svc.NewDigest
+			}
+		}
+		_ = u.st.SaveStackUpdatePolicy(ctx, pol)
+		if u.events != nil {
+			u.events.StackEvent(he.ID, stack, "rollback", "moorage", "Auto-rollback after a failed rolling update: "+opErr)
 		}
 	}
 	// Refresh the stored check, so the UI doesn't keep offering the update that just ran.
@@ -1130,8 +1162,9 @@ func (u *Updater) sendDiscoveryBatch(ctx context.Context, channelIDs []int64, no
 		title = "1 image update available"
 	}
 	linkURL := ""
-	if u.publicURL != "" {
-		linkURL = u.publicURL + "/#/updates"
+	pubURL := u.getPublicURL()
+	if pubURL != "" {
+		linkURL = pubURL + "/#/updates"
 		if len(notices) == 1 {
 			linkURL = u.stackURL(notices[0].hostID, notices[0].stack)
 		}
@@ -1144,11 +1177,25 @@ func (u *Updater) sendDiscoveryBatch(ctx context.Context, channelIDs []int64, no
 	})
 }
 
+// SetPublicURL updates the public URL used in update notifications live.
+func (u *Updater) SetPublicURL(pub string) {
+	u.mu.Lock()
+	u.publicURL = strings.TrimRight(pub, "/")
+	u.mu.Unlock()
+}
+
+func (u *Updater) getPublicURL() string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.publicURL
+}
+
 func (u *Updater) stackURL(hostID, stack string) string {
-	if u.publicURL == "" {
+	pub := u.getPublicURL()
+	if pub == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s/#/h/%s/stacks/%s", u.publicURL, hostID, stack)
+	return fmt.Sprintf("%s/#/h/%s/stacks/%s", pub, hostID, stack)
 }
 
 // changedServices lists the services whose image really changed, as

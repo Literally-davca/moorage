@@ -1,15 +1,46 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, engineLabel, statusLabel, type AutoRollback, type Check, type HostInfo, type StackSummary } from '../lib/api';
-  import { app, canEdit, link, setHost } from '../lib/state.svelte';
+  import { api, engineLabel, statusLabel, type AutoRollback, type Check, type ContainerInfo, type HostInfo, type Op, type StackSummary } from '../lib/api';
+  import { app, canEdit, currentHost, isAdmin, link, setHost } from '../lib/state.svelte';
   import { checkStatusLabel } from '../lib/checks';
   import Icon from '../lib/Icon.svelte';
+  import OpPanel from './OpPanel.svelte';
+  import TerminalPanel from './TerminalPanel.svelte';
 
   let { stacks, host }: { stacks: StackSummary[] | null; host: HostInfo | null } = $props();
 
   let checks = $state<Check[]>([]);
   let updateCount = $state(0);
   let rollbacks = $state<AutoRollback[]>([]);
+  let standalone = $state<ContainerInfo[]>([]);
+  let ctrOp = $state<Op | null>(null);
+  let ctrErr = $state('');
+  let beszelUrl = $state('');
+  let openHostTerm = $state(false);
+  let standaloneTerm = $state<{ id: string; name: string } | null>(null);
+
+  const curEntry = $derived(currentHost());
+  const canManageExternal = $derived(canEdit() && !!host?.locks?.manageExternal);
+  const canHostTerminal = $derived(isAdmin() && !!host?.locks?.hostTerminal && !host?.locks?.readOnly && !curEntry?.readOnly);
+  const canContainerTerminal = $derived(isAdmin() && (!!host?.locks?.terminal || !!curEntry?.terminal) && !host?.locks?.readOnly && !curEntry?.readOnly);
+
+  async function loadStandalone() {
+    try {
+      const all = await api.containers();
+      standalone = all.filter((c) => c.standalone);
+    } catch {
+      standalone = [];
+    }
+  }
+
+  async function runStandaloneAction(id: string, action: string) {
+    ctrErr = '';
+    try {
+      ctrOp = await api.containerAction(id, action);
+    } catch (e) {
+      ctrErr = (e as Error).message;
+    }
+  }
 
   async function loadExtras() {
     try {
@@ -36,11 +67,23 @@
     } catch {
       updateCount = 0;
     }
+    api.sisterLinks()
+      .then((sl) => (beszelUrl = sl.beszelUrl))
+      .catch(() => {});
   }
 
   $effect(() => {
-    untrack(() => void loadExtras());
-    const t = setInterval(() => !document.hidden && void loadExtras(), 30000);
+    void app.host;
+    untrack(() => {
+      void loadExtras();
+      void loadStandalone();
+    });
+    const t = setInterval(() => {
+      if (!document.hidden) {
+        void loadExtras();
+        void loadStandalone();
+      }
+    }, 30000);
     return () => clearInterval(t);
   });
 
@@ -114,12 +157,34 @@
         <div>
           <h1 class="title">{host?.name ?? 'Host'}</h1>
           <p class="meta">
-            {[`${stacks.length} stacks (${runningCount} up)`, engineLabel(host), host?.stacksDir].filter(Boolean).join(' · ')}
+            {[`${stacks.length} stacks (${runningCount} up)`, engineLabel(host), host?.hostIp, host?.stacksDir].filter(Boolean).join(' · ')}
           </p>
         </div>
-        {#if canEdit()}
-          <a class="btn" href={link('new')}><Icon name="plus" /> New stack</a>
-        {/if}
+        <div class="svc-urls">
+          {#if isAdmin()}
+            <button
+              type="button"
+              class="btn"
+              disabled={!canHostTerminal}
+              title={
+                canHostTerminal
+                  ? 'Open interactive shell in the host OS'
+                  : host?.locks?.readOnly || curEntry?.readOnly
+                    ? 'Host is read-only (MOORAGE_READ_ONLY=true)'
+                    : 'Set MOORAGE_HOST_TERMINAL=true on this host to enable host terminal'
+              }
+              onclick={() => (openHostTerm = !openHostTerm)}
+            >
+              <Icon name={canHostTerminal ? 'terminal' : 'lock'} /> Host terminal
+            </button>
+          {/if}
+          {#if beszelUrl}
+            <a class="btn" href={beszelUrl} target="_blank" rel="noopener noreferrer">Open in Beszel <Icon name="external" /></a>
+          {/if}
+          {#if canEdit()}
+            <a class="btn" href={link('new')}><Icon name="plus" /> New stack</a>
+          {/if}
+        </div>
       </div>
 
       {#if attentionStacks.length || attentionChecks.length}
@@ -158,6 +223,28 @@
       {/if}
     </section>
 
+    {#if openHostTerm && canHostTerminal}
+      {#key app.host}
+        <TerminalPanel
+          mode="host"
+          hostId={app.host}
+          hostName={host?.name ?? curEntry?.name ?? app.host}
+          onClose={() => (openHostTerm = false)}
+        />
+      {/key}
+    {/if}
+
+    {#if standaloneTerm && canContainerTerminal}
+      {#key standaloneTerm.id}
+        <TerminalPanel
+          mode="container"
+          containerId={standaloneTerm.id}
+          containerName={standaloneTerm.name}
+          onClose={() => (standaloneTerm = null)}
+        />
+      {/key}
+    {/if}
+
     {#if serviceStacks.length}
       <section class="card card-pad" aria-label="Services">
         <div class="sec-head">
@@ -178,6 +265,66 @@
                   </a>
                 {/each}
               </div>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
+    {#if standalone.length > 0}
+      <section class="card card-pad" aria-label="Standalone containers">
+        <div class="sec-head">
+          <h2 class="section-title">Standalone containers</h2>
+          <span class="meta">
+            {canManageExternal ? 'Managed via Docker API' : 'Set MOORAGE_MANAGE_EXTERNAL=true on this host to control'}
+          </span>
+        </div>
+        {#if ctrErr}<p class="error-text" role="alert">{ctrErr}</p>{/if}
+        {#if ctrOp}
+          {#key ctrOp.id}
+            <OpPanel op={ctrOp} onDone={() => void loadStandalone()} onClose={() => (ctrOp = null)} />
+          {/key}
+        {/if}
+        <ul class="rows">
+          {#each standalone as c (c.id)}
+            <li class="svc-row">
+              <div class="svc-name">
+                <span class="dot {c.state === 'running' ? 'up' : c.exitCode ? 'down' : ''}"></span>
+                <div>
+                  <div class="n">{c.name}</div>
+                  <div class="meta mono">{c.image} · {c.status}</div>
+                </div>
+              </div>
+              {#if isAdmin() || canManageExternal}
+                <div class="svc-urls">
+                  {#if isAdmin() && c.state === 'running'}
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      disabled={!canContainerTerminal}
+                      title={
+                        canContainerTerminal
+                          ? 'Open container shell'
+                          : host?.locks?.readOnly || curEntry?.readOnly
+                            ? 'Host is read-only (MOORAGE_READ_ONLY=true)'
+                            : 'Set MOORAGE_TERMINAL=true on this host to enable container terminal'
+                      }
+                      onclick={() => (standaloneTerm = { id: c.id, name: c.name })}
+                    >
+                      <Icon name={canContainerTerminal ? 'terminal' : 'lock'} /> Terminal
+                    </button>
+                  {/if}
+                  {#if canManageExternal}
+                    {#if c.state === 'running'}
+                      <button type="button" class="btn btn-sm" onclick={() => runStandaloneAction(c.id, 'restart')}><Icon name="refresh" /> Restart</button>
+                      <button type="button" class="btn btn-sm" onclick={() => runStandaloneAction(c.id, 'stop')}><Icon name="stop" /> Stop</button>
+                    {:else}
+                      <button type="button" class="btn btn-sm" onclick={() => runStandaloneAction(c.id, 'start')}><Icon name="play" /> Start</button>
+                    {/if}
+                    <button type="button" class="btn btn-sm" onclick={() => runStandaloneAction(c.id, 'recreate')} title="Pull latest image and recreate keeping container settings"><Icon name="cloudDown" /> Pull &amp; recreate</button>
+                  {/if}
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>

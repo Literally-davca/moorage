@@ -4,6 +4,7 @@
   import { app } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
+  import StatusCodes from '../lib/StatusCodes.svelte';
   import { emptyCheck, kindName, quorumText, remoteKinds, toInput, voteText } from '../lib/checks';
 
   let { id, host, stack }: { id: number | null; host?: string; stack?: string } = $props();
@@ -18,6 +19,11 @@
   let testing = $state(false);
   let test = $state<CheckTestResult | null>(null);
   let advanced = $state(false);
+  // HTTP: the URLs of the check (one or more); stack: "hostId/stack" values (one or more).
+  let urls = $state<string[]>(['']);
+  let stackSel = $state<string[]>([]);
+  let allStacks = $state<{ value: string; label: string; meta: string }[]>([]);
+  const MAX_TARGETS = 20;
 
   const kinds: { k: CheckKind; hint: string }[] = [
     { k: 'http', hint: 'A web page or API answers' },
@@ -55,6 +61,12 @@
       if (!form.hostId && app.hosts.length) form.hostId = app.host;
       // In the form the hub is an explicit location; clean() stores "hub only" as an empty list.
       if (!form.locations.length) form.locations = ['hub'];
+      urls = form.settings.urls?.length ? [...form.settings.urls] : [form.kind === 'http' ? form.target : ''];
+      stackSel = form.settings.stacks?.length
+        ? form.settings.stacks.map((s) => `${s.hostId}/${s.stack}`)
+        : form.kind === 'stack' && form.target
+          ? [`${form.hostId}/${form.target}`]
+          : [];
       loaded = true;
     });
   });
@@ -73,6 +85,46 @@
       .then((r) => (stacks = r.stacks.filter((s) => s.managed || allStacks)))
       .catch((e) => (stacksError = (e as Error).message));
   });
+
+  // Stack checks can watch stacks of every host: list them all (offline hosts are skipped).
+  $effect(() => {
+    if (form.kind !== 'stack') return;
+    const hosts = app.hosts.filter((h) => h.connected !== false);
+    untrack(() => {
+      Promise.all(
+        hosts.map((h) =>
+          api
+            .stacksOf(h.id)
+            .then((r) => r.stacks.map((s) => ({ value: `${h.id}/${s.name}`, label: s.name, meta: h.name })))
+            .catch(() => []),
+        ),
+      ).then((lists) => (allStacks = lists.flat()));
+    });
+  });
+
+  function stacksChanged(next: string[]) {
+    const first = next[0];
+    if (!first) {
+      form.target = '';
+      return;
+    }
+    const i = first.indexOf('/');
+    form.hostId = first.slice(0, i);
+    form.target = form.stack = first.slice(i + 1);
+  }
+
+  function setUrl(i: number, v: string) {
+    urls[i] = v;
+    form.target = urls.find((u) => u.trim()) ?? '';
+  }
+  function addUrl() {
+    if (urls.length < MAX_TARGETS) urls = [...urls, ''];
+  }
+  function removeUrl(i: number) {
+    urls = urls.filter((_, j) => j !== i);
+    if (!urls.length) urls = [''];
+    form.target = urls.find((u) => u.trim()) ?? '';
+  }
 
   const linkStack = $derived(form.kind !== 'stack' && form.kind !== 'log');
   const targetLabel: Record<CheckKind, string> = { http: 'URL', tcp: 'Host and port', ping: 'Host', dns: 'Name', stack: 'Stack', log: 'Container' };
@@ -120,6 +172,7 @@
       return !!form.hostId && !!form.stack && !!form.settings.pattern?.trim() && !regexError;
     }
     if (isRemote && form.locations.length === 0) return false;
+    if (form.kind === 'stack') return stackSel.length > 0 && stackSel.length <= MAX_TARGETS;
     return !!form.target;
   });
 
@@ -154,6 +207,24 @@
       c.settings.window = Math.max(10, Number(c.settings.window) || 300);
       c.name = c.name.trim() || `${c.stack}: ${c.settings.pattern}`.slice(0, 60);
       return c;
+    }
+    delete c.settings.urls;
+    delete c.settings.stacks;
+    if (c.kind === 'http') {
+      const list = [...new Set(urls.map((u) => u.trim()).filter(Boolean))];
+      c.target = list[0] ?? '';
+      if (list.length > 1) c.settings.urls = list;
+    }
+    if (c.kind === 'stack') {
+      const list = stackSel.map((v) => {
+        const i = v.indexOf('/');
+        return { hostId: v.slice(0, i), stack: v.slice(i + 1) };
+      });
+      if (list.length) {
+        c.hostId = list[0].hostId;
+        c.target = c.stack = list[0].stack;
+      }
+      if (list.length > 1) c.settings.stacks = list;
     }
     c.name = c.name.trim() || (c.kind === 'stack' ? c.target : c.target.replace(/^https?:\/\//, '').slice(0, 60));
     if (c.kind !== 'stack' && !c.stack) c.hostId = '';
@@ -213,23 +284,16 @@
       </fieldset>
 
       {#if form.kind === 'stack'}
-        <div class="two">
-          <div>
-            <label class="label" for="host">Host</label>
-            <select id="host" class="field" bind:value={form.hostId}>
-              {#each app.hosts as h (h.id)}<option value={h.id}>{h.name}</option>{/each}
-            </select>
-          </div>
-          <div>
-            <label class="label" for="stack">Stack</label>
-            <select id="stack" class="field" bind:value={form.target} onchange={() => (form.stack = form.target)}>
-              <option value="" disabled>Pick a stack</option>
-              {#each stacks as s (s.name)}<option value={s.name}>{s.name}</option>{/each}
-            </select>
-            {#if stacksError}<p class="hint bad">{stacksError}</p>{/if}
-          </div>
+        <div>
+          <span class="label">Stacks</span>
+          <MultiSelect label="Stacks" placeholder="Pick one or more stacks" items={allStacks} bind:selected={stackSel} onchange={stacksChanged} />
+          {#if stackSel.length > MAX_TARGETS}<p class="hint bad">One check can watch at most {MAX_TARGETS} stacks.</p>{/if}
         </div>
-        <p class="hint">Down when a container exits, restarts in a loop or turns unhealthy. A stack you stopped on purpose doesn't alert.</p>
+        <p class="hint">
+          Down when a container exits, restarts in a loop or turns unhealthy. A stack you stopped on purpose doesn't alert.
+          {#if stackSel.length > 1}With several stacks (on any hosts) the check is <b>Partially down</b> when some of them fail and Down when all do;
+            a stack that is deploying or in maintenance sits the run out.{/if}
+        </p>
       {:else if form.kind === 'log'}
         <div class="three">
           <div>
@@ -279,6 +343,27 @@
           </div>
           <p class="hint">Recovers automatically once the window has no matches. A stack you stopped on purpose doesn't alert.</p>
         </div>
+      {:else if form.kind === 'http'}
+        <div>
+          <label class="label" for="target">{urls.length > 1 ? 'URLs' : 'URL'}</label>
+          <div class="urls">
+            {#each urls as u, i (i)}
+              <div class="url-row">
+                <input id={i === 0 ? 'target' : `url-${i}`} class="field mono" value={u} oninput={(e) => setUrl(i, e.currentTarget.value)}
+                  placeholder={targetPlaceholder.http} spellcheck="false" autocomplete="off" required={i === 0} aria-label={`URL ${i + 1}`} />
+                {#if urls.length > 1}
+                  <button type="button" class="btn btn-ghost icon-only" aria-label={`Remove URL ${i + 1}`} onclick={() => removeUrl(i)}><Icon name="x" /></button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+          {#if urls.length < MAX_TARGETS}
+            <button type="button" class="btn btn-ghost add-url" onclick={addUrl}><Icon name="plus" /> Add URL</button>
+          {/if}
+          {#if urls.length > 1}
+            <p class="hint">All URLs share the method, status codes, text, timeout and locations, and are checked in parallel. Some failing makes the check <b>Partially down</b>, all failing makes it Down.</p>
+          {/if}
+        </div>
       {:else}
         <div>
           <label class="label" for="target">{targetLabel[form.kind]}</label>
@@ -302,7 +387,7 @@
           </div>
           <div>
             <label class="label" for="codes">Accepted status codes</label>
-            <input id="codes" class="field mono" bind:value={form.settings.status} placeholder="200-399" />
+            <StatusCodes id="codes" bind:value={form.settings.status} />
           </div>
         </div>
       {:else if form.kind === 'dns'}
@@ -583,6 +668,22 @@
   .top {
     align-self: end;
     padding-bottom: 8px;
+  }
+  .urls {
+    display: grid;
+    gap: 6px;
+  }
+  .url-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .url-row .field {
+    flex: 1;
+    min-width: 0;
+  }
+  .add-url {
+    margin-top: 6px;
   }
   .link .two {
     margin-bottom: 0;

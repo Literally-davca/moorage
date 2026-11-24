@@ -1,35 +1,46 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { hostPath, wsURL, type ShellName } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
 
   let {
-    stack,
-    containerName,
-    service,
+    mode = 'stack',
+    stack = '',
+    containerId = '',
+    containerName = '',
+    service = '',
+    hostId = '',
+    hostName = '',
     onClose,
   }: {
-    stack: string;
-    containerName: string;
-    service: string;
+    mode?: 'stack' | 'container' | 'host';
+    stack?: string;
+    containerId?: string;
+    containerName?: string;
+    service?: string;
+    hostId?: string;
+    hostName?: string;
     onClose: () => void;
   } = $props();
 
-  let shell = $state<ShellName>('sh');
+  let shell = $state<ShellName>(untrack(() => (mode === 'host' ? 'bash' : 'sh')));
   let phase = $state<'connecting' | 'connected' | 'ended'>('connecting');
   let endText = $state('');
   let box: HTMLDivElement;
 
-  const shells: ShellName[] = ['sh', 'bash', 'ash'];
+  const shells = $derived<ShellName[]>(mode === 'host' ? ['bash', 'sh', 'ash'] : ['sh', 'bash', 'ash']);
 
-  // Use derived primitive keys so parent stack polling never triggers a reconnect.
-  const targetStack = $derived(stack);
-  const targetContainer = $derived(containerName);
-  const targetShell = $derived(shell);
+  const targetKey = $derived(JSON.stringify([mode, stack, containerId, containerName, hostId, shell]));
 
   $effect(() => {
-    const st = targetStack;
-    const ctr = targetContainer;
-    const sh = targetShell;
+    const [m, st, cid, ctr, hid, sh] = JSON.parse(targetKey) as [
+      'stack' | 'container' | 'host',
+      string,
+      string,
+      string,
+      string,
+      ShellName,
+    ];
 
     phase = 'connecting';
     endText = '';
@@ -55,8 +66,6 @@
         fontSize: 13,
         lineHeight: 1.35,
         scrollback: 2000,
-        // The dark-mode tokens of app.css (--well, --foam, --buoy, status colours); a terminal
-        // stays dark in the light theme too.
         theme: {
           background: '#0b1418',
           foreground: '#e8eeee',
@@ -94,13 +103,36 @@
 
       const cols = Math.max(1, Math.min(500, t.cols || 80));
       const rows = Math.max(1, Math.min(500, t.rows || 24));
-      const q = new URLSearchParams({
-        container: ctr,
-        shell: sh,
-        cols: String(cols),
-        rows: String(rows),
-      });
-      const url = wsURL(hostPath(`/stacks/${encodeURIComponent(st)}/terminal?${q.toString()}`));
+      let url = '';
+      if (m === 'host') {
+        const q = new URLSearchParams({
+          shell: sh,
+          cols: String(cols),
+          rows: String(rows),
+        });
+        const path = hid ? `/api/hosts/${encodeURIComponent(hid)}/ws/host-terminal?${q.toString()}` : hostPath(`/ws/host-terminal?${q.toString()}`);
+        url = wsURL(path);
+      } else if (m === 'container') {
+        const ref = cid || ctr;
+        const q = new URLSearchParams({
+          shell: sh,
+          cols: String(cols),
+          rows: String(rows),
+        });
+        const path = hid
+          ? `/api/hosts/${encodeURIComponent(hid)}/containers/${encodeURIComponent(ref)}/terminal?${q.toString()}`
+          : hostPath(`/containers/${encodeURIComponent(ref)}/terminal?${q.toString()}`);
+        url = wsURL(path);
+      } else {
+        const q = new URLSearchParams({
+          container: ctr,
+          shell: sh,
+          cols: String(cols),
+          rows: String(rows),
+        });
+        url = wsURL(hostPath(`/stacks/${encodeURIComponent(st)}/terminal?${q.toString()}`));
+      }
+
       const sock = new WebSocket(url);
       sock.binaryType = 'arraybuffer';
       ws = sock;
@@ -194,14 +226,18 @@
       term?.dispose();
     };
   });
+
+  const titleLabel = $derived(mode === 'host' ? hostName || 'Host OS' : containerName || containerId);
 </script>
 
-<section class="card term-card" aria-label="Container terminal">
+<section class="card term-card" aria-label={mode === 'host' ? 'Host terminal' : 'Container terminal'}>
   <header class="toolbar">
     <div class="ident">
       <Icon name="terminal" />
-      <span class="cname mono">{containerName}</span>
-      {#if service && service !== containerName}
+      <span class="cname mono">{titleLabel}</span>
+      {#if mode === 'host'}
+        <span class="badge">Host OS</span>
+      {:else if service && service !== containerName}
         <span class="meta">· {service}</span>
       {/if}
     </div>

@@ -38,7 +38,7 @@ const (
 )
 
 // DeployKinds are stack events that silence checks of the stack for a while.
-var DeployKinds = map[string]bool{"deploy": true, "restart": true, "update": true, "rollback": true, "stop": true, "down": true}
+var DeployKinds = map[string]bool{"deploy": true, "restart": true, "update": true, "rollback": true, "stop": true, "down": true, "start": true}
 
 // State is what the UI shows for a check.
 type State struct {
@@ -47,6 +47,8 @@ type State struct {
 	Last   *LastProbe `json:"last,omitempty"`
 	// Locations are the per-location answers of the last run of a multi-location check.
 	Locations []LocationResult `json:"locations,omitempty"`
+	// Targets are the per-target answers of the last run of a multi-target check.
+	Targets []TargetResult `json:"targets,omitempty"`
 }
 
 // LastProbe is the newest result.
@@ -68,6 +70,7 @@ type state struct {
 	kicked   bool             // an early run after a maintenance window is queued
 	root     string           // "host/stack" of the cascade root the open incident was folded into
 	locs     []LocationResult // per-location answers of the last run (multi-location checks only)
+	targets  []TargetResult   // per-target answers of the last run (multi-target checks only)
 }
 
 // Monitor schedules checks and turns their results into incidents and alerts.
@@ -205,6 +208,9 @@ func (m *Monitor) Reload(id int64) {
 	if !MultiLocation(c) {
 		s.locs = nil
 	}
+	if !MultiTarget(c) {
+		s.targets = nil
+	}
 	if !c.Enabled {
 		s.status, s.since, s.fails = StatusPaused, time.Now(), 0
 	} else if s.status == StatusPaused {
@@ -220,7 +226,7 @@ func (m *Monitor) Reload(id int64) {
 func (m *Monitor) SetState(id int64, st State) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.states[id] = &state{status: st.Status, since: st.Since, last: st.Last, locs: st.Locations}
+	m.states[id] = &state{status: st.Status, since: st.Since, last: st.Last, locs: st.Locations, targets: st.Targets}
 }
 
 // State returns the current state of a check.
@@ -231,7 +237,7 @@ func (m *Monitor) State(id int64) State {
 	if s == nil {
 		return State{Status: StatusUnknown}
 	}
-	return State{Status: s.status, Since: s.since, Last: s.last, Locations: s.locs}
+	return State{Status: s.status, Since: s.since, Last: s.last, Locations: s.locs, Targets: s.targets}
 }
 
 // StackEvent records what happened to a stack; deploy-like events silence its checks.
@@ -278,6 +284,9 @@ func (m *Monitor) silenced(c store.Check, at time.Time) bool {
 
 // Test runs a check definition once without storing anything.
 func (m *Monitor) Test(ctx context.Context, c store.Check) Outcome {
+	if MultiTarget(c) {
+		return m.probeTargets(ctx, c, time.Now())
+	}
 	if MultiLocation(c) {
 		return m.probeLocations(ctx, c)
 	}
@@ -336,6 +345,8 @@ func (m *Monitor) run(ctx context.Context, c store.Check, kick <-chan struct{}) 
 		switch {
 		case c.Kind == KindLog:
 			out = m.probeLog(ctx, c, now)
+		case MultiTarget(c):
+			out = m.probeTargets(ctx, c, now)
 		case MultiLocation(c):
 			out = m.probeLocations(ctx, c)
 		default:
@@ -353,11 +364,18 @@ func (m *Monitor) run(ctx context.Context, c store.Check, kick <-chan struct{}) 
 // handle stores a result and moves the check between states.
 func (m *Monitor) handle(c store.Check, out Outcome, now time.Time) {
 	status := StatusUp
+	multi := MultiTarget(c)
 	switch {
+	case out.Quiet != "":
+		status = out.Quiet // every target of a multi-target check sat the run out
 	case out.Unknown:
 		status = StatusUnknown // no location could run the check: neither up nor down
 	case out.Paused:
 		status = StatusPaused
+	case multi && out.Degraded:
+		status = StatusDegraded // targets in maintenance or a deploy were already left out
+	case multi && !out.OK:
+		status = StatusDown
 	case !out.OK && m.inMaintenance(c, now):
 		status = StatusMaintenance
 	case !out.OK && m.silenced(c, now):
@@ -383,16 +401,18 @@ func (m *Monitor) handle(c store.Check, out Outcome, now time.Time) {
 	}
 	s.last = &LastProbe{At: now, Status: status, LatencyMS: r.LatencyMS, Msg: out.Msg}
 	s.locs = out.Locations
+	s.targets = out.Targets
 	s.chk = &c
 	s.kicked = false
 	// A down that was announced before a maintenance window stays announced through it:
 	// its recovery alerts, and failing on after the window doesn't alert again.
-	wasDown := s.status == StatusDown || (s.status == StatusMaintenance && s.incident != 0)
+	wasDown := s.status == StatusDown || s.status == StatusDegraded || (s.status == StatusMaintenance && s.incident != 0)
+	prevStatus := s.status
 	incident, downSince, root := s.incident, s.since, s.root
 	if !s.downAt.IsZero() {
 		downSince = s.downAt
 	}
-	var open, closeIt bool
+	var open, closeIt, escalate bool
 	switch status {
 	case StatusUp:
 		closeIt = wasDown
@@ -422,13 +442,20 @@ func (m *Monitor) handle(c store.Check, out Outcome, now time.Time) {
 		if s.status != StatusMaintenance {
 			s.status, s.since = StatusMaintenance, now
 		}
-	case StatusDown:
+	case StatusDown, StatusDegraded:
 		s.fails++
-		if wasDown && s.status != StatusDown {
-			s.status, s.since = StatusDown, downSince // back from a window, already announced
+		if wasDown && s.status != status {
+			// Already announced. Partially down getting worse (down) updates the incident
+			// and escalates; getting better (still partially down) only changes the state.
+			escalate = status == StatusDown && prevStatus == StatusDegraded
+			if prevStatus == StatusDown || prevStatus == StatusDegraded {
+				s.status, s.since = status, now
+			} else {
+				s.status, s.since = status, downSince // back from a window, already announced
+			}
 		} else if !wasDown {
 			if s.fails >= max(c.Retries, 1) {
-				s.status, s.since, s.downAt = StatusDown, now, now
+				s.status, s.since, s.downAt = status, now, now
 				open = true
 				m.markStackDownLocked(c, now)
 			} else if s.status != StatusPending {
@@ -441,6 +468,12 @@ func (m *Monitor) handle(c store.Check, out Outcome, now time.Time) {
 	switch {
 	case open:
 		m.openIncident(c, out, now)
+	case escalate:
+		if err := m.st.SetIncidentCauseText(context.Background(), incident, out.Msg); err != nil {
+			m.log.Warn("update incident", "err", err)
+		}
+		m.log.Warn("check down (was partially down)", "check", c.Name, "cause", out.Msg)
+		m.enqueue(alert{check: c, cause: out.Msg, at: now, ctx: m.gatherContext(c, out), escalated: true})
 	case closeIt:
 		if err := m.st.CloseIncident(context.Background(), incident, now); err != nil {
 			m.log.Warn("close incident", "err", err)
@@ -470,7 +503,7 @@ func (m *Monitor) openIncident(c store.Check, out Outcome, now time.Time) {
 	}
 	m.mu.Unlock()
 	m.log.Warn("check down", "check", c.Name, "cause", out.Msg, "rootCause", root)
-	m.enqueue(alert{check: c, cause: out.Msg, at: now, ctx: actx, root: root})
+	m.enqueue(alert{check: c, cause: out.Msg, at: now, ctx: actx, root: root, partial: out.Degraded})
 	if m.OnStackDown != nil && c.Stack != "" {
 		go m.OnStackDown(c.HostID, c.Stack, c.Name, out.Msg)
 	}
@@ -643,6 +676,8 @@ type AlertContext struct {
 	Note       string             `json:"note,omitempty"`
 	// Locations is the per-location breakdown of a multi-location check.
 	Locations []LocationResult `json:"locations,omitempty"`
+	// Targets is the per-target breakdown of a multi-target check.
+	Targets []TargetResult `json:"targets,omitempty"`
 }
 
 // hasStackInfo reports whether the context says anything besides the location breakdown.
@@ -657,6 +692,12 @@ func (m *Monitor) gatherContext(c store.Check, out Outcome) *AlertContext {
 			ac = &AlertContext{}
 		}
 		ac.Locations = out.Locations
+	}
+	if len(out.Targets) > 0 {
+		if ac == nil {
+			ac = &AlertContext{}
+		}
+		ac.Targets = out.Targets
 	}
 	return ac
 }
@@ -701,6 +742,9 @@ type alert struct {
 	root string
 	// afterRoot marks a re-alert of a dependent that stayed down after its root recovered
 	afterRoot string
+	// partial: a multi-target check went partially down; escalated: it went from
+	// partially down to down
+	partial, escalated bool
 }
 
 type batch struct {
@@ -889,6 +933,10 @@ func (m *Monitor) compose(group []alert) notify.Message {
 		msg.Title = fmt.Sprintf("DOWN: %d hosts", len(group))
 	case len(group) == 1 && up:
 		msg.Title = "Back up: " + first.check.Name
+	case len(group) == 1 && first.escalated:
+		msg.Title = "DOWN (was partially down): " + first.check.Name
+	case len(group) == 1 && first.partial:
+		msg.Title = "PARTIALLY DOWN: " + first.check.Name
 	case len(group) == 1:
 		msg.Title = "DOWN: " + first.check.Name
 	case up:
@@ -973,16 +1021,30 @@ func (m *Monitor) compose(group []alert) notify.Message {
 	}
 	msg.Text = strings.Join(lines, "\n")
 	msg.Data = data
-	if m.publicURL != "" {
+	pubURL := m.getPublicURL()
+	if pubURL != "" {
 		if first.check.Kind == "host" {
-			msg.URL = m.publicURL + "/#/hosts"
+			msg.URL = pubURL + "/#/hosts"
 		} else if s := stackOf(first.check); s != "" && first.check.HostID != "" {
-			msg.URL = fmt.Sprintf("%s/#/h/%s/stacks/%s", m.publicURL, first.check.HostID, s)
+			msg.URL = fmt.Sprintf("%s/#/h/%s/stacks/%s", pubURL, first.check.HostID, s)
 		} else {
-			msg.URL = fmt.Sprintf("%s/#/checks/%d", m.publicURL, first.check.ID)
+			msg.URL = fmt.Sprintf("%s/#/checks/%d", pubURL, first.check.ID)
 		}
 	}
 	return msg
+}
+
+// SetPublicURL updates the base URL used in alert links without restarting Moorage.
+func (m *Monitor) SetPublicURL(u string) {
+	m.mu.Lock()
+	m.publicURL = strings.TrimRight(u, "/")
+	m.mu.Unlock()
+}
+
+func (m *Monitor) getPublicURL() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.publicURL
 }
 
 // TestChannel sends a test message through a channel.
@@ -992,7 +1054,7 @@ func (m *Monitor) TestChannel(ctx context.Context, ch store.Channel) error {
 		Title:  "Moorage test notification",
 		Text:   "If you can read this, alerts from Moorage will reach you here.",
 		Logs:   []string{"12:00:01 web-1 | example log line attached to real alerts"},
-		URL:    m.publicURL,
+		URL:    m.getPublicURL(),
 	}
 	return m.send(ctx, ch, msg)
 }

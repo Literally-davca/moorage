@@ -44,6 +44,7 @@ type DailyCheckCounts struct {
 	Silenced    int
 	Paused      int
 	Maintenance int // failures during a planned maintenance window
+	Degraded    int // multi-target checks partially down
 }
 
 // IncidentSummary is a stripped incident row without Cause or Context, safe for status page computation.
@@ -241,7 +242,8 @@ func (s *Store) DailyCheckResults(ctx context.Context, checkIDs []int64, since t
 		COALESCE(SUM(status = 'down'), 0),
 		COALESCE(SUM(status = 'silenced'), 0),
 		COALESCE(SUM(status = 'paused'), 0),
-		COALESCE(SUM(status = 'maintenance'), 0)
+		COALESCE(SUM(status = 'maintenance'), 0),
+		COALESCE(SUM(status = 'degraded'), 0)
 		FROM check_results
 		WHERE check_id IN (?` + strings.Repeat(",?", len(checkIDs)-1) + `) AND ts >= ?
 		GROUP BY check_id, day`
@@ -253,7 +255,7 @@ func (s *Store) DailyCheckResults(ctx context.Context, checkIDs []int64, since t
 	var out []DailyCheckCounts
 	for rows.Next() {
 		var d DailyCheckCounts
-		if err := rows.Scan(&d.CheckID, &d.Day, &d.Up, &d.Down, &d.Silenced, &d.Paused, &d.Maintenance); err != nil {
+		if err := rows.Scan(&d.CheckID, &d.Day, &d.Up, &d.Down, &d.Silenced, &d.Paused, &d.Maintenance, &d.Degraded); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -274,7 +276,7 @@ func (s *Store) CheckUptimesSince(ctx context.Context, checkIDs []int64, since t
 	args = append(args, since.UnixMilli())
 	q := `SELECT check_id, COALESCE(SUM(status = 'up'), 0), COUNT(*)
 		FROM check_results
-		WHERE check_id IN (?` + strings.Repeat(",?", len(checkIDs)-1) + `) AND ts >= ? AND status IN ('up', 'down')
+		WHERE check_id IN (?` + strings.Repeat(",?", len(checkIDs)-1) + `) AND ts >= ? AND status IN ('up', 'down', 'degraded')
 		GROUP BY check_id`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {

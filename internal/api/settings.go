@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
+	"moorage/internal/host"
 	"moorage/internal/store"
 )
 
@@ -18,10 +21,24 @@ type diagnosticItem struct {
 	Detail string `json:"detail"`
 }
 
+type hostLockRow struct {
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Kind              string `json:"kind"`
+	Connected         bool   `json:"connected"`
+	ReadOnly          bool   `json:"readOnly"`
+	ManageExternal    bool   `json:"manageExternal"`
+	ContainerTerminal bool   `json:"containerTerminal"`
+	HostTerminal      bool   `json:"hostTerminal"`
+	Exec              bool   `json:"exec"`
+	SelfUpdate        bool   `json:"selfUpdate"`
+}
+
 type settingsConfigResp struct {
-	PublicURL string `json:"publicUrl"`
-	// PublicURLRestart: the saved URL differs from the one this process started with.
+	PublicURL        string           `json:"publicUrl"`
 	PublicURLRestart bool             `json:"publicUrlRestart"`
+	StatusPublicURL  string           `json:"statusPublicUrl"`
+	AgentPublicAddr  string           `json:"agentPublicAddr"`
 	MetricsTokenSet  bool             `json:"metricsTokenSet"`
 	MetricsToken     string           `json:"metricsToken,omitempty"`
 	MetricsURL       string           `json:"metricsUrl"`
@@ -31,6 +48,7 @@ type settingsConfigResp struct {
 	CleanupVolumes   bool             `json:"cleanupVolumes"`
 	FromEnv          map[string]bool  `json:"fromEnv"`
 	EnvLocks         map[string]bool  `json:"envLocks"`
+	HostLocks        []hostLockRow    `json:"hostLocks"`
 	Diagnostics      []diagnosticItem `json:"diagnostics"`
 }
 
@@ -38,19 +56,124 @@ func (s *Server) effectivePublicURL(ctx context.Context) string {
 	if s.cfg.PublicURLSet {
 		return strings.TrimRight(s.cfg.PublicURL, "/")
 	}
-	if v, err := s.store.GetSetting(ctx, store.SettingPublicURL); err == nil && v != "" {
-		return strings.TrimRight(v, "/")
+	if s.store != nil {
+		if v, err := s.store.GetSetting(ctx, store.SettingPublicURL); err == nil && v != "" {
+			return strings.TrimRight(v, "/")
+		}
 	}
-	return strings.TrimRight(s.cfg.PublicURL, "/") // what this process started with
+	return strings.TrimRight(s.cfg.PublicURL, "/")
 }
 
-// publicURLNeedsRestart: the URL saved in Settings differs from the one in use.
-func (s *Server) publicURLNeedsRestart(ctx context.Context) bool {
-	if s.cfg.PublicURLSet {
-		return false
+func (s *Server) effectiveStatusPublicURL(ctx context.Context) string {
+	if s.cfg.StatusPublicURL != "" {
+		return strings.TrimRight(s.cfg.StatusPublicURL, "/")
 	}
-	v, err := s.store.GetSetting(ctx, store.SettingPublicURL)
-	return err == nil && strings.TrimRight(v, "/") != strings.TrimRight(s.cfg.PublicURL, "/")
+	if s.store != nil {
+		if v, err := s.store.GetSetting(ctx, store.SettingStatusPublicURL); err == nil && v != "" {
+			return strings.TrimRight(v, "/")
+		}
+	}
+	return ""
+}
+
+func (s *Server) effectiveAgentPublicAddr(ctx context.Context) string {
+	if s.cfg.AgentPublicAddr != "" {
+		return s.cfg.AgentPublicAddr
+	}
+	if s.store != nil {
+		if v, err := s.store.GetSetting(ctx, store.SettingAgentPublicAddr); err == nil && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func (s *Server) effectiveHostNetwork(ctx context.Context, hostID, envIP, envDomain string) (ip, domain string, ipEnv, domEnv bool) {
+	if strings.TrimSpace(envIP) != "" {
+		ip, ipEnv = strings.TrimSpace(envIP), true
+	} else if s.store != nil {
+		ip, _ = s.store.GetSetting(ctx, store.HostIPKey(hostID))
+	}
+	if strings.TrimSpace(envDomain) != "" {
+		domain, domEnv = strings.TrimSpace(envDomain), true
+	} else if s.store != nil {
+		domain, _ = s.store.GetSetting(ctx, store.BaseDomainKey(hostID))
+	}
+	return ip, domain, ipEnv, domEnv
+}
+
+// hostPortURLs builds http://<hostIP>:<port> links from published container port strings
+// (e.g. "8080:80/tcp", "0.0.0.0:3000:3000/tcp", "100.87.100.2:8090:8090/tcp"), skipping
+// loopback-bound ports (127.0.0.1 / ::1) and UDP ports.
+func hostPortURLs(hostIP string, ports []string) []string {
+	hostIP = strings.TrimSpace(hostIP)
+	if hostIP == "" || len(ports) == 0 {
+		return nil
+	}
+	fmtHost := hostIP
+	if strings.Contains(fmtHost, ":") && !strings.HasPrefix(fmtHost, "[") {
+		fmtHost = "[" + fmtHost + "]"
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, raw := range ports {
+		base, proto, _ := strings.Cut(raw, "/")
+		if proto != "" && proto != "tcp" {
+			continue
+		}
+		parts := strings.Split(base, ":")
+		var pubPort string
+		switch len(parts) {
+		case 2: // "8080:80"
+			pubPort = parts[0]
+		case 3: // "0.0.0.0:8080:80" or "127.0.0.1:8080:80"
+			bindIP := strings.Trim(parts[0], "[]")
+			if bindIP == "127.0.0.1" || bindIP == "::1" || bindIP == "localhost" {
+				continue
+			}
+			pubPort = parts[1]
+		default:
+			continue
+		}
+		n, err := strconv.Atoi(pubPort)
+		if err != nil || n <= 0 || n > 65535 {
+			continue
+		}
+		scheme := "http"
+		if n == 443 || n == 8443 {
+			scheme = "https"
+		}
+		u := scheme + "://" + fmtHost + ":" + pubPort
+		if (scheme == "http" && n == 80) || (scheme == "https" && n == 443) {
+			u = scheme + "://" + fmtHost
+		}
+		if !seen[u] && len(out) < 5 {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	return out
+}
+
+func (s *Server) applyLivePublicURL(ctx context.Context, pubURL string) {
+	pubURL = strings.TrimRight(pubURL, "/")
+	s.cfg.PublicURL = pubURL
+	if s.mon != nil {
+		s.mon.SetPublicURL(pubURL)
+	}
+	if s.upd != nil {
+		s.upd.SetPublicURL(pubURL)
+	}
+	if s.status != nil {
+		s.status.SetPublicURL(pubURL)
+	}
+	if s.push != nil {
+		s.push.SetPublicURL(pubURL)
+	}
+	if s.hub != nil {
+		s.hub.SetPublicURL(pubURL)
+	}
+	s.reloadOIDC(ctx)
 }
 
 func (s *Server) effectiveMetricsToken(ctx context.Context) string {
@@ -73,6 +196,40 @@ func (s *Server) effectiveUpdateChannel(ctx context.Context) string {
 	return s.cfg.UpdateChannel
 }
 
+func (s *Server) collectHostLocks(ctx context.Context) []hostLockRow {
+	if s.reg == nil {
+		return []hostLockRow{{
+			ID: host.LocalID, Name: "Hub", Kind: "hub", Connected: true,
+			ReadOnly: s.cfg.ReadOnly, ManageExternal: s.cfg.ManageExternal && !s.cfg.ReadOnly,
+			ContainerTerminal: s.cfg.Terminal && !s.cfg.ReadOnly, HostTerminal: s.cfg.HostTerminal && !s.cfg.ReadOnly,
+			Exec: (s.cfg.Exec || s.cfg.Terminal) && !s.cfg.ReadOnly, SelfUpdate: s.cfg.SelfUpdate,
+		}}
+	}
+	hosts, _ := s.reg.List(ctx)
+	out := make([]hostLockRow, 0, len(hosts))
+	for _, h := range hosts {
+		row := hostLockRow{
+			ID:                h.ID,
+			Name:              h.Name,
+			Kind:              h.Kind,
+			Connected:         h.Connected,
+			ReadOnly:          h.ReadOnly,
+			ContainerTerminal: h.Terminal && !h.ReadOnly,
+			SelfUpdate:        s.cfg.SelfUpdate,
+		}
+		if h.Locks != nil {
+			row.ReadOnly = h.Locks.ReadOnly
+			row.ManageExternal = h.Locks.ManageExternal && !h.Locks.ReadOnly
+			row.ContainerTerminal = h.Locks.Terminal && !h.Locks.ReadOnly
+			row.HostTerminal = h.Locks.HostTerminal && !h.Locks.ReadOnly
+			row.Exec = (h.Locks.Exec || h.Locks.Terminal) && !h.Locks.ReadOnly
+			row.SelfUpdate = h.Locks.SelfUpdate
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 func (s *Server) getSettingsConfig(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	all, err := s.store.AllSettings(ctx)
@@ -81,8 +238,11 @@ func (s *Server) getSettingsConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pubURL := s.effectivePublicURL(ctx)
+	statusPubURL := s.effectiveStatusPublicURL(ctx)
+	agentPubAddr := s.effectiveAgentPublicAddr(ctx)
 	tok := s.effectiveMetricsToken(ctx)
 	ch := s.effectiveUpdateChannel(ctx)
+	oidcCfg, _ := s.effectiveOIDCConfig(ctx)
 
 	cleanupEnabled := all[store.SettingCleanupEnabled] == "true"
 	cleanupSched := all[store.SettingCleanupSchedule]
@@ -98,7 +258,9 @@ func (s *Server) getSettingsConfig(w http.ResponseWriter, r *http.Request) {
 
 	resp := settingsConfigResp{
 		PublicURL:        pubURL,
-		PublicURLRestart: s.publicURLNeedsRestart(ctx),
+		PublicURLRestart: false,
+		StatusPublicURL:  statusPubURL,
+		AgentPublicAddr:  agentPubAddr,
 		MetricsTokenSet:  tok != "",
 		MetricsURL:       metricsURL,
 		UpdateChannel:    ch,
@@ -106,17 +268,23 @@ func (s *Server) getSettingsConfig(w http.ResponseWriter, r *http.Request) {
 		CleanupSchedule:  cleanupSched,
 		CleanupVolumes:   cleanupVolumes,
 		FromEnv: map[string]bool{
-			"publicUrl":     s.cfg.PublicURLSet,
-			"metricsToken":  s.cfg.MetricsToken != "",
-			"updateChannel": s.cfg.UpdateChannelSet,
+			"publicUrl":       s.cfg.PublicURLSet,
+			"statusPublicUrl": s.cfg.StatusPublicURL != "",
+			"agentPublicAddr": s.cfg.AgentPublicAddr != "",
+			"metricsToken":    s.cfg.MetricsToken != "",
+			"updateChannel":   s.cfg.UpdateChannelSet,
 		},
 		EnvLocks: map[string]bool{
 			"readOnly":       s.cfg.ReadOnly,
-			"terminal":       s.cfg.Terminal,
+			"manageExternal": s.cfg.ManageExternal && !s.cfg.ReadOnly,
+			"terminal":       s.cfg.Terminal && !s.cfg.ReadOnly,
+			"hostTerminal":   s.cfg.HostTerminal && !s.cfg.ReadOnly,
+			"exec":           (s.cfg.Exec || s.cfg.Terminal) && !s.cfg.ReadOnly,
 			"trustedProxies": len(s.cfg.Proxy.Trusted) > 0,
-			"oidc":           s.cfg.OIDC.Configured(),
+			"oidc":           oidcCfg.Configured(),
 			"selfUpdate":     s.cfg.SelfUpdate,
 		},
+		HostLocks:   s.collectHostLocks(ctx),
 		Diagnostics: s.buildDiagnostics(ctx, pubURL),
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -125,6 +293,8 @@ func (s *Server) getSettingsConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Server) putSettingsConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		PublicURL       *string `json:"publicUrl"`
+		StatusPublicURL *string `json:"statusPublicUrl"`
+		AgentPublicAddr *string `json:"agentPublicAddr"`
 		MetricsToken    *string `json:"metricsToken"`
 		UpdateChannel   *string `json:"updateChannel"`
 		CleanupEnabled  *bool   `json:"cleanupEnabled"`
@@ -146,6 +316,39 @@ func (s *Server) putSettingsConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if err := s.store.SetSetting(ctx, store.SettingPublicURL, v); err != nil {
+			s.engErr(w, err)
+			return
+		}
+		s.applyLivePublicURL(ctx, v)
+	}
+
+	if req.StatusPublicURL != nil && s.cfg.StatusPublicURL == "" {
+		v := strings.TrimRight(strings.TrimSpace(*req.StatusPublicURL), "/")
+		if v != "" {
+			u, err := url.Parse(v)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				writeErr(w, http.StatusBadRequest, "Status Page URL must be a valid http:// or https:// URL.")
+				return
+			}
+		}
+		if err := s.store.SetSetting(ctx, store.SettingStatusPublicURL, v); err != nil {
+			s.engErr(w, err)
+			return
+		}
+		if s.status != nil {
+			s.status.SetStatusPublicURL(v)
+		}
+	}
+
+	if req.AgentPublicAddr != nil && s.cfg.AgentPublicAddr == "" {
+		v := strings.TrimSpace(*req.AgentPublicAddr)
+		if v != "" {
+			if h, p, err := net.SplitHostPort(v); err != nil || h == "" || p == "" {
+				writeErr(w, http.StatusBadRequest, "Agent Connect Address must be host:port (for example 100.87.100.2:5081).")
+				return
+			}
+		}
+		if err := s.store.SetSetting(ctx, store.SettingAgentPublicAddr, v); err != nil {
 			s.engErr(w, err)
 			return
 		}
@@ -250,12 +453,12 @@ func (s *Server) buildDiagnostics(ctx context.Context, pubURL string) []diagnost
 			Detail: "Public URL uses HTTPS, but MOORAGE_SECURE_COOKIES=false was explicitly forced in environment.",
 		})
 	}
-	if s.cfg.OIDC.Err != "" {
+	if st := s.getOIDC().Status(); st.Configured && st.LastError != "" {
 		out = append(out, diagnosticItem{
 			Level:  "warn",
 			ID:     "oidc_error",
 			Title:  "OIDC configuration error",
-			Detail: s.cfg.OIDC.Err,
+			Detail: st.LastError,
 		})
 	}
 	if s.hub != nil {

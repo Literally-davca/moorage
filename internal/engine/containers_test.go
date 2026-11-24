@@ -104,3 +104,33 @@ func TestExtractContainerURLs(t *testing.T) {
 		})
 	}
 }
+
+// Coolify writes an http and an https router per domain (and sometimes PathPrefix(`/`)):
+// the card must show the domain once, as https.
+func TestServiceURLsDedupeHTTPAndHTTPS(t *testing.T) {
+	core, proxy := extractContainerURLs(map[string]string{
+		"traefik.http.routers.http-0-x.rule":     "Host(`grafana.example.com`) && PathPrefix(`/`)",
+		"traefik.http.routers.https-0-x.rule":    "Host(`grafana.example.com`) && PathPrefix(`/`)",
+		"traefik.http.routers.https-0-x.tls":     "true",
+		"traefik.http.routers.http-1-x.rule":     "Host(`192.168.1.5`)",
+		"traefik.http.routers.https-1-x.rule":    "Host(`192.168.1.5`)",
+		"traefik.http.routers.https-1-x.tls":     "true",
+		"traefik.http.routers.http-2-x.rule":     "Host(`GRAFANA.example.com`)",
+		"traefik.http.routers.https-2-x.tls":     "true",
+		"traefik.http.routers.https-2-x.service": "x",
+	})
+	if core != nil {
+		t.Fatalf("core: %v", core)
+	}
+	want := []string{"https://grafana.example.com/", "https://192.168.1.5"}
+	if !slices.Equal(proxy, want) {
+		t.Fatalf("got %v, want %v", proxy, want)
+	}
+	_, merged := collectStackURLs([]Container{
+		{ProxyURLs: []string{"http://app.example.com"}},
+		{ProxyURLs: []string{"https://app.example.com/"}},
+	})
+	if !slices.Equal(merged, []string{"https://app.example.com/"}) {
+		t.Fatalf("stack: %v", merged)
+	}
+}

@@ -126,11 +126,34 @@ func (s *Server) StartCleanupLoop(ctx context.Context) {
 		t := time.NewTicker(1 * time.Minute)
 		defer t.Stop()
 		lastDay := ""
+		lastBackupDay := ""
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case now := <-t.C:
+				day := now.Format("2006-01-02")
+				hhmm := now.Format("15:04")
+
+				// Scheduled remote encrypted backup (Settings -> Backups).
+				if rb, _ := s.effectiveRemoteBackup(ctx); rb.Enabled && rb.Provider != "off" && day != lastBackupDay && hhmm == rb.Schedule {
+					lastBackupDay = day
+					bctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+					st, berr := s.executeRemoteBackup(bctx)
+					cancel()
+					outcome := store.AuditOK
+					if berr != nil {
+						outcome = store.AuditFailed
+						if s.log != nil {
+							s.log.Warn("scheduled remote backup failed", "err", berr)
+						}
+					}
+					_ = s.store.Audit(ctx, store.AuditEntry{
+						At: now, Actor: store.AuditActorSystem, Action: "backup.remote_run",
+						Target: st.Target, Outcome: outcome,
+					})
+				}
+
 				enabled, _ := s.store.GetSetting(ctx, store.SettingCleanupEnabled)
 				if enabled != "true" {
 					continue
@@ -139,8 +162,7 @@ func (s *Server) StartCleanupLoop(ctx context.Context) {
 				if sched == "" {
 					sched = "03:30"
 				}
-				day := now.Format("2006-01-02")
-				if day == lastDay || now.Format("15:04") != sched {
+				if day == lastDay || hhmm != sched {
 					continue
 				}
 				lastDay = day

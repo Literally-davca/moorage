@@ -128,9 +128,16 @@ func (e *Engine) closeTerminals() {
 	for s := range e.terms {
 		open = append(open, s)
 	}
+	hostOpen := make([]io.Closer, 0, len(e.hostShells))
+	for s := range e.hostShells {
+		hostOpen = append(hostOpen, s)
+	}
 	e.termMu.Unlock()
 	var wg sync.WaitGroup
 	for _, s := range open {
+		wg.Go(func() { _ = s.Close() })
+	}
+	for _, s := range hostOpen {
 		wg.Go(func() { _ = s.Close() })
 	}
 	wg.Wait()
@@ -302,6 +309,67 @@ func (e *Engine) Terminal(ctx context.Context, stack, containerRef, shell string
 		return nil, *matched, ErrContainerNotRunning
 	}
 
+	sess, err := b.StartExec(ctx, matched.ID, shellPath, cols, rows)
+	if err != nil {
+		return nil, *matched, FriendlyShellError(shellPath, err)
+	}
+	return sess, *matched, nil
+}
+
+// AllExecBackend is an optional extension of ExecBackend for tests of ContainerTerminal.
+type AllExecBackend interface {
+	AllContainers(ctx context.Context) ([]ContainerInfo, error)
+}
+
+// ContainerTerminal opens an interactive shell inside any running container on the host
+// (managed stack, external/Coolify project, or standalone container). Internal Moorage
+// helpers and Moorage's own container are refused.
+func (e *Engine) ContainerTerminal(ctx context.Context, containerRef, shell string, cols, rows int) (TerminalSession, ContainerInfo, error) {
+	if containerRef == "" {
+		return nil, ContainerInfo{}, ErrNotFound
+	}
+	if shell == "" {
+		shell = "sh"
+	}
+	shellPath, ok := AllowedShells[shell]
+	if !ok {
+		return nil, ContainerInfo{}, ErrInvalidShell
+	}
+	cols, rows = ClampTermSize(cols, rows)
+
+	b := e.execBackend()
+	var list []ContainerInfo
+	var err error
+	if ab, ok := b.(AllExecBackend); ok {
+		list, err = ab.AllContainers(ctx)
+	} else {
+		list, err = e.AllContainers(ctx)
+	}
+	if err != nil {
+		return nil, ContainerInfo{}, err
+	}
+	var matched *ContainerInfo
+	for i := range list {
+		c := &list[i]
+		if c.ID == containerRef || c.Name == containerRef ||
+			(len(containerRef) >= 12 && strings.HasPrefix(c.ID, containerRef)) {
+			if matched == nil || c.State == "running" {
+				matched = c
+			}
+			if c.ID == containerRef || c.Name == containerRef {
+				break
+			}
+		}
+	}
+	if matched == nil {
+		return nil, ContainerInfo{}, ErrNotFound
+	}
+	if s := e.selfStack(); s != nil && matched.Project == s.Project && matched.Service == s.Service {
+		return nil, *matched, ErrSelfStack
+	}
+	if matched.State != "running" {
+		return nil, *matched, ErrContainerNotRunning
+	}
 	sess, err := b.StartExec(ctx, matched.ID, shellPath, cols, rows)
 	if err != nil {
 		return nil, *matched, FriendlyShellError(shellPath, err)

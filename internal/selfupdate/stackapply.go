@@ -16,6 +16,7 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	"github.com/moby/moby/client"
 
+	"moorage/internal/dockerclone"
 	"moorage/internal/engine"
 )
 
@@ -99,7 +100,7 @@ func LaunchStackApplyHelper(ctx context.Context, eng ContainerEngine, selfInsp *
 	}
 	var mounts []mount.Mount
 	for _, mp := range selfInsp.Mounts {
-		mounts = append(mounts, mountPointToMount(mp))
+		mounts = append(mounts, dockerclone.MountPointToMount(mp))
 	}
 	netMode, netCfg := helperNetwork(selfInsp)
 	cfg := &container.Config{

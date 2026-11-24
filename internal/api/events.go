@@ -64,10 +64,13 @@ func (s *Server) stackLink(hostID, stack string) string {
 	return fmt.Sprintf("%s/#/h/%s/stacks/%s", base, hostID, stack)
 }
 
-// watchOp follows a stack operation in the background and sends a deploy_failed event
-// when it fails. It does nothing when nobody listens for the event.
+// watchOp follows a stack operation in the background, triggers dependent auto-restarts
+// when a deploy/update succeeds, and sends a deploy_failed event when it fails.
 func (s *Server) watchOp(h host.Host, hostID, stack, action, opID string) {
-	if opID == "" || !s.wantsEvent(context.Background(), notify.EventDeployFailed) {
+	evKind := actionEvent[action]
+	trackDeploy := s.autoRestart != nil && (evKind == "deploy" || evKind == "update")
+	wantFail := s.wantsEvent(context.Background(), notify.EventDeployFailed)
+	if opID == "" || (!wantFail && !trackDeploy) {
 		return
 	}
 	go func() {
@@ -79,7 +82,16 @@ func (s *Server) watchOp(h host.Host, hostID, stack, action, opID string) {
 				opErr = ev.Error
 			}
 			return nil
-		}); err != nil || opErr == "" {
+		}); err != nil {
+			return
+		}
+		if opErr == "" {
+			if trackDeploy {
+				s.autoRestart.StackEvent(hostID, stack, evKind)
+			}
+			return
+		}
+		if !wantFail {
 			return
 		}
 		hostName := hostID

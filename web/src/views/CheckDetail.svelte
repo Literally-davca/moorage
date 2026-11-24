@@ -5,7 +5,7 @@
   import Icon from '../lib/Icon.svelte';
   import Strip from '../lib/Strip.svelte';
   import Confirm from '../lib/Confirm.svelte';
-  import { ago, duration, kindName, multiLocation, pct, quorumText, statusText, toInput, voteText } from '../lib/checks';
+  import { ago, duration, kindName, multiLocation, pct, quorumText, statusText, targetStatus, toInput, voteText } from '../lib/checks';
   import type { LocationResult, Quorum } from '../lib/api';
   import { untilText } from '../lib/maintenance';
 
@@ -80,7 +80,7 @@
           <a class="back meta" href="#/checks"><Icon name="chevronLeft" /> Checks</a>
           <h1 class="title">{check.name}</h1>
           <div class="sub">
-            <span class="badge {check.state.status === 'up' ? 'up' : check.state.status === 'down' ? 'down' : check.state.status === 'pending' ? 'degraded' : check.state.status === 'maintenance' ? 'maintenance' : ''}">
+            <span class="badge {check.state.status === 'up' ? 'up' : check.state.status === 'down' ? 'down' : check.state.status === 'pending' || check.state.status === 'degraded' ? 'degraded' : check.state.status === 'maintenance' ? 'maintenance' : ''}">
               <span class="dot {check.state.status}"></span>{statusText(check)}
             </span>
             {#if check.state.since && check.state.status !== 'unknown'}<span class="meta">for {duration(check.state.since)}</span>{/if}
@@ -128,6 +128,26 @@
       </div>
     </section>
 
+    {#if check.state.targets?.length}
+      <section class="card locations">
+        <h2 class="section-title pad">
+          {check.kind === 'stack' ? 'Stacks' : 'URLs'}
+          <span class="meta q">last run · {check.state.targets.filter((t) => t.status === 'up').length} of {check.state.targets.length} up</span>
+        </h2>
+        {#each check.state.targets as t (t.target)}
+          <div class="loc">
+            <div class="loc-head">
+              <span class="dot {t.status === 'silenced' ? 'maintenance' : t.status}"></span>
+              <span class="loc-name mono">{t.label}</span>
+              <span class:bad={t.status === 'down'}>{targetStatus[t.status] ?? t.status}</span>
+              {#if t.status === 'up' || t.status === 'down'}<span class="meta num">{t.latencyMs} ms</span>{/if}
+            </div>
+            {#if t.msg}<p class="meta loc-msg">{t.msg}</p>{/if}
+          </div>
+        {/each}
+      </section>
+    {/if}
+
     {#if locRows.length}
       <section class="card locations">
         <h2 class="section-title pad">
@@ -174,6 +194,13 @@
                 {/if}
               {/each}
               {#if inc.context.note}<p class="meta">{inc.context.note}</p>{/if}
+              {#if inc.context.targets?.length}
+                <ul class="inc-locs">
+                  {#each inc.context.targets as t (t.target)}
+                    <li class="meta"><span class="loc-name">{t.label}</span>: {targetStatus[t.status] ?? t.status} · {t.msg}</li>
+                  {/each}
+                </ul>
+              {/if}
               {#if inc.context.locations?.length}
                 <ul class="inc-locs">
                   {#each inc.context.locations as l (l.location)}

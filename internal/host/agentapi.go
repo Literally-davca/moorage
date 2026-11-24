@@ -147,6 +147,7 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 	}
 	// Not wrapped in write(): a probe only reads the network, it changes nothing here.
 	mux.HandleFunc("POST /probe", probeHandler(o.Prober))
+	externalRoutes(mux, h, write)
 	mux.HandleFunc("GET /stacks", func(w http.ResponseWriter, r *http.Request) {
 		list, err := h.ListStacks(r.Context())
 		resp := map[string]any{"stacks": list}
@@ -224,6 +225,35 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 	mux.HandleFunc("DELETE /stacks/{name}", write(func(w http.ResponseWriter, r *http.Request) {
 		replyErr(w, h.Delete(r.Context(), r.PathValue("name"), r.URL.Query().Get("author")))
 	}))
+	if br, ok := h.(BindMountRelocator); ok {
+		mux.HandleFunc("POST /stacks/{name}/relocate-binds", write(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				AddonID  string `json:"addonId"`
+				Rollback bool   `json:"rollback"`
+			}
+			if !agentRead(w, r, &req) {
+				return
+			}
+			replyErr(w, br.RelocateBindMounts(r.Context(), r.PathValue("name"), req.AddonID, req.Rollback))
+		}))
+	}
+	if ce, ok := h.(CommandExecutor); ok {
+		mux.HandleFunc("POST /stacks/{name}/exec", write(func(w http.ResponseWriter, r *http.Request) {
+			var req struct {
+				Service string `json:"service"`
+				Command string `json:"command"`
+			}
+			if !agentRead(w, r, &req) {
+				return
+			}
+			out, code, err := ce.ExecCommand(r.Context(), r.PathValue("name"), req.Service, req.Command)
+			resp := map[string]any{"output": out, "exitCode": code}
+			if err != nil {
+				resp["error"] = err.Error()
+			}
+			agentJSON(w, resp)
+		}))
+	}
 	mux.HandleFunc("POST /stacks/{name}/actions/{action}", write(func(w http.ResponseWriter, r *http.Request) {
 		reply(w)(h.RunAction(r.Context(), r.PathValue("name"), r.PathValue("action"), r.URL.Query().Get("author")))
 	}))
@@ -274,7 +304,23 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 	mux.HandleFunc("GET /logs", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		tail, _ := strconv.Atoi(q.Get("tail"))
+		follow := true
+		if f := q.Get("follow"); f == "0" || f == "false" {
+			follow = false
+		}
+		since := q.Get("since")
+		until := q.Get("until")
 		streamNDJSONLogs(w, r, func(emit func(engine.LogLine)) error {
+			if lq, ok := h.(LogQuerier); ok && (q.Get("stack") == "" || since != "" || until != "" || !follow) {
+				return lq.QueryLogs(r.Context(), engine.LogOptions{
+					Stack:     q.Get("stack"),
+					Container: q.Get("container"),
+					Tail:      tail,
+					Since:     since,
+					Until:     until,
+					Follow:    follow,
+				}, emit)
+			}
 			return h.StreamLogs(r.Context(), q.Get("stack"), q.Get("container"), tail, emit)
 		})
 	})
@@ -317,6 +363,56 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 		ws.SetReadLimit(termReadLimit)
 		serveAgentTerminalWS(r.Context(), ws, ts)
 	})
+	if ct, ok := h.(ContainerTerminalHost); ok {
+		mux.HandleFunc("GET /containers/{id}/terminal", func(w http.ResponseWriter, r *http.Request) {
+			if !allowTerm {
+				agentErr(w, ErrTerminalDisabled)
+				return
+			}
+			q := r.URL.Query()
+			cols, _ := strconv.Atoi(q.Get("cols"))
+			rows, _ := strconv.Atoi(q.Get("rows"))
+			ts, ctr, err := ct.ContainerTerminal(r.Context(), r.PathValue("id"), q.Get("shell"), cols, rows)
+			if err != nil {
+				agentErr(w, err)
+				return
+			}
+			defer ts.Close()
+			w.Header().Set("X-Moorage-Container-Id", ctr.ID)
+			w.Header().Set("X-Moorage-Container-Name", ctr.Name)
+			w.Header().Set("X-Moorage-Container-Service", ctr.Service)
+			w.Header().Set("X-Moorage-Container-Project", ctr.Project)
+			ws, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			ws.SetReadLimit(termReadLimit)
+			serveAgentTerminalWS(r.Context(), ws, ts)
+		})
+	}
+	if ht, ok := h.(HostTerminalProvider); ok {
+		mux.HandleFunc("GET /host-terminal", func(w http.ResponseWriter, r *http.Request) {
+			if readOnly {
+				agentErr(w, ErrHostReadOnly)
+				return
+			}
+			q := r.URL.Query()
+			cols, _ := strconv.Atoi(q.Get("cols"))
+			rows, _ := strconv.Atoi(q.Get("rows"))
+			ts, err := ht.HostTerminal(r.Context(), q.Get("shell"), cols, rows)
+			if err != nil {
+				agentErr(w, err)
+				return
+			}
+			defer ts.Close()
+			ws, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				return
+			}
+			ws.SetReadLimit(termReadLimit)
+			serveAgentTerminalWS(r.Context(), ws, ts)
+		})
+	}
 	return mux
 }
 
@@ -695,6 +791,32 @@ func (rm *Remote) Delete(ctx context.Context, name, author string) error {
 	return rm.call(ctx, http.MethodDelete, p(name)+"?author="+url.QueryEscape(author), nil, nil)
 }
 
+func (rm *Remote) RelocateBindMounts(ctx context.Context, fromStack, addonID string, rollback bool) error {
+	return rm.call(ctx, http.MethodPost, p(fromStack)+"/relocate-binds", map[string]any{
+		"addonId":  addonID,
+		"rollback": rollback,
+	}, nil)
+}
+
+func (rm *Remote) ExecCommand(ctx context.Context, stack, service, command string) (string, int, error) {
+	var resp struct {
+		Output   string `json:"output"`
+		ExitCode int    `json:"exitCode"`
+		Error    string `json:"error"`
+	}
+	err := rm.callTimeout(ctx, 16*time.Minute, http.MethodPost, p(stack)+"/exec", map[string]string{
+		"service": service,
+		"command": command,
+	}, &resp)
+	if err != nil {
+		return "", 0, err
+	}
+	if resp.Error != "" {
+		return resp.Output, resp.ExitCode, remoteError(resp.Error)
+	}
+	return resp.Output, resp.ExitCode, nil
+}
+
 func (rm *Remote) RunAction(ctx context.Context, name, action, author string) (engine.OpInfo, error) {
 	var op engine.OpInfo
 	err := rm.call(ctx, http.MethodPost, p(name)+"/actions/"+url.PathEscape(action)+"?author="+url.QueryEscape(author), nil, &op)
@@ -785,6 +907,66 @@ func (rm *Remote) Terminal(ctx context.Context, stack, container, shell string, 
 	}
 	rctx, rcancel := context.WithCancel(context.Background())
 	return &remoteTerminalSession{ws: ws, ctx: rctx, cancel: rcancel}, ctr, nil
+}
+
+func (rm *Remote) dialTerminalWS(ctx context.Context, u string) (engine.TerminalSession, *http.Response, error) {
+	ws, resp, err := websocket.Dial(ctx, u, &websocket.DialOptions{HTTPClient: rm.c})
+	if err != nil {
+		if resp != nil {
+			defer resp.Body.Close()
+			var e struct{ Code, Error string }
+			json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&e) //nolint:errcheck
+			if resp.StatusCode == http.StatusNotFound && e.Code == "" {
+				return nil, nil, errRouteNotFound
+			}
+			if e.Code != "" || e.Error != "" {
+				return nil, nil, FromCode(e.Code, e.Error)
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+		return nil, nil, fmt.Errorf("%w: %v", ErrOffline, err)
+	}
+	ws.SetReadLimit(termReadLimit)
+	rctx, rcancel := context.WithCancel(context.Background())
+	return &remoteTerminalSession{ws: ws, ctx: rctx, cancel: rcancel}, resp, nil
+}
+
+func (rm *Remote) ContainerTerminal(ctx context.Context, containerRef, shell string, cols, rows int) (engine.TerminalSession, engine.ContainerInfo, error) {
+	q := url.Values{
+		"shell": {shell},
+		"cols":  {strconv.Itoa(cols)},
+		"rows":  {strconv.Itoa(rows)},
+	}
+	u := "ws://agent/containers/" + url.PathEscape(containerRef) + "/terminal?" + q.Encode()
+	ts, resp, err := rm.dialTerminalWS(ctx, u)
+	if err != nil {
+		return nil, engine.ContainerInfo{}, err
+	}
+	var ctr engine.ContainerInfo
+	if resp != nil {
+		ctr.ID = resp.Header.Get("X-Moorage-Container-Id")
+		ctr.Name = resp.Header.Get("X-Moorage-Container-Name")
+		ctr.Service = resp.Header.Get("X-Moorage-Container-Service")
+		ctr.Project = resp.Header.Get("X-Moorage-Container-Project")
+	}
+	if ctr.Name == "" {
+		ctr.Name = containerRef
+	}
+	ctr.Standalone = ctr.Project == ""
+	return ts, ctr, nil
+}
+
+func (rm *Remote) HostTerminal(ctx context.Context, shell string, cols, rows int) (engine.TerminalSession, error) {
+	q := url.Values{
+		"shell": {shell},
+		"cols":  {strconv.Itoa(cols)},
+		"rows":  {strconv.Itoa(rows)},
+	}
+	u := "ws://agent/host-terminal?" + q.Encode()
+	ts, _, err := rm.dialTerminalWS(ctx, u)
+	return ts, err
 }
 
 type remoteTerminalSession struct {
@@ -926,6 +1108,24 @@ func (rm *Remote) FollowOp(ctx context.Context, id string, emit func(OpEvent) er
 
 func (rm *Remote) StreamLogs(ctx context.Context, stack, container string, tail int, emit func(engine.LogLine)) error {
 	q := url.Values{"stack": {stack}, "container": {container}, "tail": {strconv.Itoa(tail)}}
+	return rm.readLogs(ctx, "/logs?"+q.Encode(), emit)
+}
+
+func (rm *Remote) QueryLogs(ctx context.Context, opts engine.LogOptions, emit func(engine.LogLine)) error {
+	q := url.Values{
+		"stack":     {opts.Stack},
+		"container": {opts.Container},
+		"tail":      {strconv.Itoa(opts.Tail)},
+	}
+	if opts.Since != "" {
+		q.Set("since", opts.Since)
+	}
+	if opts.Until != "" {
+		q.Set("until", opts.Until)
+	}
+	if !opts.Follow {
+		q.Set("follow", "0")
+	}
 	return rm.readLogs(ctx, "/logs?"+q.Encode(), emit)
 }
 

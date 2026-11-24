@@ -1,7 +1,123 @@
 // Helpers for the stack dependency graph (R5): node status text, edge labels, layout.
-import { statusLabel, type DepDetection, type DepHost, type DepNode, type StackDep, type StackRef } from './api';
+import {
+  statusLabel,
+  type AutoRestartMode,
+  type DepDetection,
+  type DepHost,
+  type DepNode,
+  type StackDep,
+  type StackRef,
+} from './api';
 
 export const refKey = (r: StackRef) => `${r.hostId}/${r.stack}`;
+
+export const autoRestartLabels: Record<AutoRestartMode, string> = {
+  off: 'Off',
+  on_recover: 'Restart on recover',
+  on_recover_and_deploy: 'Restart on recover & deploy',
+};
+
+export interface SubtreeHighlight {
+  focus: string;
+  upstreamDirect: Set<string>;
+  upstreamTransitive: Set<string>;
+  downstreamDirect: Set<string>;
+  downstreamTransitive: Set<string>;
+  nodes: Set<string>;
+  edges: Set<number>;
+}
+
+/**
+ * Walks active (non-ignored) edges up and down from `focus` up to `maxDepth` (default 3)
+ * to compute upstream dependencies and downstream blast radius.
+ */
+export function computeSubtree(focus: string, edges: StackDep[], maxDepth = 3): SubtreeHighlight {
+  const active = edges.filter((e) => !e.ignored && refKey(e.from) !== refKey(e.to));
+  const upAdj = new Map<string, { to: string; id: number }[]>();
+  const downAdj = new Map<string, { from: string; id: number }[]>();
+  for (const e of active) {
+    const f = refKey(e.from);
+    const t = refKey(e.to);
+    upAdj.set(f, [...(upAdj.get(f) ?? []), { to: t, id: e.id }]);
+    downAdj.set(t, [...(downAdj.get(t) ?? []), { from: f, id: e.id }]);
+  }
+
+  const upstreamDirect = new Set<string>();
+  const upstreamTransitive = new Set<string>();
+  const downstreamDirect = new Set<string>();
+  const downstreamTransitive = new Set<string>();
+  const relEdges = new Set<number>();
+
+  // Walk upstream
+  let frontier = [focus];
+  const seenUp = new Set<string>([focus]);
+  for (let d = 1; d <= maxDepth && frontier.length > 0; d++) {
+    const next: string[] = [];
+    for (const cur of frontier) {
+      for (const { to, id } of upAdj.get(cur) ?? []) {
+        relEdges.add(id);
+        if (seenUp.has(to)) continue;
+        seenUp.add(to);
+        if (d === 1) upstreamDirect.add(to);
+        else upstreamTransitive.add(to);
+        next.push(to);
+      }
+    }
+    frontier = next;
+  }
+
+  // Walk downstream (blast radius)
+  frontier = [focus];
+  const seenDown = new Set<string>([focus]);
+  for (let d = 1; d <= maxDepth && frontier.length > 0; d++) {
+    const next: string[] = [];
+    for (const cur of frontier) {
+      for (const { from, id } of downAdj.get(cur) ?? []) {
+        relEdges.add(id);
+        if (seenDown.has(from)) continue;
+        seenDown.add(from);
+        if (d === 1) downstreamDirect.add(from);
+        else downstreamTransitive.add(from);
+        next.push(from);
+      }
+    }
+    frontier = next;
+  }
+
+  const nodes = new Set<string>([
+    focus,
+    ...upstreamDirect,
+    ...upstreamTransitive,
+    ...downstreamDirect,
+    ...downstreamTransitive,
+  ]);
+  return { focus, upstreamDirect, upstreamTransitive, downstreamDirect, downstreamTransitive, nodes, edges: relEdges };
+}
+
+/** Checks whether adding `fromKey -> toKey` would close a dependency cycle. */
+export function wouldCreateCycle(fromKey: string, toKey: string, edges: StackDep[]): boolean {
+  if (fromKey === toKey) return true;
+  const upAdj = new Map<string, string[]>();
+  for (const e of edges) {
+    if (e.ignored) continue;
+    const f = refKey(e.from);
+    const t = refKey(e.to);
+    upAdj.set(f, [...(upAdj.get(f) ?? []), t]);
+  }
+  const seen = new Set<string>([toKey]);
+  const queue = [toKey];
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const nxt of upAdj.get(cur) ?? []) {
+      if (nxt === fromKey) return true;
+      if (!seen.has(nxt)) {
+        seen.add(nxt);
+        queue.push(nxt);
+      }
+    }
+  }
+  return false;
+}
 
 /** Status class (colour) of a node: checks that are down win over the container status. */
 export function nodeClass(n: DepNode | undefined): string {

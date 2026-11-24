@@ -8,6 +8,7 @@
 
   let {
     name,
+    coolifyUuid = '',
     at,
     editable,
     dirty,
@@ -15,6 +16,7 @@
     refresh = 0,
   }: {
     name: string;
+    coolifyUuid?: string;
     at?: number;
     editable: boolean;
     dirty: boolean;
@@ -22,6 +24,20 @@
     /** Bumped by the stack page when an operation finished, so its entries show up. */
     refresh?: number;
   } = $props();
+
+  let coolifyDeploys = $state<{ uuid: string; status: string; commit?: string; logs?: string; createdAt?: string }[]>([]);
+  let expandedDeploy = $state('');
+
+  $effect(() => {
+    const cuuid = coolifyUuid;
+    if (!cuuid) {
+      coolifyDeploys = [];
+      return;
+    }
+    api.coolifyDeployments(cuuid)
+      .then((r) => (coolifyDeploys = r.deployments ?? []))
+      .catch(() => (coolifyDeploys = []));
+  });
 
   // One merged timeline: versions, stack events, incidents, image updates and, for admins,
   // audit rows and terminal sessions. The server leaves the admin-only kinds out for viewers.
@@ -248,6 +264,33 @@
     return `${Math.round(s / 86400)} d ago`;
   }
 </script>
+
+{#if coolifyDeploys.length > 0}
+  <section class="card card-pad" style="margin-bottom:12px" aria-label="Coolify deployments">
+    <h3 class="section-title" style="margin-bottom:8px">Coolify deployments</h3>
+    <div style="display:grid;gap:6px">
+      {#each coolifyDeploys.slice(0, 10) as dep (dep.uuid)}
+        <div style="padding:8px 10px;border-radius:var(--r-md);background:var(--well);box-shadow:inset 0 0 0 1px var(--rope)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="badge {dep.status === 'finished' ? 'up' : dep.status === 'failed' ? 'down' : 'degraded'}">{dep.status}</span>
+              {#if dep.commit}<span class="mono meta">{dep.commit.slice(0, 8)}</span>{/if}
+              {#if dep.createdAt}<span class="meta">{new Date(dep.createdAt).toLocaleString()}</span>{/if}
+            </div>
+            {#if dep.logs}
+              <button type="button" class="btn btn-sm" onclick={() => (expandedDeploy = expandedDeploy === dep.uuid ? '' : dep.uuid)}>
+                {expandedDeploy === dep.uuid ? 'Hide build log' : 'View build log'}
+              </button>
+            {/if}
+          </div>
+          {#if expandedDeploy === dep.uuid && dep.logs}
+            <pre class="mono" style="margin:8px 0 0;max-height:260px;overflow:auto;font-size:11px;white-space:pre-wrap">{dep.logs}</pre>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  </section>
+{/if}
 
 {#snippet entryBody(e: TimelineEntry)}
   <span class="time mono">{timeFmt.format(new Date(e.at))}</span>

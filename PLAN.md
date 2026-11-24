@@ -664,3 +664,59 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 1. UI úklid: **Hosts** + **Add-ons** (filtry, auto-katalog, společný stack `add-ons`) + **`.env` editor**.
 2. Jádro z roadmapy: **Obnova smazaného stacku** → **Úklid disku s náhledem a denní úlohou** → **Automatický rollback po auto-update** → **Export/import konfigurace i dat**.
 3. **Rozšíření notifikací** (události, kanály, UI toasty / Web Push).
+
+---
+
+## M15 – Přehled hostů, soubory stacků, hromadné akce, VPN add-on a sidecary (návrh 2026-11-24, čeká na schválení)
+
+**Cíl:** Doplnit do jádra praktické nástroje pro každodenní správu hostů a stacků (porty, soubory, disk/RAM, hromadné operace), přidat volitelný add-on pro Tailscale/NetBird a rozšířit `moorage-addons` o `log-shipper` a `node-exporter`.
+
+> **[U] Architektonický princip:** Snažíme se **co nejméně zatěžovat jádro** (udržet nízkou paměť nadále hluboko pod limitem 100 MB PSS, malou binárku a nízké CPU). Věci pro užší skupinu uživatelů patří do **Add-ons** / **Sidecar add-ons**, a nové pohledy v jádru (porty, soubory, disk/RAM) čtou data **na vyžádání** nebo s lehkým intervalem bez zbytečných smyček na pozadí.
+
+### 1. Jádro Moorage
+1. **Přehled obsazených portů (Port map):**
+   - **[A]** Nový endpoint `GET /api/hosts/{host}/ports` (a v UI karta/modal **Ports** na hostu + inline kontrola při ukládání/zakládání stacku), který čte publikované porty všech běžících i zastavených kontejnerů a porty deklarované v `compose.yaml` spravovaných stacků.
+   - **[A]** V editoru `compose.yaml` a při vytváření stacku (`NewStack`) upozornit varováním před kolizí hostitelského portu (`host_ip:port/proto`) ještě před `up`.
+2. **Prohlížeč a editor souborů ve složce stacku (`Files` tab v `StackDetail`):**
+   - **[A]** Nový tab **Files** vedle `Compose` / `Logs` / `History`: strom/seznam souborů uvnitř složky stacku (mimo `.git`), náhled a editace textových souborů (`Caddyfile`, `nginx.conf`, `prometheus.yml`, skripty…) s maximální velikostí souboru (např. 512 KiB) a detekcí binárek (ty jsou jen ke stažení/info, ne k editaci).
+   - **[A]** Bezpečnost: striktní kontrola cesty (`filepath.Rel` + odmítnutí `..` a symlinků mířících mimo složku stacku); respektuje `readOnly` agenta; uložení/vytvoření/smazání souboru se zapíše jako verze do `history.git` (pokud nejde o velké/vyloučené datové soubory) a do auditu (`stack.file_save`, `stack.file_delete`).
+3. **Hlídání volného disku a RAM hosta:**
+   - **[A]** Agent v `HostInfo` / novém periodickém reportu posílá využití disku (`/` a `StacksDir` / Docker root: celkem, volno, %) a RAM hosta (`MemTotal`, `MemAvailable` z `/proc/meminfo` + `statfs` na Linuxu).
+   - **[A]** V UI přehledný ukazatel na kartě hosta (v `Home` i `Hosts`) a nový typ varování v **Diagnostics** + volitelná kontrola typu **Host resources** (práh zaplnění disku např. 85 % / 95 % a RAM), aby při blížícím se vyčerpání přišel alert stávajícími notifikačními kanály.
+4. **Hromadné operace nad stacky (Bulk actions):**
+   - **[A]** Na stránce hosta (`Home` / seznam stacků) přepínač výběru více stacků + lišta hromadných akcí (`Start / Up`, `Restart`, `Stop`, `Update images`, změna politiky auto-updatu).
+   - **[A]** Backend (`POST /api/hosts/{host}/stacks/bulk`) spouští operace postupně ve frontě (ne 20 `compose up` najednou, aby nedošlo k přetížení CPU/RAM hosta), vrací průběžný stav a každou operaci řádně audituje; respektuje `readOnly` a `self` stack Moorage.
+
+### 2. Add-on: Tailscale / NetBird detekce a správa portů (`vpn-expose`)
+- **[U]** Volitelný vestavěný add-on v **Settings → Add-ons** (ve výchozím stavu vypnutý).
+- **Detekce:** Agent zjišťuje přítomnost síťového rozhraní `tailscale0` / `wt0` (NetBird) a jeho IPv4/IPv6 adresy (případně DNS jména z lokálního rozhraní, pokud je dostupné bez nutnosti privilegovaného socketu) a zobrazí je u hosta a u služeb stacku.
+- **Snadné vystavení na jeden klik / omezení portů na VPN síť:**
+  - **[U]** Základem je **čistá úprava `ports:` v `compose.yaml`** (přepnutí `PORT:PORT` ↔ `<vpn_ip>:PORT:PORT` nebo zrušení veřejného vystavení `0.0.0.0`, s git commitem a `up` – funguje stejně pro Tailscale i NetBird bez speciálních práv).
+  - **[U]** Pokud je v kontejneru agenta dostupný `tailscaled.sock`, add-on navíc nabídne **Tailscale Serve** (HTTPS vystavení služby do tailnetu na jeden klik).
+
+### 3. Sidecar add-ons (`moorage-addons`)
+1. **Log shipper (`log-shipper`):**
+   - Kontejner (např. **Vector** nebo **Fluent Bit** s předkonfigurovaným čtením Docker container logů v read-only režimu) přidávaný do společného stacku `add-ons`.
+   - Cílová URL (VictoriaLogs / Loki / OTLP) se konfiguruje přes `.env` společného stacku `add-ons`, čímž jádro Moorage zůstává bez ukládání historických logů.
+2. **Node Exporter (`node-exporter`):**
+   - Oficiální `prom/node-exporter` jako sidecar v `add-ons` (síť/pid hosta v read-only režimu pro CPU, disk I/O, síť, teplotu na Raspberry Pi).
+   - Funguje po boku stávajícího vestavěného add-onu `prometheus-grafana` (`/metrics` Moorage pro stacky/sondy + `node-exporter` na `:9100` pro detailní metriky OS), s připraveným doporučením scrape jobu a Grafana dashboardu v README add-onu.
+
+### 4. UI, opravy a dokumentace
+1. **Oprava `settings/general`:**
+   - Prověřit a opravit routování, ukládání a chování **Settings → General** (`#/settings/general` – zobrazení, formulář, diagnostika, generování metrics tokenu, záloha/obnova).
+2. **Animace v UI:**
+   - Jemné, rychlé přechody a mikrointerakce (rozbalování karet/sekcí, modály, toasty, přepínání pohledů) v souladu se systémem `.interface-design/system.md` („klidný přístav“) a s podporou `prefers-reduced-motion: reduce`. Bez animací přírůstků v log vieweru.
+3. **Aktualizace dokumentace (`README.md` a docs):**
+   - Aktualizovat `README.md` (a související dokumentaci/návody k nasazení) o všechny nové funkce (Settings → General, Add-ons a společný stack `add-ons`, zálohy `.mbk`, úklid disku, rozšířené notifikace, Web Push a novinky z M15).
+4. **Odstranění duplicitních šablon (`templates`):**
+   - Projít vestavěné šablony i katalog `moorage-templates` a odstranit duplicitní šablony (případně odduplikovat stejná ID mezi vestavěnými a vzdálenými zdroji).
+
+### Mimo rozsah (odloženo do `ROADMAP.md`)
+- GitOps sync (pull z vlastního Git repozitáře) a správa přihlášení k privátním registrům → zůstávají v `ROADMAP.md` na další vlnu.
+
+### Okrajové stavy
+- **Port map:** hostované kontejnery se sítí `network_mode: host` nemají mapování `Ports`, zobrazí se s poznámkou `host network`.
+- **Files editor:** nikdy nezapisovat mimo `StacksDir/<stack>`; při souběžné úpravě mimo Moorage se před uložením provede `syncExternal` do `history.git`.
+- **VPN přepnutí portů:** pokud na hostu neběží Tailscale/NetBird (chybí IP rozhraní), tlačítko pro omezení na VPN zůstane neaktivní s vysvětlením.
+- **Bulk actions:** při selhání jednoho stacku pokračovat u dalších nebo zastavit podle volby, na konci ukázat souhrn úspěchů/chyb.

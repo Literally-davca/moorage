@@ -26,7 +26,7 @@ var containerStates = []string{"created", "running", "paused", "restarting", "re
 
 // checkStates are the states a check can be in (monitor.Status*).
 var checkStates = []string{
-	monitor.StatusUp, monitor.StatusDown, monitor.StatusPending, monitor.StatusMaintenance,
+	monitor.StatusUp, monitor.StatusDown, monitor.StatusDegraded, monitor.StatusPending, monitor.StatusMaintenance,
 	monitor.StatusSilenced, monitor.StatusPaused, monitor.StatusUnknown,
 }
 

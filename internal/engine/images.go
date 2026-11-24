@@ -673,8 +673,95 @@ func dockerConfigPath() string {
 	return ""
 }
 
+// RegistryLogin holds credentials pushed from the hub's Settings -> Connections.
+type RegistryLogin struct {
+	Server   string `json:"server"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+var (
+	managedRegMu   sync.RWMutex
+	managedRegs    []RegistryLogin
+	managedCfgPath string
+)
+
+// SetManagedRegistries updates in-memory registry logins for image update checks and
+// writes a merged config.json under dataDir for docker compose pull when DOCKER_CONFIG
+// wasn't explicitly set in the process environment.
+func (e *Engine) SetManagedRegistries(list []RegistryLogin) error {
+	managedRegMu.Lock()
+	managedRegs = append([]RegistryLogin(nil), list...)
+	managedRegMu.Unlock()
+
+	if e == nil || e.cfg.DataDir == "" {
+		return nil
+	}
+	dir := filepath.Join(e.cfg.DataDir, "docker-config")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	auths := map[string]dockerAuthEntry{}
+	for _, r := range list {
+		if r.Server == "" || (r.Username == "" && r.Password == "") {
+			continue
+		}
+		key := r.Server
+		if key == "docker.io" {
+			key = "https://index.docker.io/v1/"
+		}
+		auths[key] = dockerAuthEntry{
+			Username: r.Username,
+			Password: r.Password,
+			Auth:     base64.StdEncoding.EncodeToString([]byte(r.Username + ":" + r.Password)),
+		}
+	}
+	cfgPath := filepath.Join(dir, "config.json")
+	b, err := json.MarshalIndent(dockerConfigFile{Auths: auths}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(cfgPath, b, 0o600); err != nil {
+		return err
+	}
+	managedRegMu.Lock()
+	managedCfgPath = cfgPath
+	managedRegMu.Unlock()
+	if os.Getenv("DOCKER_CONFIG") == "" {
+		_ = os.Setenv("DOCKER_CONFIG", dir)
+	}
+	return nil
+}
+
 func readRegistryAuth(ref string) (RegistryCreds, error) {
-	return readRegistryAuthFromFile(dockerConfigPath(), ref)
+	regHost, _, _ := ParseImageRef(ref)
+	managedRegMu.RLock()
+	regs := managedRegs
+	fallbackCfg := managedCfgPath
+	managedRegMu.RUnlock()
+	for _, r := range regs {
+		if registryHostMatches(r.Server, regHost) && (r.Username != "" || r.Password != "") {
+			srv := r.Server
+			if srv == "docker.io" {
+				srv = "https://index.docker.io/v1/"
+			}
+			payload, _ := json.Marshal(map[string]string{
+				"username":      r.Username,
+				"password":      r.Password,
+				"serveraddress": srv,
+			})
+			return RegistryCreds{
+				Username:    r.Username,
+				Password:    r.Password,
+				EncodedAuth: base64.URLEncoding.EncodeToString(payload),
+			}, nil
+		}
+	}
+	p := dockerConfigPath()
+	if p == "" {
+		p = fallbackCfg
+	}
+	return readRegistryAuthFromFile(p, ref)
 }
 
 func readRegistryAuthFromFile(path, ref string) (RegistryCreds, error) {

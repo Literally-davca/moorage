@@ -13,6 +13,7 @@ export const kindName: Record<CheckKind, string> = {
 export const checkStatusLabel: Record<CheckStatus, string> = {
   up: 'Up',
   down: 'Down',
+  degraded: 'Partially down',
   pending: 'Failing, not alerted yet',
   paused: 'Paused',
   unknown: 'Waiting for the first result',
@@ -87,9 +88,38 @@ export function duration(fromIso: string, toIso?: string): string {
   return `${h} h ${Math.round((s % 3600) / 60)} min`;
 }
 
+/** Common HTTP status codes and ranges offered as chips. */
+export const commonStatusCodes = ['200', '201', '204', '200-299', '301', '302', '300-399', '401', '403', '404'];
+
+/** validStatusToken mirrors the server: a code 100–599 or a range a-b within it. */
+export function validStatusToken(t: string): boolean {
+  const m = /^(\d{3})(?:-(\d{3}))?$/.exec(t.trim());
+  if (!m) return false;
+  const a = Number(m[1]);
+  const b = m[2] ? Number(m[2]) : a;
+  return a >= 100 && a <= 599 && b >= a && b <= 599;
+}
+
+/** splitStatus turns "200,204, 300-399" into chips. */
+export function splitStatus(spec?: string): string[] {
+  return (spec ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** targetCount is how many URLs or stacks a check watches. */
+export function targetCount(c: { kind: CheckKind; settings: { urls?: string[]; stacks?: unknown[] } }): number {
+  if (c.kind === 'http') return Math.max(1, c.settings.urls?.length ?? 0);
+  if (c.kind === 'stack') return Math.max(1, c.settings.stacks?.length ?? 0);
+  return 1;
+}
+
 /** toInput keeps only the editable fields of a check. */
 export function toInput(c: Check): CheckInput {
   const settings = { ...c.settings };
+  if (settings.urls) settings.urls = [...settings.urls];
+  if (settings.stacks) settings.stacks = settings.stacks.map((s) => ({ ...s }));
   if (c.kind === 'log') {
     settings.threshold ??= 1;
     settings.window ??= 300;
@@ -110,3 +140,13 @@ export function toInput(c: Check): CheckInput {
     quorum: c.quorum ?? '',
   };
 }
+
+/** Labels of a target's status in the per-target breakdown of a multi-target check. */
+export const targetStatus: Record<string, string> = {
+  up: 'Up',
+  down: 'Down',
+  maintenance: 'In maintenance (skipped)',
+  silenced: 'Just deployed (skipped)',
+  paused: 'Stopped on purpose',
+  unknown: 'Could not check',
+};

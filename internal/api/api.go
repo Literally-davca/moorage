@@ -56,6 +56,7 @@ type Server struct {
 	finder     *imagefind.Finder
 	finderOnce sync.Once
 	sysUpd     *selfupdate.Service
+	oidcMu     sync.RWMutex
 	oidc       *sso.OIDC
 	proxy      *sso.Proxy
 	log        *slog.Logger
@@ -71,6 +72,11 @@ type Server struct {
 	importSt   *importState // uploaded backups waiting for confirmation (backup.go)
 
 	push *webpush.Service
+
+	// coolify syncs Coolify resources for the coolify-integration add-on (coolifyhub.go).
+	coolify *coolifyHub
+
+	autoRestart *autoRestarter
 }
 
 // TerminalLimits allows overriding terminal timeouts and concurrency limits in tests.
@@ -106,6 +112,12 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 	if mon != nil && s.upd != nil {
 		mon.OnStackDown = s.upd.HandleStackCheckDown
 	}
+	if s.upd != nil {
+		s.upd.Strategy = func(ctx context.Context, hostID, stack string) string {
+			v, _ := st.StackStrategy(ctx, hostID, stack)
+			return v
+		}
+	}
 	s.push = webpush.New(st, log, cfg.PublicURL)
 	if mon != nil {
 		mon.Push = s.push.Broadcast
@@ -113,7 +125,37 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 	if s.upd != nil {
 		s.upd.Push = s.push.Broadcast
 	}
+	if st != nil {
+		ctx := context.Background()
+		if sp := s.effectiveStatusPublicURL(ctx); sp != "" && s.status != nil {
+			s.status.SetStatusPublicURL(sp)
+		}
+		if !cfg.OIDC.Configured() {
+			if oidcCfg, _ := s.effectiveOIDCConfig(ctx); oidcCfg.Configured() {
+				s.oidc = sso.NewOIDC(oidcCfg, s.effectivePublicURL(ctx), log, sso.Options{})
+			}
+		}
+	}
+	s.autoRestart = newAutoRestarter(s)
 	return s
+}
+
+// StartAutoRestart runs the dependency auto-restart watcher in the background.
+func (s *Server) StartAutoRestart(ctx context.Context) {
+	if s.autoRestart != nil {
+		go s.autoRestart.run(ctx)
+	}
+}
+
+// StackEventHook forwards stack events from the monitor to dependency detection and
+// auto-restart (auto-updates emit "update" once finished; manual ops notify via watchOp).
+func (s *Server) StackEventHook(hostID, stack, kind string) {
+	if s.deps != nil {
+		s.deps.StackEvent(hostID, stack, kind)
+	}
+	if s.autoRestart != nil && kind == "update" {
+		s.autoRestart.StackEvent(hostID, stack, kind)
+	}
 }
 
 // SetTerminalLimits overrides terminal timeouts and concurrency limits (used in tests).
@@ -207,7 +249,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/history/{hash}", s.user(s.stackVersion))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/timeline", s.user(s.stackTimeline))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/validate", s.user(s.validate))
+	mux.Handle("POST /api/hosts/{host}/stacks/{name}/lint/fix", s.user(s.lintFix))
+	mux.Handle("POST /api/hosts/{host}/stacks/{name}/env/extract", s.user(s.extractEnv))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/strategy", s.user(s.getStackStrategy))
 	mux.Handle("GET /api/hosts/{host}/ws/logs", s.user(s.wsLogs))
+	mux.Handle("GET /api/hosts/{host}/logs/history", s.user(s.logsHistory))
+	mux.Handle("GET /api/hosts/{host}/logs/download", s.user(s.logsDownload))
 	mux.Handle("GET /api/hosts/{host}/ws/ops/{id}", s.user(s.wsOp))
 	mux.Handle("POST /api/convert", s.user(s.convert))
 	mux.Handle("POST /api/image-lookup", s.admin(s.imageLookup))
@@ -218,6 +265,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/status-pages/{id}", s.user(s.getStatusPage))
 	mux.Handle("GET /api/status-pages/{id}/preview", s.user(s.previewStatusPage))
 	mux.Handle("GET /api/updates", s.user(s.listUpdates))
+	mux.Handle("GET /api/nav-summary", s.user(s.navSummary))
+	mux.Handle("GET /api/hosts/{host}/containers", s.user(s.listContainers))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/images", s.user(s.getStackImages))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/maintenance", s.user(s.stackMaintenance))
 	mux.Handle("GET /api/maintenance", s.user(s.listMaintenance))
@@ -226,6 +275,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/hosts/{host}/deps", s.user(s.hostDeps))
 	mux.Handle("GET /api/templates", s.user(s.listTemplates))
 	mux.Handle("GET /api/templates/{source}/{id}", s.user(s.getTemplate))
+	mux.Handle("GET /api/sister-links", s.user(s.sisterLinks))
+	mux.Handle("GET /api/settings/shared-vars", s.user(s.listSharedVars))
 	mux.Handle("GET /api/account", s.user(s.getAccount))
 	mux.Handle("PUT /api/account/password", s.user(s.changePassword))
 	mux.Handle("POST /api/account/totp/start", s.user(s.totpStart))
@@ -238,7 +289,15 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/hosts/{host}/stacks/{name}", s.admin(s.updateStack))
 	mux.Handle("DELETE /api/hosts/{host}/stacks/{name}", s.admin(s.deleteStack))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/self-apply", s.admin(s.selfApply))
+	mux.Handle("POST /api/hosts/{host}/stacks/{name}/move-to-addons", s.admin(s.moveStackToAddons))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/actions/{action}", s.admin(s.runAction))
+	mux.Handle("POST /api/hosts/{host}/coolify/{uuid}/actions/{action}", s.admin(s.coolifyAction))
+	mux.Handle("GET /api/hosts/{host}/coolify/{uuid}/deployments", s.user(s.coolifyDeployments))
+	mux.Handle("GET /api/hosts/{host}/coolify/{uuid}/envs", s.admin(s.coolifyGetEnvs))
+	mux.Handle("PUT /api/hosts/{host}/coolify/{uuid}/envs", s.admin(s.coolifyPutEnvs))
+	mux.Handle("PUT /api/hosts/{host}/stacks/{name}/strategy", s.admin(s.putStackStrategy))
+	mux.Handle("POST /api/hosts/{host}/containers/{id}/actions/{action}", s.admin(s.containerAction))
+	mux.Handle("POST /api/hosts/{host}/external/{name}/actions/{action}", s.admin(s.externalAction))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/restore", s.admin(s.restore))
 	mux.Handle("POST /api/agents", s.admin(s.addAgent))
 	mux.Handle("PATCH /api/hosts/{host}", s.admin(s.renameHost))
@@ -268,6 +327,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/images/change-tag", s.admin(s.changeStackImageTag))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/images/rollback", s.admin(s.rollbackStackImages))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/terminal", s.admin(s.wsTerminal))
+	mux.Handle("GET /api/hosts/{host}/containers/{id}/terminal", s.admin(s.wsContainerTerminal))
+	mux.Handle("GET /api/hosts/{host}/ws/host-terminal", s.admin(s.wsHostTerminal))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/terminal/sessions", s.admin(s.listStackTerminals))
 	mux.Handle("GET /api/terminal/sessions", s.admin(s.listTerminalSessions))
 	mux.Handle("GET /api/audit", s.admin(s.listAudit))
@@ -282,6 +343,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/deps", s.admin(s.addDep))
 	mux.Handle("DELETE /api/hosts/{host}/stacks/{name}/deps/{id}", s.admin(s.removeDep))
 	mux.Handle("PUT /api/hosts/{host}/stacks/{name}/deps/{id}/ignored", s.admin(s.ignoreDep))
+	mux.Handle("PUT /api/hosts/{host}/stacks/{name}/deps/{id}/auto-restart", s.admin(s.setDepAutoRestart))
 	mux.Handle("POST /api/templates/render", s.admin(s.renderTemplate))
 	mux.Handle("GET /api/templates/sources", s.admin(s.listTemplateSources))
 	mux.Handle("POST /api/templates/sources", s.admin(s.addTemplateSource))
@@ -291,11 +353,50 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/users", s.admin(s.listUsers))
 	mux.Handle("GET /api/addons", s.admin(s.listAddons))
 	mux.Handle("POST /api/addons/install", s.admin(s.installAddon))
+	mux.Handle("POST /api/addons/custom", s.admin(s.createCustomAddon))
+	mux.Handle("GET /api/addons/custom/{id}", s.admin(s.getCustomAddon))
+	mux.Handle("PUT /api/addons/custom/{id}", s.admin(s.updateCustomAddon))
 	mux.Handle("PUT /api/addons/{id}", s.admin(s.setAddon))
 	mux.Handle("DELETE /api/addons/{id}", s.admin(s.uninstallAddon))
+	mux.Handle("GET /api/addons/sources", s.admin(s.listAddonSources))
+	mux.Handle("POST /api/addons/sources", s.admin(s.addAddonSource))
+	mux.Handle("PUT /api/addons/sources/{id}", s.admin(s.updateAddonSource))
+	mux.Handle("DELETE /api/addons/sources/{id}", s.admin(s.deleteAddonSource))
+	mux.Handle("POST /api/addons/sources/{id}/refresh", s.admin(s.refreshAddonSource))
+	mux.Handle("GET /api/addons/prometheus-grafana/dashboard", s.admin(s.promDashboardJSON))
+	mux.Handle("POST /api/addons/prometheus-grafana/push", s.admin(s.pushGrafanaDashboard))
+	mux.Handle("GET /api/addons/prometheus-grafana/scrape", s.admin(s.promScrapeConfig))
+	mux.Handle("GET /api/addons/prometheus-grafana/homelab", s.admin(s.promHomelabSnippets))
+	mux.Handle("GET /api/addons/scheduler/tasks", s.admin(s.listSchedulerTasks))
+	mux.Handle("POST /api/addons/scheduler/tasks", s.admin(s.saveSchedulerTask))
+	mux.Handle("PUT /api/addons/scheduler/tasks/{id}", s.admin(s.saveSchedulerTask))
+	mux.Handle("DELETE /api/addons/scheduler/tasks/{id}", s.admin(s.deleteSchedulerTask))
+	mux.Handle("POST /api/addons/scheduler/tasks/{id}/run", s.admin(s.runSchedulerTaskNow))
+	mux.Handle("GET /api/addons/socket-proxy/scan", s.admin(s.scanSocketProxy))
+	mux.Handle("GET /api/addons/webhooks", s.admin(s.listRegistryWebhooks))
+	mux.Handle("POST /api/addons/webhooks", s.admin(s.createRegistryWebhook))
+	mux.Handle("PUT /api/addons/webhooks/{id}", s.admin(s.updateRegistryWebhook))
+	mux.Handle("DELETE /api/addons/webhooks/{id}", s.admin(s.deleteRegistryWebhook))
+	mux.Handle("GET /api/addons/mcp/tokens", s.admin(s.listMCPTokens))
+	mux.Handle("POST /api/addons/mcp/tokens", s.admin(s.createMCPToken))
+	mux.Handle("DELETE /api/addons/mcp/tokens/{id}", s.admin(s.deleteMCPToken))
+	mux.Handle("GET /api/addons/mcp/drafts", s.admin(s.listMCPDrafts))
+	mux.Handle("POST /api/addons/mcp/drafts/{id}/approve", s.admin(s.approveMCPDraft))
+	mux.Handle("POST /api/addons/mcp/drafts/{id}/reject", s.admin(s.rejectMCPDraft))
 	mux.Handle("GET /api/settings/config", s.admin(s.getSettingsConfig))
 	mux.Handle("PUT /api/settings/config", s.admin(s.putSettingsConfig))
 	mux.Handle("POST /api/settings/metrics-token", s.admin(s.generateMetricsToken))
+	mux.Handle("POST /api/settings/shared-vars", s.admin(s.saveSharedVar))
+	mux.Handle("DELETE /api/settings/shared-vars/{id}", s.admin(s.deleteSharedVar))
+	mux.Handle("GET /api/settings/connections", s.admin(s.getConnections))
+	mux.Handle("PUT /api/settings/connections", s.admin(s.putConnections))
+	mux.Handle("POST /api/settings/connections/oidc/test", s.admin(s.testOIDCConnection))
+	mux.Handle("POST /api/settings/connections/coolify/test", s.admin(s.testCoolifyConnection))
+	mux.Handle("POST /api/settings/connections/registry/test", s.admin(s.testRegistryConnection))
+	mux.Handle("POST /api/settings/connections/grafana/test", s.admin(s.testGrafanaConnection))
+	mux.Handle("GET /api/settings/backup/remote", s.admin(s.getRemoteBackup))
+	mux.Handle("PUT /api/settings/backup/remote", s.admin(s.putRemoteBackup))
+	mux.Handle("POST /api/settings/backup/remote/run", s.admin(s.runRemoteBackupNow))
 	mux.Handle("POST /api/settings/backup/export", s.admin(s.exportBackup))
 	mux.Handle("POST /api/settings/backup/import/preview", s.admin(s.importBackupPreview))
 	mux.Handle("POST /api/settings/backup/import/apply", s.admin(s.importBackupApply))
@@ -334,6 +435,15 @@ func (s *Server) Handler() http.Handler {
 		}
 		if r.URL.Path == "/metrics" {
 			metricsHandler.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/mcp" {
+			s.handleMCP(w, r)
+			return
+		}
+		if tok, ok := strings.CutPrefix(r.URL.Path, "/api/webhooks/registry/"); ok && tok != "" && !strings.Contains(tok, "/") {
+			r.SetPathValue("token", tok)
+			s.handleRegistryWebhook(w, r)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/status-assets/") {
@@ -601,7 +711,8 @@ func (s *Server) listHosts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"hosts": []host.Entry{}})
 		return
 	}
-	list, err := s.reg.List(r.Context())
+	ctx := r.Context()
+	list, err := s.reg.List(ctx)
 	if err != nil {
 		s.engErr(w, err)
 		return
@@ -609,9 +720,13 @@ func (s *Server) listHosts(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []host.Entry{}
 	}
+	for i := range list {
+		list[i].HostIP, list[i].BaseDomain, list[i].HostIPFromEnv, list[i].BaseDomainFromEnv =
+			s.effectiveHostNetwork(ctx, list[i].ID, list[i].HostIP, list[i].BaseDomain)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"hosts": list, "agentPort": s.agentPort(), "acceptsAgents": s.hub != nil,
-		"metrics": s.metricsInfo(r.Context()),
+		"hosts": list, "agentPort": s.agentPort(), "agentPublicAddr": s.effectiveAgentPublicAddr(ctx),
+		"acceptsAgents": s.hub != nil, "metrics": s.metricsInfo(ctx),
 	})
 }
 
@@ -638,7 +753,9 @@ func (s *Server) hostInfo(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, h.Info(r.Context()))
+	info := h.Info(r.Context())
+	info.HostIP, info.BaseDomain, _, _ = s.effectiveHostNetwork(r.Context(), r.PathValue("host"), info.HostIP, info.BaseDomain)
+	writeJSON(w, http.StatusOK, info)
 }
 
 func hostName(w http.ResponseWriter, r *http.Request) (string, bool) {
@@ -674,16 +791,61 @@ func (s *Server) addAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renameHost(w http.ResponseWriter, r *http.Request) {
-	name, ok := hostName(w, r)
-	if !ok {
+	var req struct {
+		Name       *string `json:"name"`
+		HostIP     *string `json:"hostIp"`
+		BaseDomain *string `json:"baseDomain"`
+	}
+	if !readJSON(w, r, &req) {
 		return
 	}
-	if err := s.store.RenameAgent(r.Context(), r.PathValue("host"), name); err != nil {
+	ctx := r.Context()
+	hostID := r.PathValue("host")
+	if s.reg == nil {
 		writeErr(w, http.StatusNotFound, "Host not found.")
 		return
 	}
-	if s.hub != nil {
-		go s.hub.PushWatchdog(context.Background())
+	_, entry, err := s.reg.Get(ctx, hostID)
+	if errors.Is(err, host.ErrUnknownHost) {
+		writeErr(w, http.StatusNotFound, "Host not found.")
+		return
+	}
+
+	if req.Name != nil && hostID != host.LocalID {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" || len([]rune(name)) > 40 {
+			writeErr(w, http.StatusBadRequest, "Give the host a name of 1–40 characters.")
+			return
+		}
+		if err := s.store.RenameAgent(ctx, hostID, name); err != nil {
+			writeErr(w, http.StatusNotFound, "Host not found.")
+			return
+		}
+		if s.hub != nil {
+			go s.hub.PushWatchdog(context.Background())
+		}
+	}
+	if req.HostIP != nil && strings.TrimSpace(entry.HostIP) == "" {
+		v := strings.TrimSpace(*req.HostIP)
+		if strings.ContainsAny(v, " /\\?#") {
+			writeErr(w, http.StatusBadRequest, "Primary IP or hostname must not contain spaces or slashes.")
+			return
+		}
+		if err := s.store.SetSetting(ctx, store.HostIPKey(hostID), v); err != nil {
+			s.engErr(w, err)
+			return
+		}
+	}
+	if req.BaseDomain != nil && strings.TrimSpace(entry.BaseDomain) == "" {
+		v := strings.Trim(strings.ToLower(strings.TrimSpace(*req.BaseDomain)), "./")
+		if strings.ContainsAny(v, " /\\?#:") {
+			writeErr(w, http.StatusBadRequest, "Base domain must be a bare domain name (for example apps.example.com).")
+			return
+		}
+		if err := s.store.SetSetting(ctx, store.BaseDomainKey(hostID), v); err != nil {
+			s.engErr(w, err)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -714,26 +876,115 @@ func (s *Server) removeHost(w http.ResponseWriter, r *http.Request) {
 
 // ---- stacks ----------------------------------------------------------------
 
+func (s *Server) hostEffectiveIP(ctx context.Context, hostID string) string {
+	if s.reg == nil {
+		return ""
+	}
+	_, entry, err := s.reg.Get(ctx, hostID)
+	if errors.Is(err, host.ErrUnknownHost) {
+		return ""
+	}
+	ip, _, _, _ := s.effectiveHostNetwork(ctx, hostID, entry.HostIP, entry.BaseDomain)
+	return ip
+}
+
 func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
 	h, ok := s.hostOf(w, r, false)
 	if !ok {
 		return
 	}
-	list, err := h.ListStacks(r.Context())
-	proxyOn, _ := s.store.AddonEnabled(r.Context(), addonProxyLabels)
+	ctx := r.Context()
+	hostID := r.PathValue("host")
+	list, err := h.ListStacks(ctx)
+	proxyOn, _ := s.store.AddonEnabled(ctx, addonProxyLabels)
+	coolifyOn, _ := s.store.AddonEnabled(ctx, addonCoolify)
+	hostIP := s.hostEffectiveIP(ctx, hostID)
+	var portByProject map[string][]string
+	var ctrs []engine.ContainerInfo
+	if cm, isCM := h.(host.ContainerManager); isCM {
+		if fetched, cerr := cm.Containers(ctx); cerr == nil {
+			ctrs = fetched
+			if hostIP != "" {
+				portByProject = map[string][]string{}
+				for _, c := range ctrs {
+					if c.Project != "" && c.State == "running" && len(c.URLs) == 0 {
+						portByProject[c.Project] = append(portByProject[c.Project], c.Ports...)
+					}
+				}
+			}
+		}
+	}
+
+	var lblMeta map[string]coolifyRes
+	var deploying map[string]bool
+	var helperProjects map[string]bool
+	if coolifyOn {
+		lblMeta, deploying = labelCoolifyMeta(ctrs)
+		helperProjects = map[string]bool{}
+		for _, c := range ctrs {
+			if c.Project != "" && isCoolifyHelperContainer(c) {
+				helperProjects[c.Project] = true
+			}
+		}
+	}
+
+	filtered := list[:0]
+	seenProj := map[string]bool{}
 	for i := range list {
+		if coolifyOn && (helperProjects[list[i].Name] || strings.HasPrefix(list[i].Location, "/artifacts/")) {
+			continue
+		}
+		seenProj[list[i].Name] = true
+		hasExplicit := len(list[i].URLs) > 0
 		if proxyOn && len(list[i].ProxyURLs) > 0 {
 			list[i].URLs = mergeURLs(list[i].URLs, list[i].ProxyURLs, 10)
 		}
+		if !hasExplicit && hostIP != "" && len(portByProject[list[i].Name]) > 0 {
+			list[i].URLs = mergeURLs(list[i].URLs, hostPortURLs(hostIP, portByProject[list[i].Name]), 10)
+		}
 		list[i].ProxyURLs = nil
+		if coolifyOn {
+			s.enrichCoolifySummary(ctx, hostID, &list[i], lblMeta, deploying)
+		}
+		filtered = append(filtered, list[i])
 	}
+	// Include stopped/undeployed Coolify API resources that have no running containers yet.
+	if coolifyOn && s.coolify != nil {
+		for _, cr := range s.coolify.listHost(hostID) {
+			if seenProj[cr.UUID] {
+				continue
+			}
+			sm := engine.StackSummary{
+				Name:           cr.UUID,
+				Managed:        false,
+				Status:         engine.StatusStopped,
+				DisplayName:    cr.Name,
+				CoolifyUUID:    cr.UUID,
+				CoolifyType:    cr.Type,
+				CoolifyProject: cr.Project,
+				CoolifyEnv:     cr.Environment,
+				CoolifyURL:     cr.URL,
+				CoolifyPR:      cr.PullRequest,
+			}
+			if cr.FQDN != "" {
+				for _, u := range strings.Split(cr.FQDN, ",") {
+					u = strings.TrimSpace(u)
+					if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+						sm.URLs = append(sm.URLs, u)
+					}
+				}
+			}
+			filtered = append(filtered, sm)
+		}
+	}
+	list = filtered
 	resp := map[string]any{"stacks": list}
 	if list == nil {
 		resp["stacks"] = []engine.StackSummary{}
 	}
 	if err != nil {
 		resp["error"] = "Docker isn't reachable, showing stacks from the folder only."
-		s.log.Warn("list stacks", "host", r.PathValue("host"), "err", err)
+		s.log.Warn("list stacks", "host", hostID, "err", err)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -743,19 +994,64 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	st, err := h.GetStack(r.Context(), r.PathValue("name"))
+	ctx := r.Context()
+	hostID := r.PathValue("host")
+	st, err := h.GetStack(ctx, r.PathValue("name"))
 	if err != nil {
-		s.engErr(w, err)
-		return
+		if errors.Is(err, engine.ErrNotFound) {
+			if coolifyOn, _ := s.store.AddonEnabled(ctx, addonCoolify); coolifyOn {
+				if cr := s.coolifyResFor(ctx, hostID, r.PathValue("name")); cr != nil {
+					st = engine.Stack{
+						StackSummary: engine.StackSummary{
+							Name:           cr.UUID,
+							Managed:        false,
+							Status:         engine.StatusStopped,
+							DisplayName:    cr.Name,
+							CoolifyUUID:    cr.UUID,
+							CoolifyType:    cr.Type,
+							CoolifyProject: cr.Project,
+							CoolifyEnv:     cr.Environment,
+							CoolifyURL:     cr.URL,
+							CoolifyPR:      cr.PullRequest,
+						},
+					}
+					err = nil
+				}
+			}
+		}
+		if err != nil {
+			s.engErr(w, err)
+			return
+		}
 	}
-	proxyOn, _ := s.store.AddonEnabled(r.Context(), addonProxyLabels)
+	if coolifyOn, _ := s.store.AddonEnabled(ctx, addonCoolify); coolifyOn {
+		var lblMeta map[string]coolifyRes
+		var deploying map[string]bool
+		if cm, isCM := h.(host.ContainerManager); isCM {
+			if ctrs, cerr := cm.Containers(ctx); cerr == nil {
+				lblMeta, deploying = labelCoolifyMeta(ctrs)
+			}
+		}
+		s.enrichCoolifySummary(ctx, hostID, &st.StackSummary, lblMeta, deploying)
+	}
+	proxyOn, _ := s.store.AddonEnabled(ctx, addonProxyLabels)
+	hostIP := s.hostEffectiveIP(ctx, hostID)
+	stackHasExplicit := len(st.URLs) > 0
 	if proxyOn && len(st.ProxyURLs) > 0 {
 		st.URLs = mergeURLs(st.URLs, st.ProxyURLs, 10)
 	}
 	st.ProxyURLs = nil
 	for i := range st.Containers {
+		ctrExplicit := len(st.Containers[i].URLs) > 0
 		if proxyOn && len(st.Containers[i].ProxyURLs) > 0 {
 			st.Containers[i].URLs = mergeURLs(st.Containers[i].URLs, st.Containers[i].ProxyURLs, 5)
+		}
+		if !ctrExplicit && hostIP != "" {
+			purls := hostPortURLs(hostIP, st.Containers[i].Ports)
+			st.Containers[i].URLs = mergeURLs(st.Containers[i].URLs, purls, 5)
+			if !stackHasExplicit {
+				st.URLs = mergeURLs(st.URLs, purls, 10)
+			}
 		}
 		st.Containers[i].ProxyURLs = nil
 	}
@@ -802,28 +1098,6 @@ type stackFiles struct {
 	Env     string `json:"env"`
 }
 
-func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
-	h, ok := s.hostOf(w, r, false)
-	if !ok {
-		return
-	}
-	var req stackFiles
-	if !readJSON(w, r, &req) {
-		return
-	}
-	err := h.Validate(r.Context(), r.PathValue("name"), req.Compose, req.Env)
-	var ve engine.ValidationError
-	if errors.As(err, &ve) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": ve.Msg})
-		return
-	}
-	if err != nil {
-		s.engErr(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
 func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 	h, ok := s.hostOf(w, r, true)
 	if !ok {
@@ -844,6 +1118,7 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, user := strings.TrimSpace(req.Name), currentUser(r).Username
+	req.Env = s.expandSharedSecrets(r.Context(), r.PathValue("host"), req.Env)
 	var err error
 	if nc, isNoted := h.(host.NotedCreator); isNoted && note != "" {
 		err = nc.CreateNoted(r.Context(), name, req.Compose, req.Env, user, note)
@@ -874,6 +1149,7 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	req.Env = s.expandSharedSecrets(r.Context(), r.PathValue("host"), req.Env)
 	if err := h.Save(r.Context(), name, req.Compose, req.Env, currentUser(r).Username, false); err != nil {
 		s.engErr(w, err)
 		return
@@ -934,6 +1210,13 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name, action, user := r.PathValue("name"), r.PathValue("action"), currentUser(r).Username
+	action = s.deployAction(r.Context(), r.PathValue("host"), name, action, r.URL.Query().Get("strategy"))
+	if actionEvent[action] == "deploy" || actionEvent[action] == "update" {
+		if b := s.deployBlocked(r.Context(), h, name); b != nil {
+			writeErr(w, http.StatusUnprocessableEntity, "Can't deploy: "+b.Message)
+			return
+		}
+	}
 	op, err := h.RunAction(r.Context(), name, action, user)
 	if err != nil {
 		s.engErr(w, err)
@@ -944,6 +1227,9 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 		s.stackEvent(r, name, kind, "")
 	}
 	s.watchOp(h, r.PathValue("host"), name, action, op.ID)
+	if action == "rolling" || action == "rolling-update" {
+		s.watchRollback(h, r.PathValue("host"), name, op.ID)
+	}
 	writeJSON(w, http.StatusAccepted, op)
 }
 
@@ -1053,7 +1339,8 @@ func (s *Server) errStatus(err error) (int, string) {
 		return http.StatusConflict, sentence(err)
 	case errors.Is(err, engine.ErrHistoryOff), errors.Is(err, host.ErrOffline):
 		return http.StatusServiceUnavailable, sentence(err)
-	case errors.Is(err, engine.ErrReadOnly), errors.Is(err, host.ErrHostReadOnly), errors.Is(err, host.ErrTerminalDisabled):
+	case errors.Is(err, engine.ErrReadOnly), errors.Is(err, host.ErrHostReadOnly), errors.Is(err, host.ErrTerminalDisabled),
+		errors.Is(err, engine.ErrExternalLocked), errors.Is(err, engine.ErrHostTerminalLocked), errors.Is(err, engine.ErrExecLocked):
 		return http.StatusForbidden, sentence(err)
 	case errors.Is(err, engine.ErrInvalidShell):
 		return http.StatusBadRequest, sentence(err)

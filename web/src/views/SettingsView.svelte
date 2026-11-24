@@ -3,6 +3,9 @@
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import HostsView from './HostsView.svelte';
   import GeneralSettingsView from './GeneralSettingsView.svelte';
+  import BackupsView from './BackupsView.svelte';
+  import SharedVarsView from './SharedVarsView.svelte';
+  import ConnectionsView from './ConnectionsView.svelte';
   import NotificationsView from './NotificationsView.svelte';
   import AuditView from './AuditView.svelte';
   import UsersView from './UsersView.svelte';
@@ -16,6 +19,9 @@
     ...(isAdmin()
       ? [
           { id: 'general' as const, label: 'General', icon: 'settings' as const, href: '#/settings/general' },
+          { id: 'backups' as const, label: 'Backups', icon: 'download' as const, href: '#/settings/backups' },
+          { id: 'shared-vars' as const, label: 'Shared variables', icon: 'key' as const, href: '#/settings/shared-vars' },
+          { id: 'connections' as const, label: 'Connections', icon: 'link' as const, href: '#/settings/connections' },
           { id: 'notifications' as const, label: 'Notifications', icon: 'bell' as const, href: '#/settings/notifications' },
           { id: 'audit' as const, label: 'Audit', icon: 'clipboardList' as const, href: '#/settings/audit' },
           { id: 'users' as const, label: 'Users', icon: 'users' as const, href: '#/settings/users' },
@@ -41,6 +47,12 @@
     <HostsView onChanged={onHostsChanged} />
   {:else if activeTab === 'general'}
     <GeneralSettingsView />
+  {:else if activeTab === 'backups'}
+    <BackupsView />
+  {:else if activeTab === 'shared-vars'}
+    <SharedVarsView />
+  {:else if activeTab === 'connections'}
+    <ConnectionsView />
   {:else if activeTab === 'notifications'}
     <NotificationsView />
   {:else if activeTab === 'audit'}

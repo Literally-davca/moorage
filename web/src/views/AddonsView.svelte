@@ -1,42 +1,97 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, type AddonCatalogEntry, type AddonInfo } from '../lib/api';
+  import {
+    api,
+    type AddonCatalogEntry,
+    type AddonInfo,
+    type AddonSource,
+  } from '../lib/api';
   import { app } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
+  import MultiSelect from '../lib/MultiSelect.svelte';
+  import ComposeEditor from '../lib/ComposeEditor.svelte';
+  import EnvEditor from '../lib/EnvEditor.svelte';
+  import PromGenPanel from './PromGenPanel.svelte';
+  import BuiltinAddonPanel from './BuiltinAddonPanel.svelte';
 
   let addons = $state<AddonInfo[] | null>(null);
   let catalog = $state<AddonCatalogEntry[] | null>(null);
+  let sources = $state<AddonSource[]>([]);
   let catalogError = $state('');
   let loadingCatalog = $state(false);
   let error = $state('');
   let busy = $state<Record<string, boolean>>({});
   let rowError = $state<Record<string, string>>({});
-  let targetHost = $state<string>('');
+  let targetHosts = $state<string[]>([]);
   let removing = $state<AddonInfo | null>(null);
   let confirmOpen = $state(false);
+  let openPanel = $state<string | null>(null);
 
-  // filters
+  // Filters
   let statusFilter = $state<'all' | 'installed' | 'enabled' | 'disabled' | 'not_installed'>('all');
   let kindFilter = $state<'all' | 'builtin' | 'sidecar'>('all');
   let categoryFilter = $state<string>('all');
   let search = $state('');
 
+  // Custom sidecar modal (create or edit)
+  let customOpen = $state(false);
+  let customEditHost = $state('');
+  let customMode = $state<'create' | 'edit'>('create');
+  let customID = $state('');
+  let customIDManual = $state(false);
+  let customName = $state('');
+  let customCategory = $state('Custom');
+  let customDesc = $state('');
+  let customHosts = $state<string[]>([]);
+  let customCompose = $state(`services:\n  my-sidecar:\n    image: alpine:latest\n    restart: unless-stopped\n`);
+  let customEnv = $state('');
+  let dockerRunCmd = $state('');
+  let convertingRun = $state(false);
+  let customSaving = $state(false);
+  let customError = $state('');
+
+  // Addon sources drawer
+  let sourcesOpen = $state(false);
+  let srcName = $state('');
+  let srcUrl = $state('');
+  let srcAllowPrivate = $state(false);
+  let srcBusy = $state(false);
+  let srcError = $state('');
+
   const writableHosts = $derived(app.hosts.filter((h) => h.connected && !h.readOnly));
 
   $effect(() => {
-    if (!targetHost && writableHosts.length) {
-      targetHost = writableHosts.find((h) => h.id === app.host)?.id ?? writableHosts[0].id;
+    if (targetHosts.length === 0 && writableHosts.length > 0) {
+      const preferred = writableHosts.find((h) => h.id === app.host)?.id ?? writableHosts[0].id;
+      targetHosts = [preferred];
     }
   });
+
+  function rowKey(a: Pick<AddonInfo, 'id' | 'hostId'>): string {
+    return `${a.id}@${a.hostId || ''}`;
+  }
+
+  function slugify(s: string): string {
+    return s
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/^[^a-z0-9]+/, '')
+      .replace(/-+/g, '-')
+      .slice(0, 56);
+  }
 
   async function load(withCatalog = false, refresh = false) {
     if (withCatalog) loadingCatalog = true;
     try {
-      const r = await api.addons({ catalog: withCatalog || catalog !== null, refresh });
+      const [r, srcRes] = await Promise.all([
+        api.addons({ catalog: withCatalog || catalog !== null, refresh }),
+        api.addonSources().catch(() => ({ sources: [] as AddonSource[] })),
+      ]);
       addons = r.addons;
       if (r.catalog) catalog = r.catalog;
       catalogError = r.catalogError ?? '';
+      sources = srcRes.sources ?? [];
       error = '';
     } catch (e) {
       error = (e as Error).message;
@@ -51,49 +106,219 @@
 
   async function toggle(a: AddonInfo) {
     if (!a.toggleable) return;
-    busy = { ...busy, [a.id]: true };
-    rowError = { ...rowError, [a.id]: '' };
+    const key = rowKey(a);
+    busy = { ...busy, [key]: true };
+    rowError = { ...rowError, [key]: '' };
     try {
-      await api.setAddon(a.id, !a.enabled);
+      await api.setAddon(a.id, !a.enabled, a.hostId);
       await load();
     } catch (e) {
-      rowError = { ...rowError, [a.id]: (e as Error).message };
+      rowError = { ...rowError, [key]: (e as Error).message };
     } finally {
-      busy = { ...busy, [a.id]: false };
+      busy = { ...busy, [key]: false };
     }
   }
 
   async function install(entry: AddonCatalogEntry) {
-    busy = { ...busy, [entry.id]: true };
-    rowError = { ...rowError, [entry.id]: '' };
+    const key = `${entry.id}@${entry.sourceName || ''}`;
+    busy = { ...busy, [key]: true };
+    rowError = { ...rowError, [key]: '' };
     try {
-      await api.installAddon(entry.id, entry.kind === 'sidecar' ? targetHost : undefined);
+      const installedOn = new Set(
+        (addons ?? []).filter((a) => a.id === entry.id && a.hostId).map((a) => a.hostId!),
+      );
+      const hosts = entry.kind === 'sidecar' ? targetHosts.filter((h) => !installedOn.has(h)) : [];
+      if (entry.kind === 'sidecar' && hosts.length === 0) {
+        rowError = { ...rowError, [key]: 'Already installed on all selected hosts.' };
+        return;
+      }
+      await api.installAddon(entry.id, hosts, entry.sourceUrl);
       await load();
     } catch (e) {
-      rowError = { ...rowError, [entry.id]: (e as Error).message };
+      rowError = { ...rowError, [key]: (e as Error).message };
     } finally {
-      busy = { ...busy, [entry.id]: false };
+      busy = { ...busy, [key]: false };
     }
   }
 
   async function uninstall() {
     const a = removing;
     if (!a) return;
-    busy = { ...busy, [a.id]: true };
-    rowError = { ...rowError, [a.id]: '' };
+    const key = rowKey(a);
+    busy = { ...busy, [key]: true };
+    rowError = { ...rowError, [key]: '' };
     try {
-      await api.uninstallAddon(a.id);
+      await api.uninstallAddon(a.id, a.hostId);
       await load();
     } catch (e) {
-      rowError = { ...rowError, [a.id]: (e as Error).message };
+      rowError = { ...rowError, [key]: (e as Error).message };
     } finally {
-      busy = { ...busy, [a.id]: false };
+      busy = { ...busy, [key]: false };
       removing = null;
     }
   }
 
-  const installedIds = $derived(new Set((addons ?? []).map((a) => a.id)));
-  const available = $derived((catalog ?? []).filter((c) => c.kind === 'sidecar' && !installedIds.has(c.id)));
+  function openNewCustom() {
+    customMode = 'create';
+    customEditHost = '';
+    customID = '';
+    customIDManual = false;
+    customName = '';
+    customCategory = 'Custom';
+    customDesc = '';
+    customHosts = targetHosts.length ? [...targetHosts] : writableHosts.slice(0, 1).map((h) => h.id);
+    customCompose = `services:\n  my-sidecar:\n    image: alpine:latest\n    restart: unless-stopped\n`;
+    customEnv = '';
+    dockerRunCmd = '';
+    customError = '';
+    customOpen = true;
+  }
+
+  async function openEditCustom(a: AddonInfo) {
+    customError = '';
+    try {
+      const detail = await api.getCustomAddon(a.id, a.hostId);
+      customMode = 'edit';
+      customEditHost = detail.hostId || a.hostId || '';
+      customID = detail.id;
+      customIDManual = true;
+      customName = detail.name;
+      customCategory = detail.category || 'Custom';
+      customDesc = detail.description || '';
+      customHosts = customEditHost ? [customEditHost] : [];
+      customCompose = detail.compose || '';
+      customEnv = detail.env || '';
+      dockerRunCmd = '';
+      customOpen = true;
+    } catch (e) {
+      rowError = { ...rowError, [rowKey(a)]: (e as Error).message };
+    }
+  }
+
+  async function convertDockerRun() {
+    if (!dockerRunCmd.trim()) return;
+    convertingRun = true;
+    customError = '';
+    try {
+      const res = await api.convert(dockerRunCmd.trim());
+      customCompose = res.yaml;
+      if (!customName && res.service) {
+        customName = res.service;
+        if (!customIDManual) customID = slugify(res.service);
+      }
+    } catch (e) {
+      customError = (e as Error).message;
+    } finally {
+      convertingRun = false;
+    }
+  }
+
+  async function saveCustomAddon(e: SubmitEvent) {
+    e.preventDefault();
+    customSaving = true;
+    customError = '';
+    try {
+      if (customMode === 'create') {
+        await api.createCustomAddon({
+          id: customID.trim(),
+          name: customName.trim(),
+          category: customCategory.trim() || 'Custom',
+          description: customDesc.trim(),
+          hostIds: customHosts,
+          compose: customCompose,
+          env: customEnv,
+        });
+      } else {
+        await api.updateCustomAddon(customID, customEditHost, {
+          name: customName.trim(),
+          category: customCategory.trim() || 'Custom',
+          description: customDesc.trim(),
+          compose: customCompose,
+          env: customEnv,
+        });
+      }
+      customOpen = false;
+      await load();
+    } catch (e) {
+      customError = (e as Error).message;
+    } finally {
+      customSaving = false;
+    }
+  }
+
+  async function addSource(e: SubmitEvent) {
+    e.preventDefault();
+    srcBusy = true;
+    srcError = '';
+    try {
+      await api.addAddonSource({ name: srcName.trim(), url: srcUrl.trim(), allowPrivate: srcAllowPrivate });
+      srcName = '';
+      srcUrl = '';
+      srcAllowPrivate = false;
+      await load(true, true);
+    } catch (e) {
+      srcError = (e as Error).message;
+    } finally {
+      srcBusy = false;
+    }
+  }
+
+  async function toggleSource(s: AddonSource) {
+    try {
+      await api.updateAddonSource(s.id, {
+        name: s.name,
+        url: s.url,
+        allowPrivate: s.allowPrivate,
+        enabled: !s.enabled,
+      });
+      await load(true, false);
+    } catch (e) {
+      srcError = (e as Error).message;
+    }
+  }
+
+  async function refreshSource(s: AddonSource) {
+    srcBusy = true;
+    srcError = '';
+    try {
+      await api.refreshAddonSource(s.id);
+      await load(true, true);
+    } catch (e) {
+      srcError = (e as Error).message;
+    } finally {
+      srcBusy = false;
+    }
+  }
+
+  async function removeSource(s: AddonSource) {
+    try {
+      await api.deleteAddonSource(s.id);
+      await load(true, false);
+    } catch (e) {
+      srcError = (e as Error).message;
+    }
+  }
+
+  const installedByIdHosts = $derived.by(() => {
+    const m = new Map<string, string[]>();
+    for (const a of addons ?? []) {
+      if (a.kind !== 'sidecar') continue;
+      const list = m.get(a.id) ?? [];
+      if (a.hostId) list.push(a.hostId);
+      m.set(a.id, list);
+    }
+    return m;
+  });
+
+  // Catalog sidecars remain available as long as at least one writable host doesn't have them yet.
+  const available = $derived(
+    (catalog ?? []).filter((c) => {
+      if (c.kind !== 'sidecar') return false;
+      const onHosts = new Set(installedByIdHosts.get(c.id) ?? []);
+      return writableHosts.length === 0 ? onHosts.size === 0 : writableHosts.some((h) => !onHosts.has(h.id));
+    }),
+  );
+
   const categories = $derived.by(() => {
     const s = new Set<string>();
     for (const a of addons ?? []) if (a.category) s.add(a.category);
@@ -109,7 +334,7 @@
       if (statusFilter === 'disabled' && a.enabled) return false;
       if (kindFilter !== 'all' && a.kind !== kindFilter) return false;
       if (categoryFilter !== 'all' && a.category !== categoryFilter) return false;
-      if (q && !`${a.name} ${a.description} ${a.category}`.toLowerCase().includes(q)) return false;
+      if (q && !`${a.name} ${a.description} ${a.category} ${a.hostName ?? ''} ${a.id}`.toLowerCase().includes(q)) return false;
       return true;
     }),
   );
@@ -118,7 +343,7 @@
       if (statusFilter === 'installed' || statusFilter === 'enabled' || statusFilter === 'disabled') return false;
       if (kindFilter !== 'all' && c.kind !== kindFilter) return false;
       if (categoryFilter !== 'all' && c.category !== categoryFilter) return false;
-      if (q && !`${c.name} ${c.description} ${c.category}`.toLowerCase().includes(q)) return false;
+      if (q && !`${c.name} ${c.description} ${c.category} ${c.sourceName ?? ''} ${c.id}`.toLowerCase().includes(q)) return false;
       return true;
     }),
   );
@@ -129,6 +354,11 @@
     categoryFilter = 'all';
     search = '';
   }
+
+  function hostNameOf(id?: string): string {
+    if (!id) return '';
+    return app.hosts.find((h) => h.id === id)?.name ?? id;
+  }
 </script>
 
 <div class="page">
@@ -136,9 +366,12 @@
     <div class="head-row">
       <h2 class="section-title">Add-ons &amp; integrations</h2>
       <div class="head-actions">
-        <a class="btn btn-ghost" href="https://github.com/Literally-davca/moorage-addons" target="_blank" rel="noopener noreferrer">
-          Catalog <Icon name="external" />
-        </a>
+        <button type="button" class="btn" onclick={() => (sourcesOpen = !sourcesOpen)} aria-expanded={sourcesOpen}>
+          <Icon name="link" /> Sources ({sources.length + 1})
+        </button>
+        <button type="button" class="btn btn-primary" onclick={openNewCustom} disabled={writableHosts.length === 0}>
+          <Icon name="plus" /> Custom add-on
+        </button>
         <button type="button" class="btn" onclick={() => load(true, true)} disabled={loadingCatalog}>
           <Icon name="refresh" /> {loadingCatalog ? 'Refreshing…' : 'Refresh'}
         </button>
@@ -171,6 +404,140 @@
     </div>
   </section>
 
+  {#if sourcesOpen}
+    <section class="card card-pad sources-card" aria-label="Add-on catalog sources">
+      <div class="head-row">
+        <div>
+          <h3 class="section-title">Add-on catalog sources</h3>
+          <p class="meta">Built-in official catalog plus custom HTTPS <code>index.json</code> repositories.</p>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" onclick={() => (sourcesOpen = false)}><Icon name="x" /> Close</button>
+      </div>
+
+      <div class="src-list">
+        <div class="src-row">
+          <div>
+            <strong>Official Moorage Add-ons</strong>
+            <div class="meta mono">https://raw.githubusercontent.com/Literally-davca/moorage-addons/main/index.json</div>
+          </div>
+          <span class="badge up">Active</span>
+        </div>
+        {#each sources as src (src.id)}
+          <div class="src-row">
+            <div>
+              <div class="addon-title">
+                <strong>{src.name}</strong>
+                {#if src.allowPrivate}<span class="badge">Private/LAN</span>{/if}
+                <span class="badge {src.enabled ? 'up' : ''}">{src.enabled ? 'Enabled' : 'Disabled'}</span>
+              </div>
+              <div class="meta mono">{src.url}</div>
+              {#if src.error}<div class="error-text">{src.error}</div>{/if}
+            </div>
+            <div class="addon-actions">
+              <button type="button" class="btn btn-sm" onclick={() => refreshSource(src)} disabled={srcBusy}><Icon name="refresh" /> Refresh</button>
+              <button type="button" class="btn btn-sm" onclick={() => toggleSource(src)}>{src.enabled ? 'Disable' : 'Enable'}</button>
+              <button type="button" class="btn btn-sm btn-ghost btn-danger" onclick={() => removeSource(src)}><Icon name="trash" /> Remove</button>
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <form class="src-form" onsubmit={addSource}>
+        <input class="field" bind:value={srcName} placeholder="Source name (optional)" aria-label="Source name" />
+        <input class="field mono" bind:value={srcUrl} placeholder="https://example.com/moorage-addons/index.json" aria-label="HTTPS index.json URL" required />
+        <label class="check">
+          <input type="checkbox" bind:checked={srcAllowPrivate} />
+          <span class="meta">Allow private/Tailscale IP</span>
+        </label>
+        <button type="submit" class="btn btn-primary" disabled={srcBusy || !srcUrl.trim()}>Add source</button>
+      </form>
+      {#if srcError}<p class="error-text" role="alert">{srcError}</p>{/if}
+    </section>
+  {/if}
+
+  {#if customOpen}
+    <section class="card card-pad custom-card" aria-label={customMode === 'create' ? 'Add custom sidecar add-on' : 'Edit custom add-on'}>
+      <div class="head-row">
+        <h3 class="section-title">{customMode === 'create' ? 'New custom sidecar add-on' : `Edit ${customName}`}</h3>
+        <button type="button" class="btn btn-ghost btn-sm" onclick={() => (customOpen = false)}><Icon name="x" /> Cancel</button>
+      </div>
+
+      <form class="custom-form" onsubmit={saveCustomAddon}>
+        <div class="form-grid">
+          <label class="f-col">
+            <span class="meta">Name</span>
+            <input
+              class="field"
+              bind:value={customName}
+              oninput={() => {
+                if (customMode === 'create' && !customIDManual) customID = slugify(customName);
+              }}
+              placeholder="e.g. Node Exporter"
+              required
+            />
+          </label>
+          <label class="f-col">
+            <span class="meta">Add-on ID (slug)</span>
+            <input
+              class="field mono"
+              bind:value={customID}
+              oninput={() => (customIDManual = true)}
+              placeholder="node-exporter"
+              disabled={customMode === 'edit'}
+              pattern="^[a-z0-9][a-z0-9_\-]{'{'}0,56{'}'}$"
+              required
+            />
+          </label>
+          <label class="f-col">
+            <span class="meta">Category</span>
+            <input class="field" bind:value={customCategory} placeholder="Monitoring" />
+          </label>
+          <label class="f-col">
+            <span class="meta">Description</span>
+            <input class="field" bind:value={customDesc} placeholder="Short summary of what this sidecar does" />
+          </label>
+        </div>
+
+        {#if customMode === 'create'}
+          <div class="f-col">
+            <span class="meta">Target writable hosts</span>
+            <MultiSelect
+              label="Target hosts"
+              placeholder="Select host(s)"
+              bind:selected={customHosts}
+              items={writableHosts.map((h) => ({ value: h.id, label: h.name, meta: h.kind }))}
+            />
+          </div>
+        {:else}
+          <p class="meta">Host: <span class="badge">{hostNameOf(customEditHost)}</span> · Stack: <code>add-ons</code></p>
+        {/if}
+
+        <div class="run-conv">
+          <input
+            class="field mono"
+            bind:value={dockerRunCmd}
+            placeholder="Optional: paste `docker run …` to convert into Compose"
+            aria-label="docker run command"
+          />
+          <button type="button" class="btn" onclick={convertDockerRun} disabled={convertingRun || !dockerRunCmd.trim()}>
+            <Icon name="wand" /> {convertingRun ? 'Converting…' : 'Convert docker run'}
+          </button>
+        </div>
+
+        <ComposeEditor bind:value={customCompose} bind:env={customEnv} name="add-ons" title="Service fragment (compose.yaml)" />
+        <EnvEditor bind:value={customEnv} compose={customCompose} label="Sidecar .env variables (auto-prefixed on collision)" />
+
+        {#if customError}<p class="error-text" role="alert">{customError}</p>{/if}
+
+        <div class="head-actions">
+          <button type="submit" class="btn btn-primary" disabled={customSaving || (customMode === 'create' && customHosts.length === 0)}>
+            <Icon name="check" /> {customSaving ? 'Saving & deploying…' : customMode === 'create' ? 'Install custom add-on' : 'Save & apply'}
+          </button>
+        </div>
+      </form>
+    </section>
+  {/if}
+
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
   {#if addons === null && !error}
@@ -178,52 +545,77 @@
   {:else if addons}
     {#if filteredInstalled.length > 0}
       <div class="list">
-        {#each filteredInstalled as a (a.id)}
-        <section class="card card-pad addon">
-          <div class="addon-row">
-            <div class="addon-main">
-              <div class="addon-title">
-                <span class="name">{a.name}</span>
-                <span class="badge">{a.category}</span>
-                <span class="badge {a.enabled ? 'up' : ''}">{a.enabled ? 'Enabled' : 'Disabled'}</span>
+        {#each filteredInstalled as a (rowKey(a))}
+          {@const key = rowKey(a)}
+          <section class="card card-pad addon">
+            <div class="addon-row">
+              <div class="addon-main">
+                <div class="addon-title">
+                  <span class="name">{a.name}</span>
+                  <span class="badge">{a.category}</span>
+                  {#if a.hostId}<span class="badge info">{a.hostName || a.hostId}</span>{/if}
+                  {#if a.custom}<span class="badge">Custom</span>{/if}
+                  <span class="badge {a.enabled ? 'up' : ''}">{a.enabled ? 'Enabled' : 'Disabled'}</span>
+                </div>
+                <p class="meta">{a.description}</p>
+                {#if a.ram || a.cpu}
+                  <p class="meta mono">
+                    {#if a.ram}RAM: {a.ram}{/if}{#if a.ram && a.cpu} · {/if}{#if a.cpu}CPU: {a.cpu}{/if}
+                  </p>
+                {/if}
+                {#if a.detail}<p class="mono detail">{a.detail}</p>{/if}
+                {#if a.linkHref && a.linkLabel}
+                  <p class="meta"><a href={a.linkHref}>{a.linkLabel}</a></p>
+                {/if}
+                {#if rowError[key]}<p class="error-text" role="alert">{rowError[key]}</p>{/if}
               </div>
-              <p class="meta">{a.description}</p>
-              {#if a.ram || a.cpu}
-                <p class="meta mono">
-                  {#if a.ram}RAM: {a.ram}{/if}{#if a.ram && a.cpu} · {/if}{#if a.cpu}CPU: {a.cpu}{/if}
-                </p>
-              {/if}
-              {#if a.detail}<p class="mono detail">{a.detail}</p>{/if}
-              {#if a.linkHref && a.linkLabel}
-                <p class="meta"><a href={a.linkHref}>{a.linkLabel}</a></p>
-              {/if}
-              {#if rowError[a.id]}<p class="error-text" role="alert">{rowError[a.id]}</p>{/if}
+              <div class="addon-actions">
+                {#if a.id === 'prometheus-grafana' && a.enabled}
+                  <button type="button" class="btn btn-sm" onclick={() => (openPanel = openPanel === a.id ? null : a.id)}>
+                    <Icon name="code" /> {openPanel === a.id ? 'Hide generators' : 'Generators'}
+                  </button>
+                {:else if (a.id === 'stack-scheduler' || a.id === 'socket-proxy-check' || a.id === 'registry-webhooks' || a.id === 'mcp-server') && a.enabled}
+                  <button type="button" class="btn btn-sm" onclick={() => (openPanel = openPanel === a.id ? null : a.id)}>
+                    <Icon name="settings" /> {openPanel === a.id ? 'Hide' : 'Configure'}
+                  </button>
+                {/if}
+                {#if a.kind === 'sidecar' && a.custom}
+                  <button type="button" class="btn btn-sm" onclick={() => openEditCustom(a)} disabled={busy[key]}>
+                    <Icon name="code" /> Edit
+                  </button>
+                {/if}
+                {#if a.toggleable}
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={busy[key]}
+                    aria-busy={busy[key]}
+                    onclick={() => toggle(a)}
+                  >
+                    {a.enabled ? 'Disable' : 'Enable'}
+                  </button>
+                {/if}
+                {#if a.removable}
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-danger"
+                    disabled={busy[key]}
+                    onclick={() => {
+                      removing = a;
+                      confirmOpen = true;
+                    }}
+                  >
+                    <Icon name="trash" /> Uninstall
+                  </button>
+                {/if}
+              </div>
             </div>
-            <div class="addon-actions">
-              {#if a.toggleable}
-                <button
-                  type="button"
-                  class="btn"
-                  disabled={busy[a.id]}
-                  aria-busy={busy[a.id]}
-                  onclick={() => toggle(a)}
-                >
-                  {a.enabled ? 'Disable' : 'Enable'}
-                </button>
-              {/if}
-              {#if a.removable}
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-danger"
-                  disabled={busy[a.id]}
-                  onclick={() => { removing = a; confirmOpen = true; }}
-                >
-                  <Icon name="trash" /> Uninstall
-                </button>
-              {/if}
-            </div>
-          </div>
-        </section>
+            {#if openPanel === a.id && a.id === 'prometheus-grafana' && a.enabled}
+              <PromGenPanel />
+            {:else if openPanel === a.id && (a.id === 'stack-scheduler' || a.id === 'socket-proxy-check' || a.id === 'registry-webhooks' || a.id === 'mcp-server') && a.enabled}
+              <BuiltinAddonPanel addonId={a.id} />
+            {/if}
+          </section>
         {/each}
       </div>
     {/if}
@@ -237,54 +629,60 @@
     <section class="card card-pad catalog-head">
       <div class="head-row">
         <div>
-          <h2 class="section-title">Available add-ons</h2>
-          <p class="meta">Sidecar add-ons are added as services to the <code>add-ons</code> stack.</p>
+          <h2 class="section-title">Available sidecar add-ons</h2>
+          <p class="meta">Installed per host into the shared <code>add-ons</code> stack.</p>
         </div>
-        {#if writableHosts.length > 1}
-          <label class="host-pick">
-            <span class="meta">Target host</span>
-            <select class="field" bind:value={targetHost}>
-              {#each writableHosts as h (h.id)}
-                <option value={h.id}>{h.name}</option>
-              {/each}
-            </select>
-          </label>
+        {#if writableHosts.length > 0}
+          <div class="host-pick">
+            <span class="meta">Target hosts</span>
+            <MultiSelect
+              label="Target hosts"
+              placeholder="Select host(s)"
+              bind:selected={targetHosts}
+              items={writableHosts.map((h) => ({ value: h.id, label: h.name, meta: h.kind }))}
+            />
+          </div>
         {/if}
       </div>
     </section>
 
     <div class="list">
-      {#each filteredAvailable as c (c.id)}
-          <section class="card card-pad addon">
-            <div class="addon-row">
-              <div class="addon-main">
-                <div class="addon-title">
-                  <span class="name">{c.name}</span>
-                  <span class="badge">{c.category}</span>
-                  <span class="badge">{c.kind}</span>
-                </div>
-                <p class="meta">{c.description}</p>
-                <p class="meta mono">RAM: {c.resources.ram} · CPU: {c.resources.cpu}</p>
-                {#if c.readme}
-                  <p class="meta">
-                    <a href={`https://github.com/Literally-davca/moorage-addons/blob/main/${c.readme}`} target="_blank" rel="noopener noreferrer">
-                      Read documentation <Icon name="external" />
-                    </a>
-                  </p>
-                {/if}
-                {#if rowError[c.id]}<p class="error-text" role="alert">{rowError[c.id]}</p>{/if}
+      {#each filteredAvailable as c (`${c.id}@${c.sourceName || 'official'}`)}
+        {@const key = `${c.id}@${c.sourceName || ''}`}
+        {@const onHosts = installedByIdHosts.get(c.id) ?? []}
+        <section class="card card-pad addon">
+          <div class="addon-row">
+            <div class="addon-main">
+              <div class="addon-title">
+                <span class="name">{c.name}</span>
+                <span class="badge">{c.category}</span>
+                {#if c.sourceName && c.sourceName !== 'Official'}<span class="badge info">{c.sourceName}</span>{/if}
+                {#each onHosts as hid (hid)}
+                  <span class="badge up">Installed: {hostNameOf(hid)}</span>
+                {/each}
               </div>
-              <button
-                type="button"
-                class="btn"
-                disabled={busy[c.id] || (c.kind === 'sidecar' && !targetHost)}
-                aria-busy={busy[c.id]}
-                onclick={() => install(c)}
-              >
-                <Icon name="plus" /> {busy[c.id] ? 'Installing…' : 'Install'}
-              </button>
+              <p class="meta">{c.description}</p>
+              <p class="meta mono">RAM: {c.resources.ram} · CPU: {c.resources.cpu}</p>
+              {#if c.readme && (!c.sourceUrl || c.sourceName === 'Official')}
+                <p class="meta">
+                  <a href={`https://github.com/Literally-davca/moorage-addons/blob/main/${c.readme}`} target="_blank" rel="noopener noreferrer">
+                    Read documentation <Icon name="external" />
+                  </a>
+                </p>
+              {/if}
+              {#if rowError[key]}<p class="error-text" role="alert">{rowError[key]}</p>{/if}
             </div>
-          </section>
+            <button
+              type="button"
+              class="btn"
+              disabled={busy[key] || targetHosts.length === 0}
+              aria-busy={busy[key]}
+              onclick={() => install(c)}
+            >
+              <Icon name="plus" /> {busy[key] ? 'Installing…' : 'Install'}
+            </button>
+          </div>
+        </section>
       {/each}
     </div>
   {/if}
@@ -305,7 +703,7 @@
   danger
   confirmLabel="Uninstall"
   body={removing?.kind === 'sidecar'
-    ? `Takes down and deletes stack ${removing.stackName} on ${removing.hostId}.`
+    ? `Removes ${removing.id} from ${removing.stackName} on ${removing.hostName || removing.hostId}.`
     : 'Removes this add-on configuration.'}
   onConfirm={uninstall}
 />
@@ -315,12 +713,13 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
-    max-width: 920px;
   }
   .head,
-  .catalog-head {
+  .catalog-head,
+  .sources-card,
+  .custom-card {
     display: grid;
-    gap: 6px;
+    gap: 10px;
   }
   .head-row {
     display: flex;
@@ -333,12 +732,62 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
   }
   .filters-bar {
     display: grid;
     grid-template-columns: minmax(160px, 1.4fr) repeat(3, minmax(120px, 1fr)) auto;
     gap: 8px;
-    margin-top: 6px;
+  }
+  .src-list {
+    display: grid;
+    gap: 8px;
+  }
+  .src-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    border-radius: var(--r-md);
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--rope);
+    flex-wrap: wrap;
+  }
+  .src-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .src-form .field {
+    flex: 1 1 200px;
+  }
+  .custom-form {
+    display: grid;
+    gap: 12px;
+  }
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px;
+  }
+  .f-col {
+    display: grid;
+    gap: 4px;
+  }
+  .run-conv {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .run-conv .field {
+    flex: 1 1 280px;
+  }
+  .check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
   .empty-row {
     display: flex;
@@ -358,11 +807,6 @@
     display: flex;
     align-items: center;
     gap: 8px;
-  }
-  .host-pick .field {
-    width: auto;
-    min-width: 150px;
-    height: 32px;
   }
   .list {
     display: grid;

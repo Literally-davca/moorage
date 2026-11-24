@@ -28,70 +28,106 @@ var auditActions = map[string]string{
 	"POST /api/login":        auditByHandler,
 	"POST /api/logout":       auditByHandler,
 
-	"POST /api/hosts/{host}/stacks/{name}/validate": auditSkip,
-	"POST /api/convert":                             auditSkip,
-	"POST /api/image-lookup":                        auditSkip, // reads registries, changes nothing
-	"POST /api/checks/test":                         auditSkip, // a one-off probe, nothing is stored
-	"POST /api/status-pages/preview":                auditSkip,
-	"POST /api/templates/render":                    auditSkip, // fills variables, writes nothing; the create is audited
+	"POST /api/hosts/{host}/stacks/{name}/validate":           auditSkip,
+	"POST /api/hosts/{host}/stacks/{name}/lint/fix":           auditSkip, // returns edited text, saves nothing
+	"POST /api/hosts/{host}/stacks/{name}/env/extract":        auditSkip, // returns edited text, saves nothing
+	"PUT /api/hosts/{host}/stacks/{name}/strategy":            "stack.strategy",
+	"POST /api/hosts/{host}/containers/{id}/actions/{action}": "container.{action}",
+	"POST /api/hosts/{host}/external/{name}/actions/{action}": "external.{action}",
+	"POST /api/convert":              auditSkip,
+	"POST /api/image-lookup":         auditSkip, // reads registries, changes nothing
+	"POST /api/checks/test":          auditSkip, // a one-off probe, nothing is stored
+	"POST /api/status-pages/preview": auditSkip,
+	"POST /api/templates/render":     auditSkip, // fills variables, writes nothing; the create is audited
 
-	"POST /api/hosts/{host}/stacks":                          "stack.create",
-	"PUT /api/hosts/{host}/stacks/{name}":                    "stack.save",
-	"POST /api/hosts/{host}/stacks/{name}/self-apply":        "stack.self_apply",
-	"DELETE /api/hosts/{host}/stacks/{name}":                 "stack.delete",
-	"POST /api/hosts/{host}/stacks/{name}/actions/{action}":  "stack.{action}",
-	"POST /api/hosts/{host}/stacks/{name}/restore":           "stack.restore",
-	"POST /api/agents":                                       "host.add",
-	"PATCH /api/hosts/{host}":                                "host.rename",
-	"DELETE /api/hosts/{host}":                               "host.remove",
-	"POST /api/checks":                                       "check.create",
-	"PUT /api/checks/{id}":                                   "check.save",
-	"DELETE /api/checks/{id}":                                "check.delete",
-	"POST /api/channels":                                     "channel.create",
-	"POST /api/channels/test":                                "channel.test",
-	"PUT /api/channels/{id}":                                 "channel.save",
-	"DELETE /api/channels/{id}":                              "channel.delete",
-	"PUT /api/watchdog":                                      "watchdog.save",
-	"POST /api/watchdog/maintenance":                         "watchdog.maintenance",
-	"POST /api/watchdog/test":                                "watchdog.test",
-	"POST /api/status-pages":                                 "statuspage.create",
-	"PUT /api/status-pages/{id}":                             "statuspage.save",
-	"DELETE /api/status-pages/{id}":                          "statuspage.delete",
-	"PUT /api/updates/settings":                              "updates.settings",
-	"POST /api/updates/check":                                "updates.check",
-	"POST /api/system/updates/check":                         "update.check",
-	"POST /api/system/updates/apply":                         "update.apply",
-	"POST /api/system/updates/{node}/rollback":               "update.rollback",
-	"PUT /api/hosts/{host}/stacks/{name}/images/policy":      "image.policy",
-	"POST /api/hosts/{host}/stacks/{name}/images/check":      "image.check",
-	"POST /api/hosts/{host}/stacks/{name}/images/update":     "image.update",
-	"POST /api/hosts/{host}/stacks/{name}/images/change-tag": "image.change_tag",
-	"POST /api/hosts/{host}/stacks/{name}/images/rollback":   "image.rollback",
-	"POST /api/maintenance":                                  "maintenance.create",
-	"PUT /api/maintenance/{id}":                              "maintenance.save",
-	"DELETE /api/maintenance/{id}":                           "maintenance.delete",
-	"POST /api/hosts/{host}/deps/detect":                     "dep.detect",
-	"POST /api/hosts/{host}/stacks/{name}/deps":              "dep.add",
-	"DELETE /api/hosts/{host}/stacks/{name}/deps/{id}":       "dep.remove",
-	"PUT /api/hosts/{host}/stacks/{name}/deps/{id}/ignored":  "dep.ignore",
-	"POST /api/templates/sources":                            "template_source.create",
-	"PUT /api/templates/sources/{id}":                        "template_source.save",
-	"DELETE /api/templates/sources/{id}":                     "template_source.delete",
-	"POST /api/templates/sources/{id}/refresh":               "template_source.refresh",
-	"POST /api/addons/install":                               "addon.install",
-	"PUT /api/addons/{id}":                                   "addon.toggle",
-	"DELETE /api/addons/{id}":                                "addon.uninstall",
-	"PUT /api/settings/config":                               "settings.update",
-	"POST /api/settings/metrics-token":                       "settings.metrics_token",
-	"POST /api/settings/backup/export":                       "backup.export",
-	"POST /api/settings/backup/import/preview":               auditSkip, // only stages the upload
-	"POST /api/settings/backup/import/apply":                 "backup.import",
-	"POST /api/hosts/{host}/deleted-stacks/{name}/restore":   "stack.restore",
-	"POST /api/hosts/{host}/prune":                           "host.prune",
-	"POST /api/auto-rollbacks/{id}/ack":                      "stack.auto_rollback_ack",
-	"POST /api/push/subscriptions":                           "push.subscribe",
-	"POST /api/push/subscriptions/delete":                    "push.unsubscribe",
-	"POST /api/push/test":                                    auditSkip, // sends a test only
+	"POST /api/hosts/{host}/stacks":                              "stack.create",
+	"PUT /api/hosts/{host}/stacks/{name}":                        "stack.save",
+	"POST /api/hosts/{host}/stacks/{name}/self-apply":            "stack.self_apply",
+	"POST /api/hosts/{host}/stacks/{name}/move-to-addons":        "stack.move_to_addons",
+	"DELETE /api/hosts/{host}/stacks/{name}":                     "stack.delete",
+	"POST /api/hosts/{host}/stacks/{name}/actions/{action}":      "stack.{action}",
+	"POST /api/hosts/{host}/stacks/{name}/restore":               "stack.restore",
+	"POST /api/agents":                                           "host.add",
+	"PATCH /api/hosts/{host}":                                    "host.rename",
+	"DELETE /api/hosts/{host}":                                   "host.remove",
+	"POST /api/checks":                                           "check.create",
+	"PUT /api/checks/{id}":                                       "check.save",
+	"DELETE /api/checks/{id}":                                    "check.delete",
+	"POST /api/channels":                                         "channel.create",
+	"POST /api/channels/test":                                    "channel.test",
+	"PUT /api/channels/{id}":                                     "channel.save",
+	"DELETE /api/channels/{id}":                                  "channel.delete",
+	"PUT /api/watchdog":                                          "watchdog.save",
+	"POST /api/watchdog/maintenance":                             "watchdog.maintenance",
+	"POST /api/watchdog/test":                                    "watchdog.test",
+	"POST /api/status-pages":                                     "statuspage.create",
+	"PUT /api/status-pages/{id}":                                 "statuspage.save",
+	"DELETE /api/status-pages/{id}":                              "statuspage.delete",
+	"PUT /api/updates/settings":                                  "updates.settings",
+	"POST /api/updates/check":                                    "updates.check",
+	"POST /api/system/updates/check":                             "update.check",
+	"POST /api/system/updates/apply":                             "update.apply",
+	"POST /api/system/updates/{node}/rollback":                   "update.rollback",
+	"PUT /api/hosts/{host}/stacks/{name}/images/policy":          "image.policy",
+	"POST /api/hosts/{host}/stacks/{name}/images/check":          "image.check",
+	"POST /api/hosts/{host}/stacks/{name}/images/update":         "image.update",
+	"POST /api/hosts/{host}/stacks/{name}/images/change-tag":     "image.change_tag",
+	"POST /api/hosts/{host}/stacks/{name}/images/rollback":       "image.rollback",
+	"POST /api/maintenance":                                      "maintenance.create",
+	"PUT /api/maintenance/{id}":                                  "maintenance.save",
+	"DELETE /api/maintenance/{id}":                               "maintenance.delete",
+	"POST /api/hosts/{host}/deps/detect":                         "dep.detect",
+	"POST /api/hosts/{host}/stacks/{name}/deps":                  "dep.add",
+	"DELETE /api/hosts/{host}/stacks/{name}/deps/{id}":           "dep.remove",
+	"PUT /api/hosts/{host}/stacks/{name}/deps/{id}/ignored":      "dep.ignore",
+	"PUT /api/hosts/{host}/stacks/{name}/deps/{id}/auto-restart": "dep.auto_restart",
+	"POST /api/templates/sources":                                "template_source.create",
+	"PUT /api/templates/sources/{id}":                            "template_source.save",
+	"DELETE /api/templates/sources/{id}":                         "template_source.delete",
+	"POST /api/templates/sources/{id}/refresh":                   "template_source.refresh",
+	"POST /api/addons/install":                                   "addon.install",
+	"POST /api/addons/custom":                                    "addon.custom_create",
+	"PUT /api/addons/custom/{id}":                                "addon.custom_save",
+	"PUT /api/addons/{id}":                                       "addon.toggle",
+	"DELETE /api/addons/{id}":                                    "addon.uninstall",
+	"POST /api/addons/sources":                                   "addon_source.create",
+	"PUT /api/addons/sources/{id}":                               "addon_source.save",
+	"DELETE /api/addons/sources/{id}":                            "addon_source.delete",
+	"POST /api/addons/sources/{id}/refresh":                      "addon_source.refresh",
+	"POST /api/addons/prometheus-grafana/push":                   "addon.grafana_push",
+	"POST /api/addons/scheduler/tasks":                           "scheduler.create",
+	"PUT /api/addons/scheduler/tasks/{id}":                       "scheduler.save",
+	"DELETE /api/addons/scheduler/tasks/{id}":                    "scheduler.delete",
+	"POST /api/addons/scheduler/tasks/{id}/run":                  "scheduler.run",
+	"POST /api/addons/webhooks":                                  "webhook.create",
+	"PUT /api/addons/webhooks/{id}":                              "webhook.save",
+	"DELETE /api/addons/webhooks/{id}":                           "webhook.delete",
+	"POST /api/addons/mcp/tokens":                                "mcp.token_create",
+	"DELETE /api/addons/mcp/tokens/{id}":                         "mcp.token_delete",
+	"POST /api/addons/mcp/drafts/{id}/approve":                   "mcp.draft_approve",
+	"POST /api/addons/mcp/drafts/{id}/reject":                    "mcp.draft_reject",
+	"POST /api/hosts/{host}/coolify/{uuid}/actions/{action}":     "coolify.{action}",
+	"PUT /api/hosts/{host}/coolify/{uuid}/envs":                  "coolify.envs_save",
+	"PUT /api/settings/config":                                   "settings.update",
+	"POST /api/settings/metrics-token":                           "settings.metrics_token",
+	"POST /api/settings/shared-vars":                             "settings.shared_var_save",
+	"DELETE /api/settings/shared-vars/{id}":                      "settings.shared_var_delete",
+	"PUT /api/settings/connections":                              "settings.connections",
+	"POST /api/settings/connections/oidc/test":                   auditSkip,
+	"POST /api/settings/connections/coolify/test":                auditSkip,
+	"POST /api/settings/connections/registry/test":               auditSkip,
+	"POST /api/settings/connections/grafana/test":                auditSkip,
+	"PUT /api/settings/backup/remote":                            "backup.remote_config",
+	"POST /api/settings/backup/remote/run":                       "backup.remote_run",
+	"POST /api/settings/backup/export":                           "backup.export",
+	"POST /api/settings/backup/import/preview":                   auditSkip, // only stages the upload
+	"POST /api/settings/backup/import/apply":                     "backup.import",
+	"POST /api/hosts/{host}/deleted-stacks/{name}/restore":       "stack.restore",
+	"POST /api/hosts/{host}/prune":                               "host.prune",
+	"POST /api/auto-rollbacks/{id}/ack":                          "stack.auto_rollback_ack",
+	"POST /api/push/subscriptions":                               "push.subscribe",
+	"POST /api/push/subscriptions/delete":                        "push.unsubscribe",
+	"POST /api/push/test":                                        auditSkip, // sends a test only
 
 	// M10: invite links are public (the handler records auth.invite_accept); the OIDC
 	// routes are GETs and record auth.oidc_login / auth.oidc_denied themselves.
@@ -114,11 +150,13 @@ var auditActions = map[string]string{
 
 // Actions written outside the middleware.
 const (
-	auditLogin       = "auth.login"
-	auditLoginFailed = "auth.login_failed"
-	auditLogout      = "auth.logout"
-	auditSetup       = "auth.setup"
-	auditTermOpen    = "terminal.open"
+	auditLogin        = "auth.login"
+	auditLoginFailed  = "auth.login_failed"
+	auditLogout       = "auth.logout"
+	auditSetup        = "auth.setup"
+	auditTermOpen     = "terminal.open"
+	auditHostTermOpen = "terminal.host_open"
+	auditLogsDownload = "logs.download"
 )
 
 func isMutating(method string) bool {

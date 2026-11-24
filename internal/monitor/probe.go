@@ -60,6 +60,10 @@ type Settings struct {
 	CaseSensitive  bool   `json:"caseSensitive,omitempty"` // log: match case
 	Threshold      int    `json:"threshold,omitempty"`     // log: matches in Window to alert (default 1)
 	Window         int    `json:"window,omitempty"`        // log: sliding window in seconds (default 300)
+	// URLs are the addresses of a multi-URL HTTP check (2+; one URL lives in Target only).
+	URLs []string `json:"urls,omitempty"`
+	// Stacks are the stacks of a multi-stack check (2+; one stack lives in Target only).
+	Stacks []StackTarget `json:"stacks,omitempty"`
 }
 
 // LogFilter builds the host filter for a log check.
@@ -104,6 +108,13 @@ type Outcome struct {
 	Unknown bool `json:"unknown,omitempty"`
 	// Locations are the per-location answers of a multi-location run (locations.go).
 	Locations []LocationResult `json:"locations,omitempty"`
+	// Targets are the per-target answers of a multi-target run (multitarget.go).
+	Targets []TargetResult `json:"targets,omitempty"`
+	// Degraded: some, but not all, targets of a multi-target check fail.
+	Degraded bool `json:"degraded,omitempty"`
+	// Quiet is set (maintenance or silenced) when every target of a multi-target check
+	// sat the run out.
+	Quiet string `json:"quiet,omitempty"`
 	// cantRun: this system can't run the probe at all (no ICMP permission). A single
 	// location reports it as a failure as before; in a multi-location run it is no vote.
 	cantRun bool

@@ -17,20 +17,22 @@
     deploy: 'Deploy', update: 'Update images', restart: 'Restart', rollback: 'Roll back', stop: 'Stop', down: 'Down',
   };
   const statusLabel: Record<string, string> = {
-    up: 'Up', down: 'Down', silenced: 'During deploy', paused: 'Stopped on purpose', maintenance: 'Failed during planned maintenance', unknown: 'No location could check',
+    up: 'Up', down: 'Down', silenced: 'During deploy', paused: 'Stopped on purpose', maintenance: 'Failed during planned maintenance', unknown: 'No location could check', degraded: 'Partially down',
   };
   const timeFmt = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
   type Item = { kind: 'tick'; t: Tick; h: number } | { kind: 'anchor'; a: Anchor };
 
   const items = $derived.by((): Item[] => {
-    const lat = ticks.filter((t) => t.status === 'up').map((t) => t.latencyMs);
+    // Partially down ticks are drawn at full latency height like up ones (a deploy window
+    // or maintenance gets the low height).
+    const lat = ticks.filter((t) => t.status === 'up' || t.status === 'degraded').map((t) => t.latencyMs);
     const lo = Math.min(...lat);
     const hi = Math.max(...lat);
     const [minH, maxH] = mini ? [6, 12] : [14, 22];
     const height = (t: Tick) => {
       if (t.status === 'down') return maxH;
-      if (t.status !== 'up') return mini ? 4 : 10;
+      if (t.status !== 'up' && t.status !== 'degraded') return mini ? 4 : 10;
       if (!isFinite(lo) || hi === lo) return Math.round((minH + maxH) / 2);
       return Math.round(minH + ((t.latencyMs - lo) / (hi - lo)) * (maxH - minH));
     };
@@ -50,10 +52,12 @@
   const summary = $derived.by(() => {
     const down = ticks.filter((t) => t.status === 'down').length;
     const up = ticks.filter((t) => t.status === 'up').length;
-    return `Last ${ticks.length} checks: ${up} up, ${down} down${anchors.length ? `, ${anchors.length} deploys` : ''}`;
+    const part = ticks.filter((t) => t.status === 'degraded').length;
+    return `Last ${ticks.length} checks: ${up} up, ${part ? `${part} partially down, ` : ''}${down} down${anchors.length ? `, ${anchors.length} deploys` : ''}`;
   });
   const hasQuiet = $derived(ticks.some((t) => t.status === 'silenced' || t.status === 'paused'));
   const hasMaint = $derived(ticks.some((t) => t.status === 'maintenance'));
+  const hasDegraded = $derived(ticks.some((t) => t.status === 'degraded'));
   const hasUnknown = $derived(ticks.some((t) => t.status === 'unknown'));
 </script>
 
@@ -75,6 +79,7 @@
   {#if legend && !mini}
     <div class="legend">
       <span><i class="k up"></i>Up</span>
+      {#if hasDegraded}<span><i class="k degraded"></i>Partially down</span>{/if}
       <span><i class="k down"></i>Down</span>
       {#if hasQuiet}<span><i class="k silenced"></i>Deploy window</span>{/if}
       {#if hasMaint}<span><i class="k maintenance"></i>Maintenance</span>{/if}
@@ -114,6 +119,9 @@
     background: var(--adrift);
   }
   .tick.silenced {
+    background: var(--signal);
+  }
+  .tick.degraded {
     background: var(--signal);
   }
   .tick.paused {
@@ -166,7 +174,8 @@
   .k.down {
     background: var(--adrift);
   }
-  .k.silenced {
+  .k.silenced,
+  .k.degraded {
     background: var(--signal);
   }
   .k.maintenance {

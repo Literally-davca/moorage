@@ -1,7 +1,10 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { api, type SharedVar } from './api';
+  import { app } from './state.svelte';
   import CodeEditor from './CodeEditor.svelte';
   import Icon from './Icon.svelte';
-  import { composeVars, looksSecret, parseEnv, serializeEnv, validKey, type EnvLine, type EnvVar } from './dotenv';
+  import { composeVars, looksSecret, parseEnv, removeVars, serializeEnv, unusedVars, validKey, type EnvLine, type EnvVar } from './dotenv';
 
   // .env editor with two views: Variables (a key/value table, like Coolify) and Raw
   // (the file as text). The text is the single source of truth; the table edits it
@@ -64,8 +67,64 @@
   function remove(i: number) {
     write(lines.filter((_, j) => j !== i));
   }
+  // Rows added with "Add variable" live here until they get a name: an empty assignment
+  // ("=") in the file would be invalid and invisible.
+  let drafts = $state<{ id: number; value: string }[]>([]);
+  let draftSeq = 0;
   function add(key = '', val = '') {
+    if (!key) {
+      drafts = [...drafts, { id: ++draftSeq, value: val }];
+      return;
+    }
     write([...lines, { kind: 'var', key, value: val }]);
+  }
+  function commitDraft(id: number, key: string) {
+    const d = drafts.find((x) => x.id === id);
+    if (!d || !key) return;
+    drafts = drafts.filter((x) => x.id !== id);
+    write([...lines, { kind: 'var', key, value: d.value }]);
+  }
+  function focusMe(el: HTMLInputElement) {
+    queueMicrotask(() => el.focus());
+  }
+
+  // Keys of .env compose.yaml never references (none when it loads env_file: .env).
+  const unusedKeys = $derived(unusedVars(value, compose));
+  function dropUnused(keys: string[]) {
+    value = removeVars(value, keys);
+  }
+
+  let sharedList = $state<SharedVar[]>([]);
+  $effect(() => {
+    if (readonly) return;
+    untrack(() => {
+      api.sharedVars()
+        .then((r) => (sharedList = r.vars ?? []))
+        .catch(() => (sharedList = []));
+    });
+  });
+
+  const applicableShared = $derived.by(() => {
+    const byKey = new Map<string, SharedVar>();
+    for (const v of sharedList) {
+      if (!v.isSet && !v.value) continue;
+      if (v.hostId === '') byKey.set(v.key, v);
+    }
+    for (const v of sharedList) {
+      if (!v.isSet && !v.value) continue;
+      if (v.hostId === app.host) byKey.set(v.key, v);
+    }
+    return [...byKey.values()];
+  });
+
+  function insertShared(sv: SharedVar) {
+    const insertedVal = sv.secret ? `__MOORAGE_SHARED_SECRET_${sv.key}__` : (sv.value ?? '');
+    const idx = lines.findIndex((l) => l.kind === 'var' && l.key === sv.key);
+    if (idx >= 0) {
+      update(idx, { value: insertedVal });
+    } else {
+      add(sv.key, insertedVal);
+    }
   }
 
   // Pasting several KEY=VALUE lines into a key field adds them as rows (Coolify does this).
@@ -120,6 +179,36 @@
     </div>
   {/if}
 
+  {#if unusedKeys.length && !readonly}
+    <div class="missing soft" role="status">
+      <Icon name="info" />
+      <span>{unusedKeys.length} unused {unusedKeys.length === 1 ? 'variable' : 'variables'} in .env:</span>
+      {#each unusedKeys as k (k)}
+        <button type="button" class="chip mono" onclick={() => dropUnused([k])} title="Remove {k} from .env"><Icon name="x" /> {k}</button>
+      {/each}
+      {#if unusedKeys.length > 1}
+        <button type="button" class="chip all" onclick={() => dropUnused(unusedKeys)}>Remove all unused</button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if applicableShared.length > 0 && !readonly}
+    <div class="missing soft" role="region" aria-label="Shared variables">
+      <Icon name="key" />
+      <span>Insert shared variable:</span>
+      {#each applicableShared as sv (sv.key)}
+        <button
+          type="button"
+          class="chip mono"
+          onclick={() => insertShared(sv)}
+          title={sv.secret ? `Insert shared secret ${sv.key}` : `${sv.key}=${sv.value ?? ''}`}
+        >
+          <Icon name="plus" /> {sv.key}{#if sv.secret} · secret{/if}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   {#if mode === 'raw'}
     <CodeEditor bind:value language="plain" {label} {readonly} minHeight={96} />
   {:else}
@@ -167,7 +256,22 @@
           {/if}
         </div>
       {:else}
-        <p class="meta empty">No variables.{readonly ? '' : ' Add one, or paste KEY=value lines into a name field.'}</p>
+        {#if !drafts.length}<p class="meta empty">No variables.{readonly ? '' : ' Add one, or paste KEY=value lines into a name field.'}</p>{/if}
+      {/each}
+      {#each drafts as d (d.id)}
+        <div class="row" role="row">
+          <input class="field mono key" placeholder="NAME" aria-label="Variable name" spellcheck="false" autocomplete="off" use:focusMe
+            onchange={(e) => commitDraft(d.id, e.currentTarget.value.trim())}
+            onkeydown={(e) => e.key === 'Enter' && (e.preventDefault(), commitDraft(d.id, e.currentTarget.value.trim()))} />
+          <span class="eq" aria-hidden="true">=</span>
+          <div class="val">
+            <input class="field mono" value={d.value} placeholder="value" aria-label="Value of the new variable" spellcheck="false" autocomplete="off"
+              oninput={(e) => (d.value = e.currentTarget.value)} />
+          </div>
+          <button type="button" class="btn btn-ghost btn-icon" aria-label="Remove new variable" title="Remove"
+            onclick={() => (drafts = drafts.filter((x) => x.id !== d.id))}><Icon name="trash" /></button>
+          <div class="note-row"><span class="note">Not saved until it has a name</span></div>
+        </div>
       {/each}
     </div>
     {#if !readonly}

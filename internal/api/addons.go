@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,8 +33,25 @@ const (
 	addonOfficialTemplates = "official-templates"
 	addonPrometheusGrafana = "prometheus-grafana"
 	addonPrometheusLegacy  = "prometheus-metrics"
+	addonCoolify           = "coolify-integration"
+	addonStackScheduler    = "stack-scheduler"
+	addonSocketProxyCheck  = "socket-proxy-check"
+	addonRegistryWebhooks  = "registry-webhooks"
+	addonMCPServer         = "mcp-server"
 	addonsStackName        = "add-ons"
 )
+
+var builtinAddonIDs = map[string]bool{
+	addonProxyLabels:       true,
+	addonOfficialTemplates: true,
+	addonPrometheusGrafana: true,
+	addonPrometheusLegacy:  true,
+	addonCoolify:           true,
+	addonStackScheduler:    true,
+	addonSocketProxyCheck:  true,
+	addonRegistryWebhooks:  true,
+	addonMCPServer:         true,
+}
 
 // AddonInfo describes one built-in or installed add-on in Settings -> Add-ons.
 type AddonInfo struct {
@@ -46,17 +64,20 @@ type AddonInfo struct {
 	RAM         string `json:"ram,omitempty"`
 	CPU         string `json:"cpu,omitempty"`
 	HostID      string `json:"hostId,omitempty"`
+	HostName    string `json:"hostName,omitempty"`
 	StackName   string `json:"stackName,omitempty"`
 	Enabled     bool   `json:"enabled"`
 	Installed   bool   `json:"installed"`
 	Toggleable  bool   `json:"toggleable"`
 	Removable   bool   `json:"removable"`
+	Custom      bool   `json:"custom,omitempty"`
+	Source      string `json:"source,omitempty"`
 	Detail      string `json:"detail,omitempty"`
 	LinkHref    string `json:"linkHref,omitempty"`
 	LinkLabel   string `json:"linkLabel,omitempty"`
 }
 
-// AddonCatalogEntry is one entry in moorage-addons/index.json.
+// AddonCatalogEntry is one entry in moorage-addons/index.json or a custom addon_source.
 type AddonCatalogEntry struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -68,8 +89,12 @@ type AddonCatalogEntry struct {
 		RAM string `json:"ram"`
 		CPU string `json:"cpu"`
 	} `json:"resources"`
-	Readme  string `json:"readme,omitempty"`
-	Compose string `json:"compose,omitempty"`
+	Readme       string `json:"readme,omitempty"`
+	Compose      string `json:"compose,omitempty"`
+	SourceID     int64  `json:"sourceId,omitempty"`
+	SourceName   string `json:"sourceName,omitempty"`
+	SourceURL    string `json:"sourceUrl,omitempty"`
+	AllowPrivate bool   `json:"-"`
 }
 
 type addonIndex struct {
@@ -91,6 +116,11 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 		s.engErr(w, err)
 		return
 	}
+	coolifyOn, _ := s.store.AddonEnabled(ctx, addonCoolify)
+	schedOn, _ := s.store.AddonEnabled(ctx, addonStackScheduler)
+	sockOn, _ := s.store.AddonEnabled(ctx, addonSocketProxyCheck)
+	webhookOn, _ := s.store.AddonEnabled(ctx, addonRegistryWebhooks)
+	mcpOn, _ := s.store.AddonEnabled(ctx, addonMCPServer)
 
 	officialOn := false
 	if s.tpl != nil {
@@ -110,16 +140,16 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 		metricsURL = pubURL + "/metrics"
 	}
 	metricsTok := s.effectiveMetricsToken(ctx)
-	metricsDetail := "Enable to generate a bearer token for /metrics (or set MOORAGE_METRICS_TOKEN in environment). Grafana dashboard: deploy/grafana/moorage-dashboard.json."
+	metricsDetail := "Enable to generate a bearer token for /metrics (or set MOORAGE_METRICS_TOKEN in environment) and unlock the Grafana, VictoriaMetrics and Homelab generators."
 	if metricsTok != "" {
-		metricsDetail = "Serving Prometheus metrics at " + metricsURL + " (bearer auth). Configure token in Settings -> General."
+		metricsDetail = "Serving Prometheus metrics at " + metricsURL + " (bearer auth)."
 	}
 
 	list := []AddonInfo{
 		{
 			ID:          addonProxyLabels,
 			Name:        "Proxy & dashboard label detection",
-			Description: "Automatically detect service web links from Traefik (traefik.http.routers.*.rule), Caddy (caddy*) and Homepage (homepage.href) labels. Native moorage.url labels always work in the core.",
+			Description: "Automatically detect service web links from Traefik (traefik.http.routers.*.rule), Caddy (caddy*) and Homepage (homepage.href) labels, deduplicating HTTP/HTTPS routers.",
 			Category:    "Integrations",
 			Kind:        "builtin",
 			RAM:         "~0 MB",
@@ -145,8 +175,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			ID:          addonPrometheusGrafana,
-			Name:        "Prometheus & Grafana metrics",
-			Description: "Exposes host, stack, container and check metrics at /metrics for Prometheus/VictoriaMetrics and includes a Grafana dashboard.",
+			Name:        "Prometheus, Grafana & Homelab generators",
+			Description: "Exposes /metrics for Prometheus/VictoriaMetrics and generates tailored Grafana dashboards (with 1-click Push to Grafana), scrape/alert rules and Homepage/Glance/Homarr configs.",
 			Category:    "Observability",
 			Kind:        "builtin",
 			RAM:         "+1–3 MB",
@@ -155,11 +185,72 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Installed:   true,
 			Toggleable:  s.cfg.MetricsToken == "",
 			Detail:      metricsDetail,
-			LinkHref:    "#/settings/general",
-			LinkLabel:   "General settings",
+		},
+		{
+			ID:          addonCoolify,
+			Name:        "Coolify integration",
+			Description: "Reads Coolify labels and /api/v1 resources: human display names over stable UUIDs, collapsible project groups, Start/Stop/Restart/Redeploy actions, deployment logs and .env sync.",
+			Category:    "Integrations",
+			Kind:        "builtin",
+			RAM:         "+2–5 MB",
+			CPU:         "< 1%",
+			Enabled:     coolifyOn,
+			Installed:   true,
+			Toggleable:  true,
+			LinkHref:    "#/settings/connections",
+			LinkLabel:   "Configure Coolify API",
+		},
+		{
+			ID:          addonStackScheduler,
+			Name:        "Stack scheduler (cron tasks)",
+			Description: "Run scheduled restart, start, stop, pull + up, or container exec jobs on 5-field cron schedules with Logbook, audit trail and failure alerts.",
+			Category:    "Automation",
+			Kind:        "builtin",
+			RAM:         "+1 MB",
+			CPU:         "~0% idle",
+			Enabled:     schedOn,
+			Installed:   true,
+			Toggleable:  true,
+		},
+		{
+			ID:          addonSocketProxyCheck,
+			Name:        "Docker socket security guard",
+			Description: "Audits stacks and containers for raw /var/run/docker.sock mounts and unencrypted TCP :2375 sockets, with a guided tecnativa/docker-socket-proxy generator.",
+			Category:    "Security",
+			Kind:        "builtin",
+			RAM:         "~0 MB",
+			CPU:         "~0%",
+			Enabled:     sockOn,
+			Installed:   true,
+			Toggleable:  true,
+		},
+		{
+			ID:          addonRegistryWebhooks,
+			Name:        "Instant registry push webhooks",
+			Description: "Unique webhook endpoints for GitHub Container Registry, Docker Hub and Gitea/Harbor that trigger immediate image checks and optional auto-updates after CI push.",
+			Category:    "Automation",
+			Kind:        "builtin",
+			RAM:         "~0 MB",
+			CPU:         "~0% idle",
+			Enabled:     webhookOn,
+			Installed:   true,
+			Toggleable:  true,
+		},
+		{
+			ID:          addonMCPServer,
+			Name:        "Scoped MCP server for AI assistants",
+			Description: "Exposes Streamable HTTP /mcp with per-host/stack ACL tokens, write-only .env secret handling, and optional human-approval deploy drafts.",
+			Category:    "AI & Automation",
+			Kind:        "builtin",
+			RAM:         "+1–2 MB",
+			CPU:         "~0% idle",
+			Enabled:     mcpOn,
+			Installed:   true,
+			Toggleable:  true,
 		},
 	}
 
+	hostNames := s.hostNames(ctx)
 	installed, err := s.store.InstalledAddons(ctx)
 	if err != nil {
 		s.engErr(w, err)
@@ -185,11 +276,14 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			RAM:         ia.RAM,
 			CPU:         ia.CPU,
 			HostID:      ia.HostID,
+			HostName:    hostNames[ia.HostID],
 			StackName:   ia.StackName,
 			Enabled:     ia.Enabled,
 			Installed:   true,
 			Toggleable:  true,
 			Removable:   true,
+			Custom:      ia.Custom,
+			Source:      ia.Source,
 			LinkHref:    href,
 			LinkLabel:   label,
 		})
@@ -197,11 +291,14 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]any{"addons": list}
 	if r.URL.Query().Get("catalog") == "1" {
-		cat, cerr := fetchAddonCatalog(ctx, r.URL.Query().Get("refresh") == "1")
-		if cerr != nil {
+		cat, cerr := s.fetchAllAddonCatalogs(ctx, r.URL.Query().Get("refresh") == "1")
+		if cerr != nil && len(cat) == 0 {
 			resp["catalogError"] = cerr.Error()
 		} else {
 			resp["catalog"] = cat
+			if cerr != nil {
+				resp["catalogError"] = cerr.Error()
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -209,8 +306,10 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID     string `json:"id"`
-		HostID string `json:"hostId"`
+		ID      string   `json:"id"`
+		HostID  string   `json:"hostId"`
+		HostIDs []string `json:"hostIds"`
+		Source  string   `json:"source"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -222,8 +321,7 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	// Built-ins can simply be enabled via install as well.
-	if id == addonProxyLabels || id == addonOfficialTemplates {
+	if builtinAddonIDs[id] && id != addonPrometheusGrafana && id != addonPrometheusLegacy {
 		if err := s.toggleBuiltinAddon(ctx, id, true); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -233,19 +331,14 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.store.InstalledAddonByID(ctx, id); err == nil {
-		writeErr(w, http.StatusConflict, "This add-on is already installed.")
-		return
-	}
-
-	cat, err := fetchAddonCatalog(ctx, false)
-	if err != nil {
+	cat, err := s.fetchAllAddonCatalogs(ctx, false)
+	if err != nil && len(cat) == 0 {
 		writeErr(w, http.StatusBadGateway, "Couldn't load the add-ons catalog: "+err.Error())
 		return
 	}
 	var entry *AddonCatalogEntry
 	for i := range cat {
-		if cat[i].ID == id {
+		if cat[i].ID == id && (req.Source == "" || cat[i].SourceURL == req.Source || cat[i].SourceName == req.Source) {
 			entry = &cat[i]
 			break
 		}
@@ -267,46 +360,104 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hostID := strings.TrimSpace(req.HostID)
-	if hostID == "" {
+	var targetHosts []string
+	seenH := map[string]bool{}
+	for _, hid := range append(req.HostIDs, req.HostID) {
+		hid = strings.TrimSpace(hid)
+		if hid != "" && !seenH[hid] {
+			seenH[hid] = true
+			targetHosts = append(targetHosts, hid)
+		}
+	}
+	if len(targetHosts) == 0 {
 		hosts, _ := s.reg.List(ctx)
 		for _, h := range hosts {
 			if h.Connected && !h.ReadOnly {
-				hostID = h.ID
+				targetHosts = append(targetHosts, h.ID)
 				break
 			}
 		}
 	}
-	if hostID == "" {
-		writeErr(w, http.StatusBadRequest, "Select a connected writable host to install this sidecar add-on.")
-		return
-	}
-	h, meta, err := s.reg.Get(ctx, hostID)
-	if err != nil {
-		status, msg := s.errStatus(err)
-		writeErr(w, status, msg)
-		return
-	}
-	if meta.ReadOnly {
-		writeErr(w, http.StatusForbidden, host.ErrHostReadOnly.Error())
+	if len(targetHosts) == 0 {
+		writeErr(w, http.StatusBadRequest, "Select at least one connected writable host.")
 		return
 	}
 
-	composeURL, err := resolveCatalogURL(AddonsIndexURL, entry.Compose)
+	indexBaseURL := entry.SourceURL
+	if indexBaseURL == "" {
+		indexBaseURL = AddonsIndexURL
+	}
+	composeURL, err := resolveCatalogURL(indexBaseURL, entry.Compose)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	composeRaw, err := fetchCatalogBytes(ctx, composeURL)
+	composeRaw, err := fetchCatalogBytesOpts(ctx, composeURL, entry.AllowPrivate)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "Couldn't fetch compose.yaml: "+err.Error())
 		return
 	}
 
-	stackName := addonsStackName
 	user := currentUser(r).Username
-	note := "Installed add-on " + entry.Name
+	for _, hostID := range targetHosts {
+		if _, err := s.store.InstalledAddonByHost(ctx, id, hostID); err == nil {
+			writeErr(w, http.StatusConflict, fmt.Sprintf("Add-on %q is already installed on host %s.", id, hostID))
+			return
+		}
+		h, meta, err := s.reg.Get(ctx, hostID)
+		if err != nil {
+			status, msg := s.errStatus(err)
+			writeErr(w, status, msg)
+			return
+		}
+		if meta.ReadOnly {
+			writeErr(w, http.StatusForbidden, host.ErrHostReadOnly.Error())
+			return
+		}
+		if err := s.deploySidecarToHost(ctx, h, hostID, entry.ID, "Installed add-on "+entry.Name, composeRaw, "", false, user); err != nil {
+			s.engErr(w, err)
+			return
+		}
+		srcLabel := entry.SourceName
+		if srcLabel == "" {
+			srcLabel = "official"
+		}
+		if err := s.store.UpsertInstalledAddon(ctx, store.InstalledAddon{
+			ID:              entry.ID,
+			HostID:          hostID,
+			Name:            entry.Name,
+			Kind:            entry.Kind,
+			Category:        entry.Category,
+			Description:     entry.Description,
+			Version:         entry.Version,
+			StackName:       addonsStackName,
+			RAM:             entry.Resources.RAM,
+			CPU:             entry.Resources.CPU,
+			Enabled:         true,
+			InstalledAt:     time.Now(),
+			ComposeFragment: string(composeRaw),
+			Source:          srcLabel,
+		}); err != nil {
+			s.engErr(w, err)
+			return
+		}
+	}
 
+	setAuditTarget(r, id)
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) deploySidecarToHost(
+	ctx context.Context,
+	h host.Host,
+	_ string,
+	addonID, note string,
+	composeFragment []byte,
+	nextEnv string,
+	overrideEnv bool,
+	user string,
+) error {
+	stackName := addonsStackName
 	var prevCompose, prevEnv string
 	existed := false
 	if cur, err := h.GetStack(ctx, stackName); err == nil {
@@ -314,71 +465,79 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 		prevCompose = cur.Compose
 		prevEnv = cur.Env
 	}
-
-	merged, err := mergeAddonCompose(prevCompose, entry.ID, composeRaw)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "Invalid add-on compose.yaml: "+err.Error())
-		return
+	targetEnv := prevEnv
+	if overrideEnv {
+		targetEnv = nextEnv
 	}
-
+	// Replace any existing definition of this addonID cleanly when updating a custom sidecar.
+	baseCompose := prevCompose
+	if baseCompose != "" {
+		if stripped, _, err := removeAddonFromCompose(baseCompose, addonID); err == nil {
+			baseCompose = stripped
+		}
+	}
+	merged, err := mergeAddonCompose(baseCompose, addonID, composeFragment)
+	if err != nil {
+		return engine.ValidationError{Msg: err.Error()}
+	}
 	if !existed {
 		if nc, ok := h.(host.NotedCreator); ok {
-			err = nc.CreateNoted(ctx, stackName, merged, prevEnv, user, note)
+			err = nc.CreateNoted(ctx, stackName, merged, targetEnv, user, note)
 		} else {
-			err = h.Save(ctx, stackName, merged, prevEnv, user, true)
+			err = h.Save(ctx, stackName, merged, targetEnv, user, true)
 		}
 	} else {
-		err = h.Save(ctx, stackName, merged, prevEnv, user, false)
+		err = h.Save(ctx, stackName, merged, targetEnv, user, false)
 	}
 	if err != nil {
-		s.engErr(w, err)
-		return
+		return err
 	}
-	// Wait for `up`: a failure must restore the previous compose.yaml so the other
-	// sidecars in the shared stack keep their definitions.
 	if err := runAndWait(ctx, h, stackName, "up", user); err != nil {
 		if existed {
 			_ = h.Save(ctx, stackName, prevCompose, prevEnv, user, false)
+			_ = runAndWait(ctx, h, stackName, "up", user)
 		} else {
 			_ = h.Delete(ctx, stackName, user)
 		}
-		s.engErr(w, err)
-		return
+		return err
 	}
+	return nil
+}
 
-	if err := s.store.UpsertInstalledAddon(ctx, store.InstalledAddon{
-		ID:          entry.ID,
-		Name:        entry.Name,
-		Kind:        entry.Kind,
-		Category:    entry.Category,
-		Description: entry.Description,
-		Version:     entry.Version,
-		HostID:      hostID,
-		StackName:   stackName,
-		RAM:         entry.Resources.RAM,
-		CPU:         entry.Resources.CPU,
-		Enabled:     true,
-		InstalledAt: time.Now(),
-	}); err != nil {
-		s.engErr(w, err)
-		return
+func (s *Server) resolveInstalledSidecar(ctx context.Context, id, hostQuery string) (store.InstalledAddon, error) {
+	if hostQuery != "" {
+		return s.store.InstalledAddonByHost(ctx, id, hostQuery)
 	}
-	setAuditTarget(r, id)
-	w.WriteHeader(http.StatusCreated)
+	all, err := s.store.InstalledAddonsByID(ctx, id)
+	if err != nil {
+		return store.InstalledAddon{}, err
+	}
+	if len(all) == 0 {
+		return store.InstalledAddon{}, store.ErrNotFound
+	}
+	if len(all) > 1 {
+		return store.InstalledAddon{}, errors.New("specify ?host=<hostId> because this add-on is installed on multiple hosts")
+	}
+	return all[0], nil
 }
 
 func (s *Server) setAddon(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	hostQuery := strings.TrimSpace(r.URL.Query().Get("host"))
 	var req struct {
-		Enabled bool `json:"enabled"`
+		Enabled bool   `json:"enabled"`
+		HostID  string `json:"hostId"`
 	}
 	if !readJSON(w, r, &req) {
 		return
 	}
+	if hostQuery == "" {
+		hostQuery = strings.TrimSpace(req.HostID)
+	}
 	ctx := r.Context()
 
 	switch id {
-	case addonProxyLabels, addonOfficialTemplates:
+	case addonProxyLabels, addonOfficialTemplates, addonCoolify, addonStackScheduler, addonSocketProxyCheck, addonRegistryWebhooks, addonMCPServer:
 		if err := s.toggleBuiltinAddon(ctx, id, req.Enabled); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -406,13 +565,13 @@ func (s *Server) setAddon(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 
 	default:
-		ia, err := s.store.InstalledAddonByID(ctx, id)
+		ia, err := s.resolveInstalledSidecar(ctx, id, hostQuery)
 		if errors.Is(err, store.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, "Add-on not found.")
 			return
 		}
 		if err != nil {
-			s.engErr(w, err)
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if ia.Kind == "sidecar" && ia.HostID != "" && ia.StackName != "" && s.reg != nil {
@@ -456,27 +615,28 @@ func (s *Server) setAddon(w http.ResponseWriter, r *http.Request) {
 			s.engErr(w, err)
 			return
 		}
-		setAuditTarget(r, id)
+		setAuditTarget(r, id+"@"+ia.HostID)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
 func (s *Server) uninstallAddon(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	hostQuery := strings.TrimSpace(r.URL.Query().Get("host"))
 	ctx := r.Context()
 
-	if id == addonProxyLabels || id == addonOfficialTemplates || id == addonPrometheusGrafana || id == addonPrometheusLegacy {
+	if builtinAddonIDs[id] {
 		writeErr(w, http.StatusConflict, "Built-in add-ons can be disabled, not uninstalled.")
 		return
 	}
 
-	ia, err := s.store.InstalledAddonByID(ctx, id)
+	ia, err := s.resolveInstalledSidecar(ctx, id, hostQuery)
 	if errors.Is(err, store.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "Add-on not found.")
 		return
 	}
 	if err != nil {
-		s.engErr(w, err)
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -500,6 +660,7 @@ func (s *Server) uninstallAddon(w http.ResponseWriter, r *http.Request) {
 						s.engErr(w, err)
 						return
 					}
+					nextEnv := removeEnvKeys(cur.Env, ia.EnvKeys)
 					if empty {
 						if op, err := h.RunAction(ctx, ia.StackName, "down", user); err == nil && op.ID != "" {
 							_ = h.FollowOp(ctx, op.ID, func(host.OpEvent) error { return nil })
@@ -509,8 +670,6 @@ func (s *Server) uninstallAddon(w http.ResponseWriter, r *http.Request) {
 							return
 						}
 					} else {
-						// `up` never removes containers of a service that left compose.yaml (no
-						// --remove-orphans), so scale the add-on to 0 first, then drop its definition.
 						if scaled, changed, err := setAddonServiceDisabled(cur.Compose, ia.ID, true); err == nil && changed {
 							if err := h.Save(ctx, ia.StackName, scaled, cur.Env, user, false); err != nil {
 								s.engErr(w, err)
@@ -521,7 +680,7 @@ func (s *Server) uninstallAddon(w http.ResponseWriter, r *http.Request) {
 								return
 							}
 						}
-						if err := h.Save(ctx, ia.StackName, nextCompose, cur.Env, user, false); err != nil {
+						if err := h.Save(ctx, ia.StackName, nextCompose, nextEnv, user, false); err != nil {
 							s.engErr(w, err)
 							return
 						}
@@ -539,18 +698,24 @@ func (s *Server) uninstallAddon(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.store.DeleteInstalledAddon(ctx, id); err != nil && !errors.Is(err, store.ErrNotFound) {
+	if err := s.store.DeleteInstalledAddon(ctx, id, ia.HostID); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.engErr(w, err)
 		return
 	}
-	setAuditTarget(r, id)
+	setAuditTarget(r, id+"@"+ia.HostID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) toggleBuiltinAddon(ctx context.Context, id string, enabled bool) error {
 	switch id {
-	case addonProxyLabels:
-		return s.store.SetAddon(ctx, addonProxyLabels, enabled)
+	case addonProxyLabels, addonCoolify, addonStackScheduler, addonSocketProxyCheck, addonRegistryWebhooks, addonMCPServer:
+		if err := s.store.SetAddon(ctx, id, enabled); err != nil {
+			return err
+		}
+		if id == addonCoolify && enabled && s.coolify != nil {
+			s.coolify.TriggerSync()
+		}
+		return nil
 	case addonOfficialTemplates:
 		if s.tpl == nil {
 			return errors.New("Templates service is not available.")
@@ -582,6 +747,95 @@ func (s *Server) toggleBuiltinAddon(ctx context.Context, id string, enabled bool
 	}
 }
 
+// ---- Add-on catalogs (official + custom HTTPS addon_sources) ---------------------------
+
+func (s *Server) fetchAllAddonCatalogs(ctx context.Context, refresh bool) ([]AddonCatalogEntry, error) {
+	var all []AddonCatalogEntry
+	var errs []string
+
+	official, err := fetchAddonCatalog(ctx, refresh)
+	if err != nil {
+		errs = append(errs, "official: "+err.Error())
+	} else {
+		for _, item := range official {
+			item.SourceName = "Official"
+			item.SourceURL = AddonsIndexURL
+			all = append(all, item)
+		}
+	}
+
+	if s.store != nil {
+		srcs, _ := s.store.AddonSources(ctx)
+		for _, src := range srcs {
+			if !src.Enabled {
+				continue
+			}
+			entries, serr := s.fetchCustomAddonSource(ctx, src, refresh)
+			if serr != nil {
+				errs = append(errs, src.Name+": "+serr.Error())
+			}
+			all = append(all, entries...)
+		}
+	}
+
+	var combinedErr error
+	if len(errs) > 0 {
+		combinedErr = errors.New(strings.Join(errs, "; "))
+	}
+	return all, combinedErr
+}
+
+func (s *Server) fetchCustomAddonSource(ctx context.Context, src store.AddonSource, refresh bool) ([]AddonCatalogEntry, error) {
+	rawStr := src.Cache
+	var fetchErr error
+	if refresh || rawStr == "" || time.Since(src.FetchedAt) >= 10*time.Minute {
+		b, err := fetchCatalogBytesOpts(ctx, src.URL, src.AllowPrivate)
+		if err != nil {
+			fetchErr = err
+			_ = s.store.UpdateAddonSourceFetch(ctx, src.ID, "", err.Error())
+		} else {
+			idx, perr := parseAddonIndex(b)
+			if perr != nil {
+				fetchErr = perr
+				_ = s.store.UpdateAddonSourceFetch(ctx, src.ID, "", perr.Error())
+			} else {
+				rawStr = string(b)
+				_ = s.store.UpdateAddonSourceFetch(ctx, src.ID, rawStr, "")
+				return decorateCatalogEntries(idx.Addons, src), nil
+			}
+		}
+	}
+	if rawStr != "" {
+		if idx, err := parseAddonIndex([]byte(rawStr)); err == nil {
+			return decorateCatalogEntries(idx.Addons, src), fetchErr
+		}
+	}
+	return nil, fetchErr
+}
+
+func decorateCatalogEntries(entries []AddonCatalogEntry, src store.AddonSource) []AddonCatalogEntry {
+	out := make([]AddonCatalogEntry, 0, len(entries))
+	for _, e := range entries {
+		e.SourceID = src.ID
+		e.SourceName = src.Name
+		e.SourceURL = src.URL
+		e.AllowPrivate = src.AllowPrivate
+		out = append(out, e)
+	}
+	return out
+}
+
+func parseAddonIndex(raw []byte) (addonIndex, error) {
+	var idx addonIndex
+	if err := json.Unmarshal(raw, &idx); err != nil {
+		return idx, errors.New("invalid add-ons index.json")
+	}
+	if idx.Format != 1 {
+		return idx, fmt.Errorf("unsupported add-ons index format %d", idx.Format)
+	}
+	return idx, nil
+}
+
 func fetchAddonCatalog(ctx context.Context, refresh bool) ([]AddonCatalogEntry, error) {
 	addonCatMu.Lock()
 	if !refresh && len(addonCatEntries) > 0 && time.Since(addonCatAt) < 10*time.Minute {
@@ -593,14 +847,17 @@ func fetchAddonCatalog(ctx context.Context, refresh bool) ([]AddonCatalogEntry, 
 
 	raw, err := fetchCatalogBytes(ctx, AddonsIndexURL)
 	if err != nil {
+		addonCatMu.Lock()
+		cached := append([]AddonCatalogEntry(nil), addonCatEntries...)
+		addonCatMu.Unlock()
+		if len(cached) > 0 {
+			return cached, err
+		}
 		return nil, err
 	}
-	var idx addonIndex
-	if err := json.Unmarshal(raw, &idx); err != nil {
-		return nil, errors.New("invalid add-ons index.json")
-	}
-	if idx.Format != 1 {
-		return nil, fmt.Errorf("unsupported add-ons index format %d", idx.Format)
+	idx, err := parseAddonIndex(raw)
+	if err != nil {
+		return nil, err
 	}
 
 	addonCatMu.Lock()
@@ -630,6 +887,10 @@ func resolveCatalogURL(indexURL, rel string) (string, error) {
 }
 
 func fetchCatalogBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	return fetchCatalogBytesOpts(ctx, rawURL, false)
+}
+
+func fetchCatalogBytesOpts(ctx context.Context, rawURL string, allowPrivate bool) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return nil, errors.New("only HTTPS URLs are allowed")
@@ -637,7 +898,7 @@ func fetchCatalogBytes(ctx context.Context, rawURL string) ([]byte, error) {
 	c := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
-			DialContext: netguard.DialContext(10*time.Second, false),
+			DialContext: netguard.DialContext(10*time.Second, allowPrivate),
 		},
 	}
 	defer c.CloseIdleConnections()
@@ -664,6 +925,155 @@ func fetchCatalogBytes(ctx context.Context, rawURL string) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// ---- Addon sources HTTP handlers -------------------------------------------------------
+
+func (s *Server) listAddonSources(w http.ResponseWriter, r *http.Request) {
+	srcs, err := s.store.AddonSources(r.Context())
+	if err != nil {
+		s.engErr(w, err)
+		return
+	}
+	if srcs == nil {
+		srcs = []store.AddonSource{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sources": srcs})
+}
+
+func (s *Server) addAddonSource(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name         string `json:"name"`
+		URL          string `json:"url"`
+		AllowPrivate bool   `json:"allowPrivate"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	rawURL := strings.TrimSpace(req.URL)
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		writeErr(w, http.StatusBadRequest, "Enter a valid HTTPS URL pointing to index.json.")
+		return
+	}
+	if name == "" {
+		name = u.Hostname()
+	}
+	b, err := fetchCatalogBytesOpts(r.Context(), rawURL, req.AllowPrivate)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "Couldn't fetch index.json: "+err.Error())
+		return
+	}
+	idx, err := parseAddonIndex(b)
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	if req.Name == "" && idx.Name != "" {
+		name = idx.Name
+	}
+	src, err := s.store.AddAddonSource(r.Context(), name, rawURL, req.AllowPrivate, string(b))
+	if errors.Is(err, store.ErrAddonSourceExists) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		s.engErr(w, err)
+		return
+	}
+	setAuditTarget(r, name)
+	writeJSON(w, http.StatusCreated, src)
+}
+
+func (s *Server) updateAddonSource(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, http.StatusBadRequest, "Invalid source id.")
+		return
+	}
+	var req struct {
+		Name         string `json:"name"`
+		URL          string `json:"url"`
+		AllowPrivate bool   `json:"allowPrivate"`
+		Enabled      bool   `json:"enabled"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	rawURL := strings.TrimSpace(req.URL)
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
+		writeErr(w, http.StatusBadRequest, "Enter a valid HTTPS URL pointing to index.json.")
+		return
+	}
+	if name == "" {
+		name = u.Hostname()
+	}
+	src, err := s.store.UpdateAddonSource(r.Context(), id, name, rawURL, req.AllowPrivate, req.Enabled)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "Add-on source not found.")
+		return
+	}
+	if errors.Is(err, store.ErrAddonSourceExists) {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err != nil {
+		s.engErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, src)
+}
+
+func (s *Server) deleteAddonSource(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, http.StatusBadRequest, "Invalid source id.")
+		return
+	}
+	if err := s.store.DeleteAddonSource(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "Add-on source not found.")
+		return
+	} else if err != nil {
+		s.engErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) refreshAddonSource(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, http.StatusBadRequest, "Invalid source id.")
+		return
+	}
+	src, err := s.store.AddonSourceByID(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "Add-on source not found.")
+		return
+	}
+	if err != nil {
+		s.engErr(w, err)
+		return
+	}
+	b, err := fetchCatalogBytesOpts(r.Context(), src.URL, src.AllowPrivate)
+	if err != nil {
+		_ = s.store.UpdateAddonSourceFetch(r.Context(), src.ID, "", err.Error())
+		writeErr(w, http.StatusBadGateway, "Refresh failed: "+err.Error())
+		return
+	}
+	if _, err := parseAddonIndex(b); err != nil {
+		_ = s.store.UpdateAddonSourceFetch(r.Context(), src.ID, "", err.Error())
+		writeErr(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	_ = s.store.UpdateAddonSourceFetch(r.Context(), src.ID, string(b), "")
+	updated, _ := s.store.AddonSourceByID(r.Context(), src.ID)
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// ---- YAML compose merging helpers ------------------------------------------------------
 
 func parseComposeMap(raw []byte) (map[string]any, error) {
 	doc := map[string]any{}
@@ -776,7 +1186,6 @@ func mergeAddonCompose(existingYAML string, addonID string, addonRaw []byte) (st
 	return string(out), nil
 }
 
-// runAndWait starts a compose action and waits for it to finish, returning its error.
 func runAndWait(ctx context.Context, h host.Host, stack, action, user string) error {
 	op, err := h.RunAction(ctx, stack, action, user)
 	if err != nil {
@@ -800,8 +1209,6 @@ func runAndWait(ctx context.Context, h host.Host, stack, action, user string) er
 	return nil
 }
 
-// setAddonServiceDisabled scales the add-on's services to 0 (disabled) or back. Unlike a
-// compose profile, scale 0 makes `up` really stop and remove the running container.
 func setAddonServiceDisabled(existingYAML string, addonID string, disabled bool) (string, bool, error) {
 	doc, err := parseComposeMap([]byte(existingYAML))
 	if err != nil {
@@ -820,14 +1227,14 @@ func setAddonServiceDisabled(existingYAML string, addonID string, disabled bool)
 		if !hasServiceAddonLabel(svc, addonID) && name != addonID {
 			continue
 		}
-		delete(svc, "profiles") // older builds disabled services through a profile
+		delete(svc, "profiles")
 		if disabled {
 			svc["scale"] = 0
 		} else {
 			delete(svc, "scale")
 		}
 		if dep := asMap(svc["deploy"]); dep != nil {
-			delete(dep, "replicas") // would conflict with scale
+			delete(dep, "replicas")
 		}
 		changed = true
 	}

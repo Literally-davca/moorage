@@ -1,9 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, type DeletedStack, type ImageLookup, type ImageCandidate } from '../lib/api';
+  import { api, type DeletedStack, type ImageLookup, type ImageCandidate, type LintIssue, type LintResult } from '../lib/api';
   import { link } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
-  import CodeEditor from '../lib/CodeEditor.svelte';
+  import ComposeEditor from '../lib/ComposeEditor.svelte';
   import EnvEditor from '../lib/EnvEditor.svelte';
 
   let { onCreated }: { onCreated: (name: string) => void } = $props();
@@ -22,6 +22,8 @@
   let error = $state('');
   let busy = $state(false);
   let validation = $state('');
+  let issues = $state<LintIssue[]>([]);
+  let envConflicts = $state<LintResult | null>(null);
   let deleted = $state<DeletedStack[]>([]);
   let restoring = $state<string | null>(null);
 
@@ -101,6 +103,7 @@
       try {
         const r = await api.validate(n, c, e);
         validation = r.ok ? '' : (r.error ?? '');
+        issues = r.issues ?? [];
       } catch {
         /* ignore */
       }
@@ -108,11 +111,22 @@
     return () => clearTimeout(t);
   });
 
-  async function create(e: SubmitEvent) {
-    e.preventDefault();
+  async function create(e: SubmitEvent | null, overwrite?: boolean) {
+    e?.preventDefault();
     error = '';
     busy = true;
     try {
+      // literal environment values move into .env (conflicts wait for an answer)
+      const moved = await api.extractEnv(name, compose, env, !!overwrite);
+      if (moved.changed) {
+        compose = moved.compose;
+        env = moved.env;
+      }
+      if (overwrite === undefined && moved.conflicts?.length) {
+        envConflicts = moved;
+        return;
+      }
+      envConflicts = null;
       await api.create(name, compose, env);
       onCreated(name);
     } catch (err) {
@@ -221,8 +235,7 @@
   </div>
 
   <div>
-    <span class="label">compose.yaml</span>
-    <CodeEditor bind:value={compose} label="Compose file" minHeight={340} />
+    <ComposeEditor bind:value={compose} bind:env name={nameOk ? name : ''} {issues} title="compose.yaml" />
     {#if validation}
       <div class="invalid" role="alert"><Icon name="alert" /><span class="mono">{validation}</span></div>
     {/if}
@@ -233,6 +246,19 @@
     <EnvEditor bind:value={env} {compose} />
   </div>
 
+  {#if envConflicts?.conflicts?.length}
+    <div class="invalid" role="alert">
+      <Icon name="alert" />
+      <div>
+        <p>Moving values into .env: {envConflicts.conflicts.length === 1 ? 'this key is' : 'these keys are'} already in .env with another value.</p>
+        <ul class="mono">
+          {#each envConflicts.conflicts as c (c.key + c.service)}<li>{c.key} ({c.service}): .env {c.envValue}, compose {c.composeValue}</li>{/each}
+        </ul>
+        <button type="button" class="btn btn-primary" onclick={() => create(null, true)}>Overwrite .env and create</button>
+        <button type="button" class="btn" onclick={() => create(null, false)}>Keep .env and create</button>
+      </div>
+    </div>
+  {/if}
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
   <div class="row">
     <a class="btn btn-ghost" href={link('')}>Cancel</a>

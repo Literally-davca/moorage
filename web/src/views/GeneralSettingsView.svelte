@@ -1,29 +1,16 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, type ImportPreview, type SettingsConfig } from '../lib/api';
+  import { api, type SettingsConfig } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
 
   let cfg = $state<SettingsConfig | null>(null);
   let error = $state('');
   let saving = $state(false);
   let saved = $state(false);
-  let genToken = $state('');
-  let copied = $state(false);
-  // backup & restore
-  let exportPw = $state('');
-  let exportPw2 = $state('');
-  let exporting = $state(false);
-  let importFile = $state<File | null>(null);
-  let importPw = $state('');
-  let importing = $state(false);
-  let preview = $state<ImportPreview | null>(null);
-  let restoreDb = $state(true);
-  let restoreStacks = $state(true);
-  let applying = $state(false);
-  let importMsg = $state('');
-  let backupErr = $state('');
 
   let publicUrl = $state('');
+  let statusPublicUrl = $state('');
+  let agentPublicAddr = $state('');
   let updateChannel = $state<'stable' | 'pre'>('stable');
   let cleanupEnabled = $state(false);
   let cleanupSchedule = $state('03:30');
@@ -34,6 +21,8 @@
       const r = await api.settingsConfig();
       cfg = r;
       publicUrl = r.publicUrl;
+      statusPublicUrl = r.statusPublicUrl ?? '';
+      agentPublicAddr = r.agentPublicAddr ?? '';
       updateChannel = r.updateChannel;
       cleanupEnabled = r.cleanupEnabled;
       cleanupSchedule = r.cleanupSchedule || '03:30';
@@ -61,106 +50,18 @@
         cleanupVolumes,
       };
       if (!cfg.fromEnv.publicUrl) patch.publicUrl = publicUrl.trim();
+      if (!cfg.fromEnv.statusPublicUrl) patch.statusPublicUrl = statusPublicUrl.trim();
+      if (!cfg.fromEnv.agentPublicAddr) patch.agentPublicAddr = agentPublicAddr.trim();
       if (!cfg.fromEnv.updateChannel) patch.updateChannel = updateChannel;
       cfg = await api.saveSettingsConfig(patch);
       saved = true;
+      setTimeout(() => (saved = false), 2500);
     } catch (err) {
       error = (err as Error).message;
     } finally {
       saving = false;
     }
   }
-
-  async function generateToken() {
-    error = '';
-    genToken = '';
-    try {
-      const r = await api.generateMetricsToken();
-      genToken = r.token;
-      await load();
-    } catch (err) {
-      error = (err as Error).message;
-    }
-  }
-
-  async function clearToken() {
-    error = '';
-    genToken = '';
-    try {
-      cfg = await api.saveSettingsConfig({ metricsToken: '' });
-    } catch (err) {
-      error = (err as Error).message;
-    }
-  }
-
-  async function copy(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      copied = true;
-      setTimeout(() => (copied = false), 1500);
-    } catch {
-      /* ignore */
-    }
-  }
-
-  async function doExport(e: SubmitEvent) {
-    e.preventDefault();
-    backupErr = '';
-    if (exportPw !== exportPw2) {
-      backupErr = "The passwords don't match.";
-      return;
-    }
-    exporting = true;
-    try {
-      await api.exportBackup(exportPw);
-      exportPw = exportPw2 = '';
-    } catch (err) {
-      backupErr = (err as Error).message;
-    } finally {
-      exporting = false;
-    }
-  }
-
-  async function doPreview(e: SubmitEvent) {
-    e.preventDefault();
-    if (!importFile) return;
-    backupErr = '';
-    importMsg = '';
-    importing = true;
-    try {
-      preview = await api.importBackupPreview(importFile, importPw);
-      restoreDb = true;
-      restoreStacks = preview.hosts.some((h) => h.writable && h.stacks.length > 0);
-    } catch (err) {
-      backupErr = (err as Error).message;
-    } finally {
-      importing = false;
-    }
-  }
-
-  async function doApply() {
-    if (!preview) return;
-    backupErr = '';
-    applying = true;
-    try {
-      const r = await api.importBackupApply(preview.token, restoreDb, restoreStacks);
-      const parts: string[] = [];
-      if (restoreStacks) parts.push(`${r.restoredStacks} ${r.restoredStacks === 1 ? 'stack' : 'stacks'} restored`);
-      if (r.dbStaged) parts.push('the database is replaced when Moorage restarts (the current one is kept as moorage.db.bak)');
-      importMsg = parts.join('; ') + '.';
-      if (r.failedStacks.length) backupErr = `Not restored: ${r.failedStacks.join(', ')}`;
-      preview = null;
-      importFile = null;
-      importPw = '';
-    } catch (err) {
-      backupErr = (err as Error).message;
-    } finally {
-      applying = false;
-    }
-  }
-
-  const replaced = $derived(preview ? preview.hosts.reduce((n, h) => n + (h.writable ? h.stacks.filter((s) => s.exists).length : 0), 0) : 0);
-  const unavailable = $derived(preview ? preview.hosts.filter((h) => !h.writable && h.stacks.length > 0) : []);
 </script>
 
 <div class="page">
@@ -187,39 +88,58 @@
     {/if}
 
     <form class="card card-pad form" onsubmit={save}>
-      <h2 class="section-title">General</h2>
+      <h2 class="section-title">Hub network &amp; updates</h2>
 
-      <label class="field-wrap">
-        <span class="label-row">
-          <span>Public URL</span>
-          {#if cfg.fromEnv.publicUrl}<span class="pill env">from env</span>{/if}
-          {#if !cfg.fromEnv.publicUrl && !publicUrl}
-            <button type="button" class="link-btn" onclick={() => (publicUrl = location.origin)}>Use {location.origin}</button>
-          {/if}
-        </span>
-        <input class="field" bind:value={publicUrl} placeholder="https://moorage.example.com" disabled={cfg.fromEnv.publicUrl} />
-        {#if cfg.publicUrlRestart}
-          <span class="meta">Saved. Restart Moorage to use it in alerts, sign-in and invites.</span>
-        {/if}
-      </label>
+      <div class="grid-2">
+        <label class="field-wrap">
+          <span class="label-row">
+            <span>Public URL</span>
+            {#if cfg.fromEnv.publicUrl}<span class="pill env">Set via environment</span>{/if}
+            {#if !cfg.fromEnv.publicUrl && !publicUrl}
+              <button type="button" class="link-btn" onclick={() => (publicUrl = location.origin)}>Use {location.origin}</button>
+            {/if}
+          </span>
+          <input class="field" bind:value={publicUrl} placeholder="https://moorage.example.com" disabled={cfg.fromEnv.publicUrl} />
+          <span class="meta">Used immediately for alert links, invite URLs, RSS feeds and OIDC callbacks.</span>
+        </label>
 
-      <label class="field-wrap">
-        <span class="label-row">
-          <span>Update channel</span>
-          {#if cfg.fromEnv.updateChannel}<span class="pill env">from env</span>{/if}
-        </span>
-        <select class="field" bind:value={updateChannel} disabled={cfg.fromEnv.updateChannel}>
-          <option value="stable">Stable</option>
-          <option value="pre">Pre-release</option>
-        </select>
-      </label>
+        <label class="field-wrap">
+          <span class="label-row">
+            <span>Status Page URL</span>
+            {#if cfg.fromEnv.statusPublicUrl}<span class="pill env">Set via environment</span>{/if}
+          </span>
+          <input class="field" bind:value={statusPublicUrl} placeholder="https://status.example.com (optional)" disabled={cfg.fromEnv.statusPublicUrl} />
+          <span class="meta">Public address of a separate <code>MOORAGE_STATUS_LISTEN</code> listener.</span>
+        </label>
+
+        <label class="field-wrap">
+          <span class="label-row">
+            <span>Agent Connect Address</span>
+            {#if cfg.fromEnv.agentPublicAddr}<span class="pill env">Set via environment</span>{/if}
+          </span>
+          <input class="field mono" bind:value={agentPublicAddr} placeholder="100.87.100.2:5081" disabled={cfg.fromEnv.agentPublicAddr} />
+          <span class="meta">Prefills <code>MOORAGE_HUB</code> in generated agent compose files when pairing a host.</span>
+        </label>
+
+        <label class="field-wrap">
+          <span class="label-row">
+            <span>Update channel</span>
+            {#if cfg.fromEnv.updateChannel}<span class="pill env">Set via environment</span>{/if}
+          </span>
+          <select class="field" bind:value={updateChannel} disabled={cfg.fromEnv.updateChannel}>
+            <option value="stable">Stable</option>
+            <option value="pre">Pre-release</option>
+          </select>
+          <span class="meta">Release stream checked in <a href="#/settings/hosts">Hosts → Moorage updates</a>.</span>
+        </label>
+      </div>
 
       <div class="divider"></div>
 
       <h3 class="sub-title">Daily disk cleanup</h3>
       <label class="check-row">
         <input type="checkbox" bind:checked={cleanupEnabled} />
-        <span>Run daily cleanup of unused images and build cache</span>
+        <span>Run daily cleanup of unused images, stopped containers and build cache on writable hosts</span>
       </label>
       {#if cleanupEnabled}
         <div class="row-2">
@@ -235,126 +155,57 @@
       {/if}
 
       <div class="actions">
-        <button type="submit" class="btn primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-        {#if saved}<span class="meta ok">Saved</span>{/if}
+        <button type="submit" class="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+        {#if saved}<span class="meta ok"><Icon name="check" /> Applied live</span>{/if}
       </div>
     </form>
 
-    <section class="card card-pad metrics-box">
+    <section class="card card-pad locks">
       <div class="head-row">
         <div>
-          <h2 class="section-title">Prometheus metrics</h2>
-          <div class="meta mono">{cfg.metricsUrl}</div>
+          <h2 class="section-title">Environment locks</h2>
+          <p class="meta">Security switches controlled strictly by machine environment variables (never editable from the web).</p>
         </div>
-        {#if cfg.fromEnv.metricsToken}
-          <span class="pill env">from env</span>
-        {:else if cfg.metricsTokenSet}
-          <span class="pill on">Enabled</span>
+        {#if cfg.envLocks.trustedProxies}
+          <span class="pill on">Trusted proxies active</span>
         {:else}
-          <span class="pill">Off</span>
+          <span class="pill">Trusted proxies off</span>
         {/if}
       </div>
 
-      {#if genToken}
-        <div class="token-box">
-          <code class="mono">{genToken}</code>
-          <button type="button" class="btn" onclick={() => copy(genToken)}>{copied ? 'Copied' : 'Copy'}</button>
+      {#if cfg.hostLocks?.length}
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Host</th>
+                <th>Read-only</th>
+                <th>Manage external</th>
+                <th>Container terminal</th>
+                <th>Host terminal</th>
+                <th>Scheduled exec</th>
+                <th>Self-update</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each cfg.hostLocks as hl (hl.id)}
+                <tr>
+                  <td>
+                    <span class="hname">{hl.name}</span>
+                    <span class="pill">{hl.kind === 'local' ? 'Hub' : hl.connected ? 'Agent' : 'Offline'}</span>
+                  </td>
+                  <td><span class="pill {hl.readOnly ? 'warn-pill' : ''}">{hl.readOnly ? 'Locked (RO)' : 'Writable'}</span></td>
+                  <td><span class="pill {hl.manageExternal ? 'on' : ''}">{hl.manageExternal ? 'On' : 'Off'}</span></td>
+                  <td><span class="pill {hl.containerTerminal ? 'on' : ''}">{hl.containerTerminal ? 'On' : 'Off'}</span></td>
+                  <td><span class="pill {hl.hostTerminal ? 'on' : ''}">{hl.hostTerminal ? 'On' : 'Off'}</span></td>
+                  <td><span class="pill {hl.exec ? 'on' : ''}">{hl.exec ? 'On' : 'Off'}</span></td>
+                  <td><span class="pill {hl.selfUpdate ? 'on' : ''}">{hl.selfUpdate ? 'On' : 'Off'}</span></td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
         </div>
       {/if}
-
-      {#if !cfg.fromEnv.metricsToken}
-        <div class="actions">
-          <button type="button" class="btn" onclick={generateToken}>
-            {cfg.metricsTokenSet ? 'Rotate token' : 'Generate token & enable'}
-          </button>
-          {#if cfg.metricsTokenSet}
-            <button type="button" class="btn danger" onclick={clearToken}>Disable</button>
-          {/if}
-        </div>
-      {/if}
-    </section>
-
-    <section class="card card-pad backup">
-      <h2 class="section-title">Backup &amp; restore</h2>
-      <p class="meta">
-        A backup holds the hub database (users, checks, channels, tokens), every stack's compose.yaml and .env and the
-        stack history of each connected host, encrypted with the password you set here. Without the password the file
-        can't be read. App data in Docker volumes isn't included.
-      </p>
-
-      <form class="bk-row" onsubmit={doExport}>
-        <input class="field" type="password" bind:value={exportPw} placeholder="Backup password (8+ characters)" autocomplete="new-password" minlength="8" required />
-        <input class="field" type="password" bind:value={exportPw2} placeholder="Repeat password" autocomplete="new-password" minlength="8" required />
-        <button type="submit" class="btn" disabled={exporting}>{exporting ? 'Exporting…' : 'Export backup'}</button>
-      </form>
-
-      <div class="divider"></div>
-
-      {#if !preview}
-        <form class="bk-row" onsubmit={doPreview}>
-          <input class="field" type="file" accept=".mbk,application/octet-stream" required
-            onchange={(e) => (importFile = e.currentTarget.files?.[0] ?? null)} />
-          <input class="field" type="password" bind:value={importPw} placeholder="Backup password" autocomplete="off" required />
-          <button type="submit" class="btn" disabled={importing || !importFile}>{importing ? 'Checking…' : 'Check backup'}</button>
-        </form>
-      {:else}
-        <div class="bk-preview">
-          <p>
-            Backup from <b>{new Date(preview.exportedAt).toLocaleString()}</b> (Moorage {preview.version || 'unknown'}):
-            {preview.database.users} users, {preview.database.checks} checks, {preview.database.channels} channels,
-            {preview.database.agents} agents, {preview.database.statusPages} status pages.
-          </p>
-          {#if preview.skipped?.length}
-            <p class="meta">Not in the backup: {preview.skipped.join(', ')}</p>
-          {/if}
-
-          <label class="check-row align-top">
-            <input type="checkbox" bind:checked={restoreDb} />
-            <span>Replace the hub database (users, checks, channels, settings). Takes effect after a restart and ends all sessions.</span>
-          </label>
-          <label class="check-row align-top">
-            <input type="checkbox" bind:checked={restoreStacks} />
-            <span>Restore stack definitions now{replaced ? ` (${replaced} existing ${replaced === 1 ? 'stack is' : 'stacks are'} overwritten; their history keeps the old version)` : ''}. Nothing is started.</span>
-          </label>
-
-          <ul class="bk-hosts">
-            {#each preview.hosts as h (h.id)}
-              <li>
-                <b>{h.name}</b>
-                {#if !h.known}<span class="tag">not on this hub</span>{:else if !h.writable}<span class="tag">offline or read-only</span>{/if}
-                <span class="meta">
-                  {#each h.stacks as st, i (st.name)}{i ? ', ' : ''}<span class:over={st.exists && h.writable} title={st.exists ? 'Overwritten' : 'New'}>{st.name}</span>{/each}
-                  {#if !h.stacks.length}no stacks{/if}
-                </span>
-              </li>
-            {/each}
-          </ul>
-          {#if unavailable.length && restoreStacks}
-            <p class="meta">Stacks on {unavailable.map((h) => h.name).join(', ')} are skipped: the host isn't connected and writable.</p>
-          {/if}
-          <p class="meta">Stack histories stay in the backup file for recovery by hand; they aren't imported.</p>
-
-          <div class="actions">
-            <button type="button" class="btn btn-primary" disabled={applying || (!restoreDb && !restoreStacks)} onclick={doApply}>
-              {applying ? 'Restoring…' : 'Restore'}
-            </button>
-            <button type="button" class="btn" disabled={applying} onclick={() => (preview = null)}>Cancel</button>
-          </div>
-        </div>
-      {/if}
-      {#if importMsg}<p class="meta ok">{importMsg}</p>{/if}
-      {#if backupErr}<p class="error-text" role="alert">{backupErr}</p>{/if}
-    </section>
-
-    <section class="card card-pad locks">
-      <h2 class="section-title">Environment locks</h2>
-      <div class="lock-grid">
-        <span class="lock">Read-only: <b>{cfg.envLocks.readOnly ? 'On' : 'Off'}</b></span>
-        <span class="lock">Terminal: <b>{cfg.envLocks.terminal ? 'On' : 'Off'}</b></span>
-        <span class="lock">Trusted proxies: <b>{cfg.envLocks.trustedProxies ? 'Configured' : 'Off'}</b></span>
-        <span class="lock">OIDC: <b>{cfg.envLocks.oidc ? 'Configured' : 'Off'}</b></span>
-        <span class="lock">Self-update: <b>{cfg.envLocks.selfUpdate ? 'On' : 'Off'}</b></span>
-      </div>
     </section>
   {/if}
 </div>
@@ -362,23 +213,30 @@
 <style>
   .page {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 12px;
   }
   .form {
     display: grid;
-    gap: 12px;
-    max-width: 680px;
+    gap: 14px;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 14px 16px;
   }
   .field-wrap {
     display: grid;
     gap: 5px;
     font-size: 13px;
     color: var(--mist);
+    align-content: start;
   }
   .label-row {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
   }
   .link-btn {
     background: none;
@@ -398,13 +256,13 @@
   }
   .row-2 {
     display: grid;
-    grid-template-columns: 140px 1fr;
+    grid-template-columns: 160px 1fr;
     gap: 12px;
   }
   .divider {
     height: 1px;
     background: var(--rope);
-    margin: 4px 0;
+    margin: 2px 0;
   }
   .sub-title {
     margin: 0;
@@ -418,7 +276,10 @@
     gap: 10px;
   }
   .ok {
-    color: var(--afloat);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--afloat-text);
   }
   .diag-list {
     display: grid;
@@ -441,29 +302,25 @@
     font-weight: 500;
     color: var(--foam);
   }
-  .metrics-box {
-    display: grid;
-    gap: 10px;
-    max-width: 680px;
-  }
   .head-row {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
+    flex-wrap: wrap;
   }
-  .token-box {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 8px 10px;
-    border-radius: var(--r-md);
-    background: var(--well);
-    font-size: 12px;
-    word-break: break-all;
+  .locks {
+    display: grid;
+    gap: 12px;
+  }
+  .hname {
+    font-weight: 500;
+    color: var(--foam);
+    margin-right: 6px;
   }
   .pill {
+    display: inline-flex;
+    align-items: center;
     font-size: 11px;
     font-weight: 500;
     padding: 2px 8px;
@@ -473,68 +330,19 @@
   }
   .pill.on {
     background: color-mix(in srgb, var(--afloat) 16%, transparent);
-    color: var(--afloat);
+    color: var(--afloat-text, var(--afloat));
+  }
+  .pill.warn-pill {
+    background: var(--signal-wash);
+    color: var(--signal-text);
   }
   .pill.env {
     background: var(--buoy-wash);
     color: var(--buoy-text);
   }
-  .backup {
-    display: grid;
-    gap: 12px;
-  }
-  .bk-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-  }
-  .bk-row .field {
-    flex: 1 1 200px;
-    min-width: 0;
-  }
-  .bk-preview {
-    display: grid;
-    gap: 10px;
-  }
-  .bk-hosts {
-    display: grid;
-    gap: 4px;
-    margin: 0;
-    padding-left: 18px;
-  }
-  .over {
-    color: var(--signal-text);
-  }
-  .align-top {
-    align-items: flex-start;
-  }
-  .align-top input {
-    margin-top: 3px;
-  }
-  .tag {
-    display: inline-block;
-    margin: 0 6px;
-    padding: 1px 8px;
-    border-radius: 999px;
-    background: var(--well);
-    color: var(--haze);
-    font-size: 11px;
-  }
-  .locks {
-    max-width: 680px;
-    display: grid;
-    gap: 8px;
-  }
-  .lock-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px 20px;
-    font-size: 12px;
-    color: var(--mist);
-  }
-  .lock b {
-    color: var(--foam);
-    font-weight: 500;
+  @media (max-width: 560px) {
+    .row-2 {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 </style>

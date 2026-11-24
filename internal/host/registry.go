@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"moorage/internal/engine"
 	"sort"
 	"sync"
 	"time"
@@ -31,6 +32,12 @@ type Entry struct {
 	Watchdog      bool      `json:"watchdog,omitempty"`
 	WatchdogAddr  string    `json:"watchdogAddr,omitempty"`
 	Probes        bool      `json:"probes,omitempty"` // the agent runs checks for the hub (multi-location checks)
+	// Locks are the host's own security switches (from its env; older agents send none).
+	Locks             *engine.HostLocks `json:"locks,omitempty"`
+	HostIP            string            `json:"hostIp,omitempty"`
+	BaseDomain        string            `json:"baseDomain,omitempty"`
+	HostIPFromEnv     bool              `json:"hostIpFromEnv,omitempty"`
+	BaseDomainFromEnv bool              `json:"baseDomainFromEnv,omitempty"`
 }
 
 type conn struct {
@@ -75,7 +82,7 @@ func (r *Registry) Get(ctx context.Context, id string) (Host, Entry, error) {
 		if r.local == nil {
 			return nil, Entry{}, ErrUnknownHost
 		}
-		return r.local, Entry{ID: LocalID, Name: r.localName, Kind: "local", Connected: true, ReadOnly: r.localRO, Terminal: r.localTerm && !r.localRO}, nil
+		return r.local, r.localEntry(), nil
 	}
 	r.mu.Lock()
 	c := r.conns[id]
@@ -99,7 +106,29 @@ func (r *Registry) entryOf(id string, c *conn) Entry {
 		Hostname: c.info.Name, StacksDir: c.info.StacksDir,
 		Watchdog: c.info.Watchdog, WatchdogAddr: c.info.WatchdogAddr,
 		Probes: c.info.Probes,
+		Locks:  agentLocks(c.info), HostIP: c.info.HostIP, BaseDomain: c.info.BaseDomain,
 	}
+}
+
+// agentLocks returns the locks an agent reported; an agent too old to report them only
+// tells read-only and terminal.
+func agentLocks(i AgentInfo) *engine.HostLocks {
+	l := i.Locks
+	l.ReadOnly = l.ReadOnly || i.ReadOnly
+	l.Terminal = i.Terminal && !i.ReadOnly
+	return &l
+}
+
+func (r *Registry) localEntry() Entry {
+	e := Entry{ID: LocalID, Name: r.localName, Kind: "local", Connected: true, ReadOnly: r.localRO, Terminal: r.localTerm && !r.localRO}
+	if lk, ok := r.local.(interface{ Locks() engine.HostLocks }); ok {
+		l := lk.Locks()
+		e.Locks = &l
+	}
+	if hn, ok := r.local.(interface{ Network() (string, string) }); ok {
+		e.HostIP, e.BaseDomain = hn.Network()
+	}
+	return e
 }
 
 // Remote returns the live tunnel client for a connected agent, or nil if offline.
@@ -117,7 +146,7 @@ func (r *Registry) Remote(id string) (*Remote, AgentInfo, bool) {
 func (r *Registry) List(ctx context.Context) ([]Entry, error) {
 	var out []Entry
 	if r.local != nil {
-		out = append(out, Entry{ID: LocalID, Name: r.localName, Kind: "local", Connected: true, ReadOnly: r.localRO, Terminal: r.localTerm && !r.localRO})
+		out = append(out, r.localEntry())
 	}
 	agents, err := r.st.Agents(ctx)
 	if err != nil {

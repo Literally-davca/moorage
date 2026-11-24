@@ -48,11 +48,31 @@
   import key from '@tabler/icons/outline/key.svg?raw';
   import chevronDown from '@tabler/icons/outline/chevron-down.svg?raw';
   import settings from '@tabler/icons/outline/settings.svg?raw';
+  import info from '@tabler/icons/outline/info-circle.svg?raw';
+  import zoomIn from '@tabler/icons/outline/zoom-in.svg?raw';
+  import zoomOut from '@tabler/icons/outline/zoom-out.svg?raw';
+  import fit from '@tabler/icons/outline/arrows-maximize.svg?raw';
+  import columns from '@tabler/icons/outline/layout-columns.svg?raw';
+  import logs from '@tabler/icons/outline/file-text.svg?raw';
+  import shield from '@tabler/icons/outline/shield-check.svg?raw';
+  import clock from '@tabler/icons/outline/clock.svg?raw';
+  import filter from '@tabler/icons/outline/filter.svg?raw';
+  import link from '@tabler/icons/outline/link.svg?raw';
+  import puzzle from '@tabler/icons/outline/puzzle.svg?raw';
+  import robot from '@tabler/icons/outline/robot.svg?raw';
+  import webhook from '@tabler/icons/outline/webhook.svg?raw';
+  import upload from '@tabler/icons/outline/upload.svg?raw';
+  import bolt from '@tabler/icons/outline/bolt.svg?raw';
+  import calendar from '@tabler/icons/outline/calendar-time.svg?raw';
+  import merge from '@tabler/icons/outline/git-merge.svg?raw';
+  import swap from '@tabler/icons/outline/arrows-exchange.svg?raw';
+  import code from '@tabler/icons/outline/code.svg?raw';
 
   const icons = {
     anchor, search, plus, play, stop, refresh, download, trash, lock, dots, x, check, alert, logout, sun, moon,
     arrowDown, arrowUp, pause, eraser, terminal, server, power, cloudDown, wand, menu, chevronLeft, wrap, history, rollback, selector, copy, plug, pulse, bell, world, clipboardList, tool, hierarchy,
     template, eye, eyeOff, external, users, userCircle, key, chevronDown, settings,
+    info, zoomIn, zoomOut, fit, columns, logs, shield, clock, filter, link, puzzle, robot, webhook, upload, bolt, calendar, merge, swap, code,
 
   };
   export type IconName = keyof typeof icons;

@@ -431,6 +431,124 @@ var migrations = []string{
 		created  INTEGER NOT NULL
 	);
 	CREATE INDEX idx_push_subscriptions_user ON push_subscriptions(user_id);`,
+	// Per-stack settings: the deploy strategy (standard recreate or rolling / safe-swap).
+	`CREATE TABLE stack_settings (
+		host_id  TEXT NOT NULL,
+		stack    TEXT NOT NULL,
+		strategy TEXT NOT NULL DEFAULT 'standard',
+		PRIMARY KEY (host_id, stack)
+	);`,
+	// Dependencies: restart a dependent stack when the stack it depends on recovers or deploys.
+	`ALTER TABLE stack_deps ADD COLUMN auto_restart TEXT NOT NULL DEFAULT 'off';`,
+	// Sidecar add-ons install per host: the key becomes (id, host_id). Custom add-ons keep
+	// their own compose fragment and the .env keys they own.
+	`CREATE TABLE installed_addons_v2 (
+		id               TEXT    NOT NULL,
+		host_id          TEXT    NOT NULL DEFAULT '',
+		name             TEXT    NOT NULL,
+		kind             TEXT    NOT NULL,
+		category         TEXT    NOT NULL DEFAULT '',
+		description      TEXT    NOT NULL DEFAULT '',
+		version          TEXT    NOT NULL DEFAULT '1',
+		stack_name       TEXT    NOT NULL DEFAULT '',
+		ram              TEXT    NOT NULL DEFAULT '',
+		cpu              TEXT    NOT NULL DEFAULT '',
+		enabled          INTEGER NOT NULL DEFAULT 1,
+		installed_at     INTEGER NOT NULL,
+		updated_at       INTEGER NOT NULL,
+		custom           INTEGER NOT NULL DEFAULT 0,
+		compose_fragment TEXT    NOT NULL DEFAULT '',
+		env_keys         TEXT    NOT NULL DEFAULT '',
+		source           TEXT    NOT NULL DEFAULT '',
+		PRIMARY KEY (id, host_id)
+	);
+	INSERT INTO installed_addons_v2 (id, host_id, name, kind, category, description, version, stack_name, ram, cpu, enabled, installed_at, updated_at)
+		SELECT id, host_id, name, kind, category, description, version, stack_name, ram, cpu, enabled, installed_at, updated_at FROM installed_addons;
+	DROP TABLE installed_addons;
+	ALTER TABLE installed_addons_v2 RENAME TO installed_addons;`,
+	// Custom HTTPS catalogues of add-ons (like template sources).
+	`CREATE TABLE addon_sources (
+		id            INTEGER PRIMARY KEY,
+		name          TEXT    NOT NULL,
+		url           TEXT    NOT NULL UNIQUE,
+		allow_private INTEGER NOT NULL DEFAULT 0,
+		enabled       INTEGER NOT NULL DEFAULT 1,
+		cache         TEXT    NOT NULL DEFAULT '',
+		fetched_at    INTEGER NOT NULL DEFAULT 0,
+		error         TEXT    NOT NULL DEFAULT '',
+		created_at    INTEGER NOT NULL
+	);`,
+	// MCP server: tokens (only their SHA-256 is stored) and drafts waiting for approval.
+	`CREATE TABLE mcp_tokens (
+		id               INTEGER PRIMARY KEY,
+		name             TEXT    NOT NULL UNIQUE,
+		token_hash       TEXT    NOT NULL UNIQUE,
+		acl              TEXT    NOT NULL DEFAULT '[]',
+		require_approval INTEGER NOT NULL DEFAULT 0,
+		expires_at       INTEGER NOT NULL DEFAULT 0,
+		created_at       INTEGER NOT NULL,
+		created_by       TEXT    NOT NULL DEFAULT '',
+		last_used_at     INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE TABLE mcp_drafts (
+		id          INTEGER PRIMARY KEY,
+		token_name  TEXT    NOT NULL,
+		tool        TEXT    NOT NULL,
+		host_id     TEXT    NOT NULL,
+		stack       TEXT    NOT NULL,
+		compose     TEXT    NOT NULL DEFAULT '',
+		env         TEXT    NOT NULL DEFAULT '',
+		env_keys    TEXT    NOT NULL DEFAULT '[]',
+		note        TEXT    NOT NULL DEFAULT '',
+		deploy      INTEGER NOT NULL DEFAULT 0,
+		create_new  INTEGER NOT NULL DEFAULT 0,
+		status      TEXT    NOT NULL DEFAULT 'pending',
+		created_at  INTEGER NOT NULL,
+		decided_by  TEXT    NOT NULL DEFAULT '',
+		decided_at  INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX idx_mcp_drafts_status ON mcp_drafts(status, created_at DESC);`,
+	// Scheduled tasks (stack-scheduler add-on).
+	`CREATE TABLE scheduled_tasks (
+		id          INTEGER PRIMARY KEY,
+		name        TEXT    NOT NULL,
+		host_id     TEXT    NOT NULL,
+		stack       TEXT    NOT NULL,
+		cron        TEXT    NOT NULL,
+		action      TEXT    NOT NULL,
+		service     TEXT    NOT NULL DEFAULT '',
+		command     TEXT    NOT NULL DEFAULT '',
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		channels    TEXT    NOT NULL DEFAULT '[]',
+		last_run_at INTEGER NOT NULL DEFAULT 0,
+		last_status TEXT    NOT NULL DEFAULT '',
+		last_output TEXT    NOT NULL DEFAULT '',
+		created_at  INTEGER NOT NULL
+	);`,
+	// Registry webhooks (registry-webhooks add-on). The token is stored as a SHA-256; the
+	// optional signing secret has to stay readable to verify X-Hub-Signature-256.
+	`CREATE TABLE registry_webhooks (
+		id          INTEGER PRIMARY KEY,
+		name        TEXT    NOT NULL,
+		provider    TEXT    NOT NULL,
+		token_hash  TEXT    NOT NULL UNIQUE,
+		secret      TEXT    NOT NULL DEFAULT '',
+		apply_now   INTEGER NOT NULL DEFAULT 0,
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		created_at  INTEGER NOT NULL,
+		last_hit_at INTEGER NOT NULL DEFAULT 0,
+		last_result TEXT    NOT NULL DEFAULT ''
+	);`,
+	// Shared variables offered to templates and .env editors.
+	`CREATE TABLE shared_vars (
+		id         INTEGER PRIMARY KEY,
+		key        TEXT    NOT NULL,
+		value      TEXT    NOT NULL DEFAULT '',
+		host_id    TEXT    NOT NULL DEFAULT '',
+		secret     INTEGER NOT NULL DEFAULT 0,
+		updated_at INTEGER NOT NULL,
+		UNIQUE (key, host_id)
+	);`,
 }
 
 // Open opens (and migrates) moorage.db in dataDir.

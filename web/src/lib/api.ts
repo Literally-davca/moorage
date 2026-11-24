@@ -112,18 +112,142 @@ async function rawError(res: Response): Promise<string> {
   }
 }
 
+export interface HostLockRow {
+  id: string;
+  name: string;
+  kind: string;
+  connected: boolean;
+  readOnly: boolean;
+  manageExternal: boolean;
+  containerTerminal: boolean;
+  hostTerminal: boolean;
+  exec: boolean;
+  selfUpdate: boolean;
+}
 export interface SettingsConfig {
   publicUrl: string;
   publicUrlRestart: boolean;
+  statusPublicUrl?: string;
+  agentPublicAddr?: string;
   metricsTokenSet: boolean;
   metricsUrl: string;
   updateChannel: 'stable' | 'pre';
   cleanupEnabled: boolean;
   cleanupSchedule: string;
   cleanupVolumes: boolean;
-  fromEnv: { publicUrl?: boolean; metricsToken?: boolean; updateChannel?: boolean };
-  envLocks: { readOnly?: boolean; terminal?: boolean; trustedProxies?: boolean; oidc?: boolean; selfUpdate?: boolean };
+  fromEnv: {
+    publicUrl?: boolean;
+    statusPublicUrl?: boolean;
+    agentPublicAddr?: boolean;
+    metricsToken?: boolean;
+    updateChannel?: boolean;
+  };
+  envLocks: {
+    readOnly?: boolean;
+    manageExternal?: boolean;
+    terminal?: boolean;
+    hostTerminal?: boolean;
+    exec?: boolean;
+    trustedProxies?: boolean;
+    oidc?: boolean;
+    selfUpdate?: boolean;
+  };
+  hostLocks?: HostLockRow[];
   diagnostics: DiagnosticItem[];
+}
+export interface SharedVar {
+  id: number;
+  key: string;
+  value?: string;
+  isSet: boolean;
+  hostId: string;
+  secret: boolean;
+  fromEnv?: boolean;
+}
+export interface SisterLink {
+  label: string;
+  url: string;
+}
+export interface SisterLinks {
+  grafanaUrl: string;
+  beszelUrl: string;
+  links: SisterLink[];
+}
+export interface CoolifyHostConn {
+  hostId: string;
+  url: string;
+  token?: string;
+  clearToken?: boolean;
+  tokenSet?: boolean;
+  allowPrivate: boolean;
+}
+export interface ConnectionsConfig {
+  oidc: {
+    issuer: string;
+    clientId: string;
+    clientSecretSet: boolean;
+    scopes: string[];
+    groupsClaim: string;
+    adminGroups: string[];
+    viewerGroups: string[];
+    defaultRole: string;
+    label: string;
+    localLogin: boolean;
+    fromEnv: boolean;
+    ready: boolean;
+    redirectUri?: string;
+    lastError?: string;
+  };
+  coolify: {
+    url: string;
+    tokenSet: boolean;
+    allowPrivate: boolean;
+    fromEnv: boolean;
+    hosts: CoolifyHostConn[];
+  };
+  registries: {
+    server: string;
+    username: string;
+    passwordSet: boolean;
+    fromEnv?: boolean;
+  }[];
+  panels: {
+    grafanaUrl: string;
+    grafanaTokenSet: boolean;
+    grafanaFolderUid?: string;
+    grafanaAllowPrivate: boolean;
+    beszelUrl: string;
+    links: SisterLink[];
+    fromEnv: Record<string, boolean>;
+  };
+}
+export interface RemoteBackupLastStatus {
+  at: string;
+  ok: boolean;
+  target?: string;
+  sizeBytes?: number;
+  pruned?: number;
+  error?: string;
+}
+export interface RemoteBackupConfig {
+  enabled: boolean;
+  provider: 'off' | 's3' | 'webdav';
+  schedule: string;
+  retention: number;
+  backupPasswordSet: boolean;
+  s3Endpoint: string;
+  s3Bucket: string;
+  s3Region: string;
+  s3AccessKey: string;
+  s3SecretKeySet: boolean;
+  s3Prefix: string;
+  s3AllowPrivate: boolean;
+  webdavUrl: string;
+  webdavUsername: string;
+  webdavPasswordSet: boolean;
+  webdavAllowPrivate: boolean;
+  fromEnv: Record<string, boolean>;
+  last?: RemoteBackupLastStatus;
 }
 export interface OIDCStatus {
   configured: boolean;
@@ -218,6 +342,14 @@ export interface StackSummary {
   /** Moorage itself runs from this stack: no stop/down/delete, changes go through Apply & restart. */
   self?: boolean;
   urls?: string[];
+  displayName?: string;
+  coolifyUuid?: string;
+  coolifyType?: string;
+  coolifyProject?: string;
+  coolifyEnv?: string;
+  coolifyUrl?: string;
+  coolifyPr?: string;
+  coolifyDeploying?: boolean;
 }
 export interface Container {
   id: string;
@@ -264,6 +396,11 @@ export interface HostInfo extends EngineFields {
   stacksDir: string;
   reachable: boolean;
   error?: string;
+  locks?: HostLocks;
+  hostIp?: string;
+  baseDomain?: string;
+  hostIpFromEnv?: boolean;
+  baseDomainFromEnv?: boolean;
 }
 /** Whether the Prometheus endpoint is on; url only when MOORAGE_PUBLIC_URL is set. Never the token. */
 export interface MetricsInfo {
@@ -289,6 +426,12 @@ export interface HostEntry {
   watchdogAddr?: string;
   /** The agent runs checks for the hub (multi-location checks). Older agents don't say. */
   probes?: boolean;
+  /** The host's security switches from its own env (older agents send none). */
+  locks?: HostLocks;
+  hostIp?: string;
+  baseDomain?: string;
+  hostIpFromEnv?: boolean;
+  baseDomainFromEnv?: boolean;
 }
 export interface WatchdogAgent {
   id: string;
@@ -307,7 +450,7 @@ export interface WatchdogSettings {
   agents: WatchdogAgent[];
 }
 export type CheckKind = 'http' | 'tcp' | 'ping' | 'dns' | 'stack' | 'log';
-export type CheckStatus = 'up' | 'down' | 'pending' | 'paused' | 'unknown' | 'maintenance';
+export type CheckStatus = 'up' | 'down' | 'degraded' | 'pending' | 'paused' | 'unknown' | 'maintenance';
 export interface LogLine {
   t: string;
   c: string;
@@ -331,6 +474,10 @@ export interface CheckSettings {
   caseSensitive?: boolean;
   threshold?: number;
   window?: number;
+  /** HTTP: 2–20 URLs of one check (one URL lives in target only). */
+  urls?: string[];
+  /** Stack: 2–20 stacks on any hosts (one stack lives in hostId/target only). */
+  stacks?: StackTarget[];
 }
 export interface CheckInput {
   name: string;
@@ -369,9 +516,71 @@ export interface CheckTestResult {
 }
 export interface Tick {
   at: string;
-  status: 'up' | 'down' | 'silenced' | 'paused' | 'maintenance' | 'unknown';
+  status: 'up' | 'down' | 'degraded' | 'silenced' | 'paused' | 'maintenance' | 'unknown';
   latencyMs: number;
   msg?: string;
+}
+/** One target's answer in the last run of a multi-URL or multi-stack check. */
+export interface TargetResult {
+  target: string;
+  label: string;
+  status: 'up' | 'down' | 'maintenance' | 'silenced' | 'paused' | 'unknown';
+  latencyMs: number;
+  msg: string;
+}
+export interface StackTarget {
+  hostId: string;
+  stack: string;
+}
+export type LintSeverity = 'error' | 'deploy_error' | 'warning' | 'info';
+export interface LintFix {
+  kind: string;
+  label: string;
+  service?: string;
+  line?: number;
+  keys?: string[];
+}
+export interface LintIssue {
+  severity: LintSeverity;
+  code: string;
+  service?: string;
+  line?: number;
+  message: string;
+  fix?: LintFix;
+}
+export interface LintResult {
+  compose: string;
+  env: string;
+  moved?: string[];
+  conflicts?: { key: string; envValue: string; composeValue: string; service: string }[];
+  changed: boolean;
+}
+export type DeployStrategy = 'standard' | 'rolling';
+export interface HostLocks {
+  readOnly: boolean;
+  manageExternal: boolean;
+  extraStacksDirs?: string[];
+  terminal: boolean;
+  hostTerminal: boolean;
+  exec: boolean;
+  selfUpdate: boolean;
+}
+/** One container of a host, compose or standalone (GET /api/hosts/{host}/containers). */
+export interface ContainerInfo extends Container {
+  project?: string;
+  standalone?: boolean;
+  managed?: boolean;
+  workingDir?: string;
+  labels?: Record<string, string>;
+}
+/** Feeds the badges of the top navigation (GET /api/nav-summary). */
+export interface NavSummary {
+  checksFailing: number;
+  maintenanceActive: number;
+  updatesFailed: number;
+  updatesAvailable: number;
+  failing: { id: number; name: string; status: CheckStatus; msg?: string }[];
+  mcpDrafts?: number;
 }
 export interface Anchor {
   at: string;
@@ -392,6 +601,7 @@ export interface Incident {
     logs?: LogLine[];
     note?: string;
     locations?: LocationResult[];
+    targets?: TargetResult[];
   };
 }
 export interface Check extends CheckInput {
@@ -401,6 +611,7 @@ export interface Check extends CheckInput {
     since?: string;
     last?: { at: string; status: string; latencyMs: number; msg: string };
     locations?: LocationResult[];
+    targets?: TargetResult[];
   };
   uptime24h: number | null;
   uptime7d?: number | null;
@@ -485,6 +696,15 @@ export interface Channel {
   config: ChannelConfig;
   enabled: boolean;
 }
+export interface LogLine {
+  t: string;
+  c: string;
+  p?: string;
+  svc?: string;
+  s: string;
+  m: string;
+}
+
 export interface Op {
   id: string;
   stack: string;
@@ -739,6 +959,7 @@ export interface TimelineEntry {
     causedBy?: StackRef;
   };
 }
+export type AutoRestartMode = 'off' | 'on_recover' | 'on_recover_and_deploy';
 export interface StackRef {
   hostId: string;
   stack: string;
@@ -753,10 +974,13 @@ export interface StackDep {
   ignored: boolean;
   createdBy?: string;
   createdAt: string;
+  autoRestart?: AutoRestartMode;
 }
 export interface DepNode extends StackRef {
   hostName?: string;
   status?: Status;
+  running?: number;
+  total?: number;
   checks?: CheckStatus | 'silenced';
   inCycle?: boolean;
   external?: boolean;
@@ -927,11 +1151,14 @@ export interface AddonInfo {
   ram?: string;
   cpu?: string;
   hostId?: string;
+  hostName?: string;
   stackName?: string;
   enabled: boolean;
   installed: boolean;
   toggleable: boolean;
   removable: boolean;
+  custom?: boolean;
+  source?: string;
   detail?: string;
   linkHref?: string;
   linkLabel?: string;
@@ -946,6 +1173,93 @@ export interface AddonCatalogEntry {
   resources: { ram: string; cpu: string };
   readme?: string;
   compose?: string;
+  sourceId?: number;
+  sourceName?: string;
+  sourceUrl?: string;
+}
+export interface AddonSource {
+  id: number;
+  name: string;
+  url: string;
+  allowPrivate: boolean;
+  enabled: boolean;
+  fetchedAt?: string;
+  error?: string;
+  createdAt: string;
+}
+export interface CustomAddonDetail {
+  id: string;
+  hostId: string;
+  name: string;
+  category: string;
+  description: string;
+  compose: string;
+  env: string;
+  custom: boolean;
+}
+export interface ScheduledTask {
+  id?: number;
+  name: string;
+  hostId: string;
+  stack: string;
+  cron: string;
+  action: 'restart' | 'start' | 'stop' | 'pull-up' | 'exec';
+  service?: string;
+  command?: string;
+  enabled: boolean;
+  channels: number[];
+  lastRunAt?: string;
+  lastStatus?: string;
+  lastOutput?: string;
+}
+export interface SocketFinding {
+  hostId: string;
+  hostName: string;
+  stack: string;
+  service: string;
+  severity: 'critical' | 'warning';
+  issue: string;
+  detail: string;
+}
+export interface RegistryWebhook {
+  id: number;
+  name: string;
+  provider: string;
+  secretSet: boolean;
+  applyNow: boolean;
+  enabled: boolean;
+  createdAt: string;
+  lastHitAt?: string;
+  lastResult?: string;
+}
+export interface MCPACLRule {
+  hostId: string;
+  stackPattern: string;
+  scope: 'read' | 'operate' | 'deploy';
+}
+export interface MCPToken {
+  id: number;
+  name: string;
+  acl: MCPACLRule[];
+  requireApproval: boolean;
+  expiresAt?: string;
+  createdAt: string;
+  createdBy: string;
+  lastUsedAt?: string;
+}
+export interface MCPDraft {
+  id: number;
+  tokenName: string;
+  tool: string;
+  hostId: string;
+  stack: string;
+  compose: string;
+  envKeys: string[];
+  note: string;
+  deploy: boolean;
+  createNew: boolean;
+  status: string;
+  createdAt: string;
 }
 export interface RemoteTemplateSource {
   id: number;
@@ -1036,23 +1350,41 @@ export const api = {
   revokeSession: (id: number) => request<void>('DELETE', `/api/account/sessions/${id}`),
   revokeOtherSessions: () => request<{ revoked: number }>('DELETE', '/api/account/sessions'),
   hosts: () =>
-    request<{ hosts: HostEntry[]; agentPort?: string; acceptsAgents?: boolean; metrics?: MetricsInfo }>('GET', '/api/hosts'),
+    request<{ hosts: HostEntry[]; agentPort?: string; agentPublicAddr?: string; acceptsAgents?: boolean; metrics?: MetricsInfo }>('GET', '/api/hosts'),
   addAgent: (name: string) => request<{ token: string; expires: string; agentPort: string }>('POST', '/api/agents', { name }),
   renameHost: (id: string, name: string) => request<void>('PATCH', `/api/hosts/${enc(id)}`, { name }),
+  updateHost: (id: string, patch: { name?: string; hostIp?: string; baseDomain?: string }) =>
+    request<void>('PATCH', `/api/hosts/${enc(id)}`, patch),
   removeHost: (id: string) => request<void>('DELETE', `/api/hosts/${enc(id)}`),
   host: () => request<HostInfo>('GET', `${H()}/info`),
   stacks: (host?: string) => request<{ stacks: StackSummary[]; error?: string }>('GET', `/api/hosts/${enc(host ?? app.host)}/stacks`),
   stack: (name: string) => request<Stack>('GET', `${H()}/stacks/${enc(name)}`),
   stats: (name: string) => request<Stat[]>('GET', `${H()}/stacks/${enc(name)}/stats`),
-  validate: (name: string, compose: string, env: string) =>
-    request<{ ok: boolean; error?: string }>('POST', `${H()}/stacks/${enc(name)}/validate`, { compose, env }),
+  validate: (name: string, compose: string, env: string, deploy = false) =>
+    request<{ ok: boolean; error?: string; issues?: LintIssue[] }>('POST', `${H()}/stacks/${enc(name)}/validate`, { compose, env, deploy }),
+  lintFix: (name: string, compose: string, env: string, fix: LintFix) =>
+    request<LintResult>('POST', `${H()}/stacks/${enc(name || 'new')}/lint/fix`, { compose, env, fix }),
+  extractEnv: (name: string, compose: string, env: string, overwrite = false) =>
+    request<LintResult>('POST', `${H()}/stacks/${enc(name || 'new')}/env/extract`, { compose, env, overwrite }),
+  stackStrategy: (name: string) => request<{ strategy: DeployStrategy }>('GET', `${H()}/stacks/${enc(name)}/strategy`),
+  setStackStrategy: (name: string, strategy: DeployStrategy) =>
+    request<void>('PUT', `${H()}/stacks/${enc(name)}/strategy`, { strategy }),
+  containers: (host?: string) => request<ContainerInfo[]>('GET', `/api/hosts/${enc(host ?? app.host)}/containers`),
+  containerAction: (id: string, action: string, host?: string) =>
+    request<Op>('POST', `/api/hosts/${enc(host ?? app.host)}/containers/${enc(id)}/actions/${enc(action)}`),
+  externalAction: (name: string, action: string) => request<Op>('POST', `${H()}/external/${enc(name)}/actions/${enc(action)}`),
   create: (name: string, compose: string, env: string, template?: TemplateRef) =>
     request<void>('POST', `${H()}/stacks`, { name, compose, env, template }),
   templates: () => request<TemplateCatalog>('GET', '/api/templates'),
-  template: (source: string, id: string) =>
-    request<TemplateDetail>('GET', `/api/templates/${enc(source)}/${enc(id)}`),
-  renderTemplate: (source: string, id: string, values: Record<string, string>) =>
-    request<{ template: TemplateEntry; result: RenderedTemplate }>('POST', '/api/templates/render', { source, id, values }),
+  template: (source: string, id: string, host?: string) =>
+    request<TemplateDetail>('GET', `/api/templates/${enc(source)}/${enc(id)}?host=${enc(host ?? app.host)}`),
+  renderTemplate: (source: string, id: string, values: Record<string, string>, hostId?: string) =>
+    request<{ template: TemplateEntry; result: RenderedTemplate }>('POST', '/api/templates/render', {
+      source,
+      id,
+      hostId: hostId ?? app.host,
+      values,
+    }),
   templateSources: () => request<{ sources: RemoteTemplateSource[]; dir: string }>('GET', '/api/templates/sources'),
   addTemplateSource: (url: string, allowLocal: boolean) =>
     request<{ id: number }>('POST', '/api/templates/sources', { url, allowLocal }),
@@ -1064,7 +1396,8 @@ export const api = {
   selfApply: (name: string, compose: string, env: string) =>
     request<void>('POST', `${H()}/stacks/${enc(name)}/self-apply`, { compose, env }),
   remove: (name: string) => request<void>('DELETE', `${H()}/stacks/${enc(name)}`),
-  action: (name: string, action: string) => request<Op>('POST', `${H()}/stacks/${enc(name)}/actions/${enc(action)}`),
+  action: (name: string, action: string, strategy?: DeployStrategy) =>
+    request<Op>('POST', `${H()}/stacks/${enc(name)}/actions/${enc(action)}${strategy ? `?strategy=${strategy}` : ''}`),
   timeline: (name: string, q: TimelineQuery = {}) => {
     const p = new URLSearchParams();
     if (q.before) p.set('before', q.before);
@@ -1086,6 +1419,7 @@ export const api = {
   stacksOf: (host: string) => request<{ stacks: StackSummary[]; error?: string }>('GET', `/api/hosts/${enc(host)}/stacks`),
   health: (name: string) => request<{ checks: Check[]; anchors: Anchor[] }>('GET', `${H()}/stacks/${enc(name)}/health`),
   checks: () => request<Check[]>('GET', '/api/checks'),
+  navSummary: () => request<NavSummary>('GET', '/api/nav-summary'),
   check: (id: number) => request<Check>('GET', `/api/checks/${id}`),
   saveCheck: (id: number | null, c: CheckInput) =>
     request<{ id: number }>(id ? 'PUT' : 'POST', id ? `/api/checks/${id}` : '/api/checks', c),
@@ -1170,13 +1504,138 @@ export const api = {
     const qs = q.toString();
     return request<{ addons: AddonInfo[]; catalog?: AddonCatalogEntry[]; catalogError?: string }>('GET', `/api/addons${qs ? '?' + qs : ''}`);
   },
-  installAddon: (id: string, hostId?: string) => request<void>('POST', '/api/addons/install', { id, hostId }),
-  setAddon: (id: string, enabled: boolean) => request<void>('PUT', `/api/addons/${enc(id)}`, { enabled }),
-  uninstallAddon: (id: string) => request<void>('DELETE', `/api/addons/${enc(id)}`),
+  installAddon: (id: string, hostIds?: string | string[], source?: string) => {
+    const list = Array.isArray(hostIds) ? hostIds : hostIds ? [hostIds] : [];
+    return request<void>('POST', '/api/addons/install', {
+      id,
+      hostId: list[0] ?? '',
+      hostIds: list,
+      source: source ?? '',
+    });
+  },
+  setAddon: (id: string, enabled: boolean, hostId?: string) =>
+    request<void>('PUT', `/api/addons/${enc(id)}${hostId ? `?host=${enc(hostId)}` : ''}`, { enabled, hostId }),
+  uninstallAddon: (id: string, hostId?: string) =>
+    request<void>('DELETE', `/api/addons/${enc(id)}${hostId ? `?host=${enc(hostId)}` : ''}`),
+  createCustomAddon: (body: {
+    id: string;
+    name: string;
+    category: string;
+    description: string;
+    hostIds: string[];
+    compose: string;
+    env: string;
+  }) => request<void>('POST', '/api/addons/custom', body),
+  getCustomAddon: (id: string, hostId?: string) =>
+    request<CustomAddonDetail>('GET', `/api/addons/custom/${enc(id)}${hostId ? `?host=${enc(hostId)}` : ''}`),
+  updateCustomAddon: (
+    id: string,
+    hostId: string,
+    body: { name: string; category: string; description: string; compose: string; env: string },
+  ) => request<void>('PUT', `/api/addons/custom/${enc(id)}${hostId ? `?host=${enc(hostId)}` : ''}`, { ...body, hostId }),
+  addonSources: () => request<{ sources: AddonSource[] }>('GET', '/api/addons/sources'),
+  addAddonSource: (body: { name: string; url: string; allowPrivate: boolean }) =>
+    request<AddonSource>('POST', '/api/addons/sources', body),
+  updateAddonSource: (id: number, body: { name: string; url: string; allowPrivate: boolean; enabled: boolean }) =>
+    request<AddonSource>('PUT', `/api/addons/sources/${id}`, body),
+  deleteAddonSource: (id: number) => request<void>('DELETE', `/api/addons/sources/${id}`),
+  refreshAddonSource: (id: number) => request<AddonSource>('POST', `/api/addons/sources/${id}/refresh`),
+  moveStackToAddons: (name: string, hostId?: string) =>
+    request<{ stack: string; addon: string }>(
+      'POST',
+      `${hostId ? `/api/hosts/${enc(hostId)}` : H()}/stacks/${enc(name)}/move-to-addons`,
+    ),
+  promDashboard: (opts: { scope: string; host?: string; stacks?: string; datasourceUid?: string }) => {
+    const q = new URLSearchParams({ scope: opts.scope });
+    if (opts.host) q.set('host', opts.host);
+    if (opts.stacks) q.set('stacks', opts.stacks);
+    if (opts.datasourceUid) q.set('datasourceUid', opts.datasourceUid);
+    return request<Record<string, unknown>>('GET', `/api/addons/prometheus-grafana/dashboard?${q.toString()}`);
+  },
+  pushGrafanaDashboard: (body: { scope: string; hostId?: string; stacks?: string[]; datasourceUid?: string }) =>
+    request<{ uid: string; url: string; status: string }>('POST', '/api/addons/prometheus-grafana/push', body),
+  promScrape: () =>
+    request<{
+      victoriametrics: { scrape: string; alerts: string };
+      prometheus: { scrape: string; alerts: string };
+    }>('GET', '/api/addons/prometheus-grafana/scrape'),
+  promHomelab: () =>
+    request<{ homepage: string; glance: string; homarr: string }>('GET', '/api/addons/prometheus-grafana/homelab'),
+  coolifyAction: (uuid: string, action: string, opts?: { force?: boolean; type?: string; hostId?: string }) => {
+    const base = opts?.hostId ? `/api/hosts/${enc(opts.hostId)}` : H();
+    return request<{ ok: boolean }>('POST', `${base}/coolify/${enc(uuid)}/actions/${enc(action)}`, {
+      force: !!opts?.force,
+      type: opts?.type ?? '',
+    });
+  },
+  coolifyDeployments: (uuid: string, hostId?: string) => {
+    const base = hostId ? `/api/hosts/${enc(hostId)}` : H();
+    return request<{
+      deployments: { uuid: string; status: string; commit?: string; logs?: string; createdAt?: string }[];
+      error?: string;
+    }>('GET', `${base}/coolify/${enc(uuid)}/deployments`);
+  },
+  coolifyGetEnvs: (uuid: string, hostId?: string) => {
+    const base = hostId ? `/api/hosts/${enc(hostId)}` : H();
+    return request<{ env: string }>('GET', `${base}/coolify/${enc(uuid)}/envs`);
+  },
+  coolifyPutEnvs: (uuid: string, env: string, redeploy: boolean, hostId?: string) => {
+    const base = hostId ? `/api/hosts/${enc(hostId)}` : H();
+    return request<{ ok: boolean; redeployed: boolean }>('PUT', `${base}/coolify/${enc(uuid)}/envs`, { env, redeploy });
+  },
+  schedulerTasks: () => request<{ tasks: ScheduledTask[] }>('GET', '/api/addons/scheduler/tasks'),
+  saveSchedulerTask: (t: ScheduledTask) =>
+    request<ScheduledTask>(t.id ? 'PUT' : 'POST', t.id ? `/api/addons/scheduler/tasks/${t.id}` : '/api/addons/scheduler/tasks', t),
+  deleteSchedulerTask: (id: number) => request<void>('DELETE', `/api/addons/scheduler/tasks/${id}`),
+  runSchedulerTask: (id: number) => request<void>('POST', `/api/addons/scheduler/tasks/${id}/run`),
+  socketProxyScan: (mode: 'ro' | 'write' = 'ro') =>
+    request<{ findings: SocketFinding[]; snippet: string }>('GET', `/api/addons/socket-proxy/scan?mode=${mode}`),
+  registryWebhooks: () => request<{ webhooks: RegistryWebhook[] }>('GET', '/api/addons/webhooks'),
+  createRegistryWebhook: (body: { name: string; provider: string; secret: string; applyNow: boolean }) =>
+    request<{ webhook: RegistryWebhook; token: string; url: string }>('POST', '/api/addons/webhooks', body),
+  deleteRegistryWebhook: (id: number) => request<void>('DELETE', `/api/addons/webhooks/${id}`),
+  mcpTokens: () => request<{ tokens: MCPToken[]; endpoint: string }>('GET', '/api/addons/mcp/tokens'),
+  createMCPToken: (body: { name: string; acl: MCPACLRule[]; requireApproval: boolean; expiresDays: number }) =>
+    request<{ token: MCPToken; secret: string }>('POST', '/api/addons/mcp/tokens', body),
+  deleteMCPToken: (id: number) => request<void>('DELETE', `/api/addons/mcp/tokens/${id}`),
+  mcpDrafts: (status = '') =>
+    request<{ drafts: MCPDraft[] }>('GET', `/api/addons/mcp/drafts${status ? `?status=${enc(status)}` : ''}`),
+  approveMCPDraft: (id: number) => request<{ ok: boolean }>('POST', `/api/addons/mcp/drafts/${id}/approve`),
+  rejectMCPDraft: (id: number) => request<void>('POST', `/api/addons/mcp/drafts/${id}/reject`),
   settingsConfig: () => request<SettingsConfig>('GET', '/api/settings/config'),
-  saveSettingsConfig: (patch: Partial<{ publicUrl: string; metricsToken: string; updateChannel: string; cleanupEnabled: boolean; cleanupSchedule: string; cleanupVolumes: boolean }>) =>
-    request<SettingsConfig>('PUT', '/api/settings/config', patch),
+  saveSettingsConfig: (
+    patch: Partial<{
+      publicUrl: string;
+      statusPublicUrl: string;
+      agentPublicAddr: string;
+      metricsToken: string;
+      updateChannel: string;
+      cleanupEnabled: boolean;
+      cleanupSchedule: string;
+      cleanupVolumes: boolean;
+    }>,
+  ) => request<SettingsConfig>('PUT', '/api/settings/config', patch),
   generateMetricsToken: () => request<{ token: string }>('POST', '/api/settings/metrics-token'),
+  sisterLinks: () => request<SisterLinks>('GET', '/api/sister-links'),
+  sharedVars: () => request<{ vars: SharedVar[] }>('GET', '/api/settings/shared-vars'),
+  saveSharedVar: (v: { key: string; value: string; hostId: string; secret: boolean }) =>
+    request<SharedVar>('POST', '/api/settings/shared-vars', v),
+  deleteSharedVar: (id: number) => request<void>('DELETE', `/api/settings/shared-vars/${id}`),
+  connections: () => request<ConnectionsConfig>('GET', '/api/settings/connections'),
+  saveConnections: (patch: Record<string, unknown>) =>
+    request<ConnectionsConfig>('PUT', '/api/settings/connections', patch),
+  testOIDC: (body: { issuer: string; clientId: string; clientSecret?: string; scopes?: string[] }) =>
+    request<{ ok: boolean; redirectUri?: string }>('POST', '/api/settings/connections/oidc/test', body),
+  testCoolify: (body: { hostId?: string; url: string; token?: string; allowPrivate: boolean }) =>
+    request<{ ok: boolean; version?: string }>('POST', '/api/settings/connections/coolify/test', body),
+  testRegistry: (body: { server: string; username: string; password?: string; allowPrivate?: boolean }) =>
+    request<{ ok: boolean }>('POST', '/api/settings/connections/registry/test', body),
+  testGrafana: (body: { url: string; token?: string; allowPrivate: boolean }) =>
+    request<{ ok: boolean }>('POST', '/api/settings/connections/grafana/test', body),
+  remoteBackup: () => request<RemoteBackupConfig>('GET', '/api/settings/backup/remote'),
+  saveRemoteBackup: (body: Record<string, unknown>) =>
+    request<RemoteBackupConfig>('PUT', '/api/settings/backup/remote', body),
+  runRemoteBackupNow: () => request<RemoteBackupLastStatus>('POST', '/api/settings/backup/remote/run'),
   /** Downloads an encrypted backup (.mbk) of the hub database, stacks and histories. */
   exportBackup: async (password: string) => {
     const res = await fetch('/api/settings/backup/export', {
@@ -1218,12 +1677,36 @@ export const api = {
   pruneDisk: (hostId: string, body: PruneRequest) => request<PruneResult>('POST', `/api/hosts/${enc(hostId)}/prune`, body),
   autoRollbacks: () => request<AutoRollback[]>('GET', '/api/auto-rollbacks'),
   ackAutoRollback: (id: number) => request<void>('POST', `/api/auto-rollbacks/${id}/ack`),
+  logsHistory: (opts: { stack?: string; container?: string; since?: string; until?: string; tail?: number; hostId?: string }) => {
+    const q = new URLSearchParams();
+    if (opts.stack) q.set('stack', opts.stack);
+    if (opts.container) q.set('container', opts.container);
+    if (opts.since) q.set('since', opts.since);
+    if (opts.until) q.set('until', opts.until);
+    if (opts.tail !== undefined) q.set('tail', String(opts.tail));
+    const base = opts.hostId ? `/api/hosts/${enc(opts.hostId)}` : H();
+    return request<{ lines: LogLine[]; truncated: boolean }>('GET', `${base}/logs/history?${q.toString()}`);
+  },
+  logsDownloadUrl: (opts: { stack?: string; container?: string; since?: string; until?: string; hostId?: string }) => {
+    const q = new URLSearchParams();
+    if (opts.stack) q.set('stack', opts.stack);
+    if (opts.container) q.set('container', opts.container);
+    if (opts.since) q.set('since', opts.since);
+    if (opts.until) q.set('until', opts.until);
+    const base = opts.hostId ? `/api/hosts/${enc(opts.hostId)}` : H();
+    const qs = q.toString();
+    return `${base}/logs/download${qs ? '?' + qs : ''}`;
+  },
   deps: (host?: string) => request<HostDeps>('GET', `/api/hosts/${enc(host ?? app.host)}/deps`),
   detectDeps: (host?: string) => request<DepDetection>('POST', `/api/hosts/${enc(host ?? app.host)}/deps/detect`),
-  addDep: (name: string, to: StackRef) => request<StackDep>('POST', `${H()}/stacks/${enc(name)}/deps`, to),
-  removeDep: (name: string, id: number) => request<void>('DELETE', `${H()}/stacks/${enc(name)}/deps/${id}`),
-  ignoreDep: (name: string, id: number, ignored: boolean) =>
-    request<void>('PUT', `${H()}/stacks/${enc(name)}/deps/${id}/ignored`, { ignored }),
+  addDep: (name: string, to: StackRef, fromHost?: string) =>
+    request<StackDep>('POST', `/api/hosts/${enc(fromHost ?? app.host)}/stacks/${enc(name)}/deps`, to),
+  removeDep: (name: string, id: number, fromHost?: string) =>
+    request<void>('DELETE', `/api/hosts/${enc(fromHost ?? app.host)}/stacks/${enc(name)}/deps/${id}`),
+  ignoreDep: (name: string, id: number, ignored: boolean, fromHost?: string) =>
+    request<void>('PUT', `/api/hosts/${enc(fromHost ?? app.host)}/stacks/${enc(name)}/deps/${id}/ignored`, { ignored }),
+  setDepAutoRestart: (name: string, id: number, mode: AutoRestartMode, fromHost?: string) =>
+    request<void>('PUT', `/api/hosts/${enc(fromHost ?? app.host)}/stacks/${enc(name)}/deps/${id}/auto-restart`, { mode }),
 };
 
 export function wsURL(path: string): string {

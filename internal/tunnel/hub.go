@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -34,12 +35,30 @@ type Hub struct {
 	Reg          *host.Registry
 	Log          *slog.Logger
 	HubName      string
+	pubMu        sync.RWMutex
 	PublicURL    string
 	OnConnect    func(id string)
 	OnDisconnect func(id string)
 	// MaintenanceUntil returns the end of a running planned maintenance window that covers
 	// everything (zero if none). It extends the watchdog pause pushed to the agents.
 	MaintenanceUntil func(now time.Time) time.Time
+}
+
+// SetPublicURL updates the hub public URL live and pushes updated watchdog links to agents.
+func (h *Hub) SetPublicURL(u string) {
+	if h == nil {
+		return
+	}
+	h.pubMu.Lock()
+	h.PublicURL = strings.TrimRight(u, "/")
+	h.pubMu.Unlock()
+	go h.PushWatchdog(context.Background())
+}
+
+func (h *Hub) getPublicURL() string {
+	h.pubMu.RLock()
+	defer h.pubMu.RUnlock()
+	return strings.TrimRight(h.PublicURL, "/")
 }
 
 // NewJoinToken creates a one-time token for pairing an agent called name.
@@ -304,7 +323,7 @@ func (h *Hub) PushWatchdog(ctx context.Context) {
 			Grace:            ws.Grace,
 			MaintenanceUntil: maintUntil,
 			HubName:          hubName,
-			PublicURL:        strings.TrimRight(h.PublicURL, "/"),
+			PublicURL:        h.getPublicURL(),
 			ChannelKind:      ch.Kind,
 			ChannelConfig:    chCfg,
 			Peers:            peers,
@@ -348,7 +367,7 @@ func (h *Hub) TestWatchdog(ctx context.Context, ch store.Channel) (string, error
 			}
 			err := rm.TestWatchdog(ctx, map[string]any{
 				"hubName":       hubName,
-				"publicUrl":     strings.TrimRight(h.PublicURL, "/"),
+				"publicUrl":     h.getPublicURL(),
 				"channelKind":   ch.Kind,
 				"channelConfig": chCfg,
 			})

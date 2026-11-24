@@ -1,9 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, type HostDeps, type StackDep } from '../lib/api';
+  import { api, type AutoRestartMode, type HostDeps, type StackDep } from '../lib/api';
   import { app, isAdmin, link } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
-  import { detectionText, edgeText, nodeClass, nodeText, refKey } from '../lib/deps';
+  import { autoRestartLabels, detectionText, edgeText, nodeClass, nodeText, refKey } from '../lib/deps';
 
   let { name }: { name: string } = $props();
 
@@ -97,10 +97,23 @@
       <span class="meta sub">{nodeText(n)} · {edgeText(e)}{e.detail ? ` · ${e.detail}` : ''}</span>
     </span>
     {#if isAdmin()}
+      {#if !e.ignored}
+        <select
+          class="field auto-sel"
+          aria-label="Auto-restart policy"
+          value={e.autoRestart ?? 'off'}
+          disabled={busy}
+          onchange={(ev) => act(() => api.setDepAutoRestart(name, e.id, ev.currentTarget.value as AutoRestartMode))}
+        >
+          {#each Object.entries(autoRestartLabels) as [val, txt] (val)}
+            <option value={val}>{txt}</option>
+          {/each}
+        </select>
+      {/if}
       {#if e.source === 'manual'}
-        <button class="btn btn-sm btn-ghost" disabled={busy} onclick={() => act(() => api.removeDep(name, e.id))}>Remove</button>
+        <button class="btn btn-sm btn-ghost" disabled={busy} onclick={() => act(() => api.removeDep(name, e.id))}>Delete</button>
       {:else if e.ignored}
-        <button class="btn btn-sm btn-ghost" disabled={busy} onclick={() => act(() => api.ignoreDep(name, e.id, false))}>Use again</button>
+        <button class="btn btn-sm btn-ghost" disabled={busy} onclick={() => act(() => api.ignoreDep(name, e.id, false))}>Unignore</button>
       {:else}
         <button class="btn btn-sm btn-ghost" disabled={busy} onclick={() => act(() => api.ignoreDep(name, e.id, true))} title="This dependency is wrong: don't use it for alert grouping">Ignore</button>
       {/if}
@@ -228,6 +241,12 @@
   }
   .add-btn {
     justify-self: start;
+  }
+  .auto-sel {
+    width: auto;
+    height: 28px;
+    padding: 0 8px;
+    font-size: 12px;
   }
   @media (max-width: 640px) {
     .cols {

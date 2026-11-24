@@ -245,7 +245,7 @@ func (s *Store) RecentResults(ctx context.Context, checkID int64, n int) ([]Resu
 func (s *Store) Uptime(ctx context.Context, checkID int64, since time.Time) (float64, int, error) {
 	var up, total int
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(status = 'up'), 0), COUNT(*) FROM check_results
-		WHERE check_id = ? AND ts >= ? AND status IN ('up', 'down')`, checkID, since.UnixMilli()).Scan(&up, &total)
+		WHERE check_id = ? AND ts >= ? AND status IN ('up', 'down', 'degraded')`, checkID, since.UnixMilli()).Scan(&up, &total)
 	if err != nil || total == 0 {
 		return 0, 0, err
 	}
@@ -271,6 +271,13 @@ func (s *Store) OpenIncident(ctx context.Context, checkID int64, at time.Time, c
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+// SetIncidentCauseText replaces the cause of an open incident (a partially down check
+// that went fully down).
+func (s *Store) SetIncidentCauseText(ctx context.Context, id int64, cause string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE incidents SET cause = ? WHERE id = ? AND ended_at IS NULL`, cause, id)
+	return err
 }
 
 // CloseIncident ends an incident.

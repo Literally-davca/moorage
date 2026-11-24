@@ -1,11 +1,22 @@
 <script lang="ts">
-  import type { MonitoringTab } from '../lib/state.svelte';
+  import { untrack } from 'svelte';
+  import { api } from '../lib/api';
+  import { app, type MonitoringTab } from '../lib/state.svelte';
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import ChecksView from './ChecksView.svelte';
   import StatusPagesView from './StatusPagesView.svelte';
   import MaintenanceView from './MaintenanceView.svelte';
 
   let { tab }: { tab: MonitoringTab } = $props();
+  let grafanaUrl = $state('');
+
+  $effect(() => {
+    untrack(() => {
+      api.sisterLinks()
+        .then((sl) => (grafanaUrl = sl.grafanaUrl))
+        .catch(() => {});
+    });
+  });
 
   const tabs: { id: MonitoringTab; label: string; icon: IconName; href: string }[] = [
     { id: 'checks', label: 'Checks', icon: 'pulse', href: '#/monitoring/checks' },
@@ -19,8 +30,18 @@
     {#each tabs as t (t.id)}
       <a class="tab" href={t.href} aria-current={tab === t.id ? 'page' : undefined}>
         <Icon name={t.icon} /> {t.label}
+        {#if t.id === 'checks' && (app.nav?.checksFailing ?? 0) > 0}
+          <span class="cnt" title="Checks failing">{app.nav?.checksFailing}</span>
+        {:else if t.id === 'maintenance' && (app.nav?.maintenanceActive ?? 0) > 0}
+          <span class="cnt blue" title="Maintenance windows running">{app.nav?.maintenanceActive}</span>
+        {/if}
       </a>
     {/each}
+    {#if grafanaUrl}
+      <a class="tab ext-tab" href={grafanaUrl} target="_blank" rel="noopener noreferrer">
+        Open Grafana <Icon name="external" />
+      </a>
+    {/if}
   </nav>
 
   {#if tab === 'checks'}
@@ -64,5 +85,26 @@
   .tab[aria-current='page'] {
     background: var(--buoy-wash);
     color: var(--foam);
+  }
+  .ext-tab {
+    margin-left: auto;
+    color: var(--buoy-text);
+  }
+  .cnt {
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--adrift-wash);
+    color: var(--adrift-text);
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cnt.blue {
+    background: var(--info-wash);
+    color: var(--info-text);
   }
 </style>

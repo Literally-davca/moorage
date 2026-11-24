@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,8 +23,20 @@ import (
 type LogLine struct {
 	Time      string `json:"t"` // RFC3339Nano from Docker
 	Container string `json:"c"`
-	Stream    string `json:"s"` // stdout | stderr
+	Project   string `json:"p,omitempty"`   // compose project name, empty for standalone
+	Service   string `json:"svc,omitempty"` // compose service name, empty for standalone
+	Stream    string `json:"s"`             // stdout | stderr
 	Message   string `json:"m"`
+}
+
+// LogOptions selects containers and time bounds for QueryLogs.
+type LogOptions struct {
+	Stack     string // "" means across all containers on the host (compose + standalone)
+	Container string // comma-separated IDs, names, or services; "" = all matching Stack
+	Tail      int    // lines per container when > 0
+	Since     string // RFC3339 or Unix seconds
+	Until     string // RFC3339 or Unix seconds
+	Follow    bool   // stream live lines until ctx ends
 }
 
 // maxLogLine cuts absurdly long lines so one container can't exhaust memory.
@@ -73,42 +86,148 @@ func matchesContainer(c Container, want string) bool {
 		return true
 	}
 	for _, w := range strings.Split(want, ",") {
-		if w = strings.TrimSpace(w); w != "" && (c.ID == w || c.Name == w || c.Service == w) {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		if c.ID == w || c.Name == w || c.Service == w || (len(w) >= 12 && strings.HasPrefix(c.ID, w)) {
 			return true
 		}
 	}
 	return false
 }
 
-// StreamLogs follows the logs of every container of a stack (or one container)
-// and calls emit for each line until ctx ends. emit must be safe for concurrent use.
+type logTarget struct {
+	Container
+	Project string
+}
+
+func (e *Engine) resolveLogTargets(ctx context.Context, stack, containerID string) ([]logTarget, error) {
+	if stack != "" {
+		byProject, _, err := e.projectContainers(ctx, stack)
+		if err != nil {
+			return nil, err
+		}
+		var out []logTarget
+		for _, c := range byProject[stack] {
+			if matchesContainer(c, containerID) {
+				out = append(out, logTarget{Container: c, Project: stack})
+			}
+		}
+		return out, nil
+	}
+	all, err := e.AllContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []logTarget
+	for _, ci := range all {
+		if matchesContainer(ci.Container, containerID) {
+			out = append(out, logTarget{Container: ci.Container, Project: ci.Project})
+		}
+	}
+	return out, nil
+}
+
+// StreamLogs follows the logs of every container of a stack (or one container, or across
+// the host when stack == "") and calls emit for each line until ctx ends.
 func (e *Engine) StreamLogs(ctx context.Context, stack, containerID string, tail int, emit func(LogLine)) error {
-	byProject, _, err := e.projectContainers(ctx, stack)
+	return e.QueryLogs(ctx, LogOptions{
+		Stack:     stack,
+		Container: containerID,
+		Tail:      tail,
+		Follow:    true,
+	}, emit)
+}
+
+// QueryLogs streams or fetches container logs with optional Since/Until bounds and
+// host-wide container selection. Non-follow queries across multiple containers are merged
+// in chronological order with bounded per-container channel buffering.
+func (e *Engine) QueryLogs(ctx context.Context, opts LogOptions, emit func(LogLine)) error {
+	targets, err := e.resolveLogTargets(ctx, opts.Stack, opts.Container)
 	if err != nil {
 		return err
 	}
-	var cs []Container
-	for _, c := range byProject[stack] {
-		if matchesContainer(c, containerID) {
-			cs = append(cs, c)
-		}
-	}
-	if len(cs) == 0 {
+	if len(targets) == 0 {
 		return errors.New("no containers")
 	}
+	if opts.Follow || len(targets) == 1 {
+		var wg sync.WaitGroup
+		for _, t := range targets {
+			wg.Add(1)
+			go func(t logTarget) {
+				defer wg.Done()
+				if err := e.containerLogsOpts(ctx, t.Container, t.Project, opts.Tail, opts.Since, opts.Until, opts.Follow, emit); err != nil && ctx.Err() == nil {
+					e.log.Debug("log stream ended", "container", t.Name, "err", err)
+				}
+			}(t)
+		}
+		wg.Wait()
+		if opts.Follow {
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	// K-way merge for historical / download queries across multiple containers so output is
+	// ordered by timestamp without buffering entire multi-megabyte logs in memory.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	chans := make([]chan LogLine, len(targets))
 	var wg sync.WaitGroup
-	for _, c := range cs {
+	for i, t := range targets {
+		ch := make(chan LogLine, 64)
+		chans[i] = ch
 		wg.Add(1)
-		go func(c Container) {
+		go func(t logTarget, ch chan LogLine) {
 			defer wg.Done()
-			if err := e.containerLogs(ctx, c, tail, "", true, emit); err != nil && ctx.Err() == nil {
-				e.log.Debug("log stream ended", "container", c.Name, "err", err)
-			}
-		}(c)
+			defer close(ch)
+			_ = e.containerLogsOpts(ctx, t.Container, t.Project, opts.Tail, opts.Since, opts.Until, false, func(l LogLine) {
+				select {
+				case ch <- l:
+				case <-ctx.Done():
+				}
+			})
+		}(t, ch)
+	}
+	h := &logMergeHeap{}
+	heap.Init(h)
+	for i, ch := range chans {
+		if l, ok := <-ch; ok {
+			heap.Push(h, logHeapItem{line: l, idx: i})
+		}
+	}
+	for h.Len() > 0 {
+		if ctx.Err() != nil {
+			break
+		}
+		top := heap.Pop(h).(logHeapItem)
+		emit(top.line)
+		if next, ok := <-chans[top.idx]; ok {
+			heap.Push(h, logHeapItem{line: next, idx: top.idx})
+		}
 	}
 	wg.Wait()
 	return ctx.Err()
 }
+
+type logHeapItem struct {
+	line LogLine
+	idx  int
+}
+
+type logMergeHeap []logHeapItem
+
+func (h logMergeHeap) Len() int { return len(h) }
+func (h logMergeHeap) Less(i, j int) bool {
+	if h[i].line.Time == h[j].line.Time {
+		return h[i].idx < h[j].idx
+	}
+	return logTimeLess(h[i].line.Time, h[j].line.Time)
+}
+func (h logMergeHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *logMergeHeap) Push(x any)         { *h = append(*h, x.(logHeapItem)) }
+func (h *logMergeHeap) Pop() any           { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
 
 // watchPoll is how often WatchLogs looks for new, restarted or exited containers.
 var watchPoll = 5 * time.Second
@@ -303,16 +422,27 @@ func (e *Engine) TailLogs(ctx context.Context, stack string, n int) ([]LogLine, 
 }
 
 func (e *Engine) containerLogs(ctx context.Context, c Container, tail int, since string, follow bool, emit func(LogLine)) error {
+	return e.containerLogsOpts(ctx, c, "", tail, since, "", follow, emit)
+}
+
+func (e *Engine) containerLogsOpts(ctx context.Context, c Container, project string, tail int, since, until string, follow bool, emit func(LogLine)) error {
 	insp, err := e.api.ContainerInspect(ctx, c.ID, client.ContainerInspectOptions{})
 	if err != nil {
 		return err
 	}
 	tty := insp.Container.Config != nil && insp.Container.Config.Tty
 	opts := client.ContainerLogsOptions{
-		ShowStdout: true, ShowStderr: true, Follow: follow, Timestamps: true, Since: since,
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     follow,
+		Timestamps: true,
+		Since:      since,
+		Until:      until,
 	}
-	if since == "" {
-		opts.Tail = itoa(tail)
+	if tail > 0 {
+		opts.Tail = strconv.Itoa(tail)
+	} else if since == "" && until == "" {
+		opts.Tail = "all"
 	}
 	rc, err := e.api.ContainerLogs(ctx, c.ID, opts)
 	if err != nil {
@@ -320,13 +450,18 @@ func (e *Engine) containerLogs(ctx context.Context, c Container, tail int, since
 	}
 	defer rc.Close()
 
-	out := lineEmitter(c.Name, "stdout", emit)
+	taggedEmit := func(l LogLine) {
+		l.Project = project
+		l.Service = c.Service
+		emit(l)
+	}
+	out := lineEmitter(c.Name, "stdout", taggedEmit)
 	if tty {
 		_, err = io.Copy(out, rc)
 		out.Close()
 		return err
 	}
-	errw := lineEmitter(c.Name, "stderr", emit)
+	errw := lineEmitter(c.Name, "stderr", taggedEmit)
 	_, err = stdcopy.StdCopy(out, errw, rc)
 	out.Close()
 	errw.Close()

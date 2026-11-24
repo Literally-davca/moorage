@@ -16,6 +16,12 @@ type Local struct {
 
 func (l Local) Info(ctx context.Context) engine.HostInfo { return l.E.Host(ctx) }
 
+// Locks returns this host's security switches.
+func (l Local) Locks() engine.HostLocks { return l.E.Locks() }
+
+// Network returns MOORAGE_HOST_IP and MOORAGE_BASE_DOMAIN of this host.
+func (l Local) Network() (string, string) { return l.E.Network() }
+
 func (l Local) ListStacks(ctx context.Context) ([]engine.StackSummary, error) {
 	return l.E.ListStacks(ctx)
 }
@@ -108,6 +114,10 @@ func (l Local) StreamLogs(ctx context.Context, stack, container string, tail int
 	return l.E.StreamLogs(ctx, stack, container, tail, emit)
 }
 
+func (l Local) QueryLogs(ctx context.Context, opts engine.LogOptions, emit func(engine.LogLine)) error {
+	return l.E.QueryLogs(ctx, opts, emit)
+}
+
 func (l Local) WatchLogs(ctx context.Context, stack, container string, f engine.LogFilter, emit func(engine.LogLine)) error {
 	return l.E.WatchLogs(ctx, stack, container, f, emit)
 }
@@ -152,6 +162,40 @@ func (l Local) Terminal(ctx context.Context, stack, container, shell string, col
 		return nil, engine.Container{}, ErrTerminalDisabled
 	}
 	return l.E.Terminal(ctx, stack, container, shell, cols, rows)
+}
+
+func (l Local) ContainerTerminal(ctx context.Context, containerRef, shell string, cols, rows int) (engine.TerminalSession, engine.ContainerInfo, error) {
+	if l.ReadOnly {
+		return nil, engine.ContainerInfo{}, ErrHostReadOnly
+	}
+	if !l.AllowTTY {
+		return nil, engine.ContainerInfo{}, ErrTerminalDisabled
+	}
+	return l.E.ContainerTerminal(ctx, containerRef, shell, cols, rows)
+}
+
+func (l Local) HostTerminal(ctx context.Context, shell string, cols, rows int) (engine.TerminalSession, error) {
+	if l.ReadOnly {
+		return nil, ErrHostReadOnly
+	}
+	return l.E.HostTerminal(ctx, shell, cols, rows)
+}
+
+func (l Local) RelocateBindMounts(_ context.Context, fromStack, addonID string, rollback bool) error {
+	if l.ReadOnly {
+		return ErrHostReadOnly
+	}
+	if rollback {
+		return l.E.RollbackBindMounts(fromStack, addonID)
+	}
+	return l.E.RelocateBindMounts(fromStack, addonID)
+}
+
+func (l Local) ExecCommand(ctx context.Context, stack, service, command string) (string, int, error) {
+	if l.ReadOnly {
+		return "", 0, ErrHostReadOnly
+	}
+	return l.E.ExecCommand(ctx, stack, service, command)
 }
 
 // DepFacts reads the dependency facts of the local stacks.

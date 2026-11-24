@@ -38,7 +38,7 @@ type SelfStack struct {
 // selfBlocked are the actions refused on the self stack. Restart and pull stay allowed;
 // up and update recreate the Moorage container from inside it, which would kill the
 // operation halfway, so they go through SelfApply's helper instead.
-var selfBlocked = map[string]bool{"down": true, "stop": true, "up": true, "up-local": true, "update": true}
+var selfBlocked = map[string]bool{"down": true, "stop": true, "up": true, "up-local": true, "update": true, "rolling": true, "rolling-update": true}
 
 // SetSelf records the stack Moorage runs from; nil means none (binary install).
 func (e *Engine) SetSelf(s *SelfStack) {

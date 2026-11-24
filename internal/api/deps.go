@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
@@ -24,6 +25,8 @@ type depNode struct {
 	store.StackRef
 	HostName string `json:"hostName,omitempty"`
 	Status   string `json:"status,omitempty"`   // container status: up | down | degraded | … ("" unknown)
+	Running  int    `json:"running,omitempty"`  // running container count
+	Total    int    `json:"total,omitempty"`    // total container count
 	Checks   string `json:"checks,omitempty"`   // worst check status of the stack, "" without checks
 	InCycle  bool   `json:"inCycle,omitempty"`  // part of a dependency loop (ignored for grouping)
 	External bool   `json:"external,omitempty"` // on another host than the one viewed
@@ -139,13 +142,17 @@ func (s *Server) allDeps(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(hid string, stacks map[string]bool) {
 			defer wg.Done()
-			status := map[string]string{}
+			type stackMeta struct {
+				status         string
+				running, total int
+			}
+			status := map[string]stackMeta{}
 			lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 			if h, _, err := s.reg.Get(lctx, hid); err == nil {
 				list, lerr := h.ListStacks(lctx)
 				for _, st := range list {
-					status[st.Name] = st.Status
+					status[st.Name] = stackMeta{status: st.Status, running: st.Running, total: st.Total}
 					stacks[st.Name] = true
 				}
 				if lerr != nil {
@@ -170,9 +177,10 @@ func (s *Server) allDeps(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			for name := range stacks {
 				ref := store.StackRef{HostID: hid, Stack: name}
+				sm := status[name]
 				out = append(out, depNode{
-					StackRef: ref, HostName: names[hid], Status: status[name], Checks: checks[ref.Key()],
-					InCycle: g.InCycle(ref),
+					StackRef: ref, HostName: names[hid], Status: sm.status, Running: sm.running, Total: sm.total,
+					Checks: checks[ref.Key()], InCycle: g.InCycle(ref),
 				})
 			}
 			mu.Unlock()
@@ -272,12 +280,16 @@ func (s *Server) depNodes(ctx context.Context, hostID string, edges []store.Stac
 	var out []depNode
 	stacksErr := ""
 	for hid, stacks := range want {
-		status := map[string]string{}
+		type stackMeta struct {
+			status         string
+			running, total int
+		}
+		status := map[string]stackMeta{}
 		lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if h, _, err := s.reg.Get(lctx, hid); err == nil {
 			list, lerr := h.ListStacks(lctx)
 			for _, st := range list {
-				status[st.Name] = st.Status
+				status[st.Name] = stackMeta{status: st.Status, running: st.Running, total: st.Total}
 				if hid == hostID {
 					stacks[st.Name] = true // every stack of the viewed host is a node
 				}
@@ -292,9 +304,10 @@ func (s *Server) depNodes(ctx context.Context, hostID string, edges []store.Stac
 		cancel()
 		for name := range stacks {
 			ref := store.StackRef{HostID: hid, Stack: name}
+			sm := status[name]
 			out = append(out, depNode{
-				StackRef: ref, HostName: names[hid], Status: status[name], Checks: checks[ref.Key()],
-				InCycle: g.InCycle(ref), External: hid != hostID,
+				StackRef: ref, HostName: names[hid], Status: sm.status, Running: sm.running, Total: sm.total,
+				Checks: checks[ref.Key()], InCycle: g.InCycle(ref), External: hid != hostID,
 			})
 		}
 	}
@@ -350,6 +363,23 @@ func (s *Server) addDep(w http.ResponseWriter, r *http.Request) {
 		if _, _, err := s.reg.Get(r.Context(), hid); errors.Is(err, host.ErrUnknownHost) {
 			writeErr(w, http.StatusNotFound, "Host not found.")
 			return
+		}
+	}
+	// Refuse a duplicate and an edge that closes a loop, before anything is stored.
+	if existing, err := s.store.StackDeps(r.Context()); err == nil {
+		for _, e := range existing {
+			if e.From == from && e.To == to && !e.Ignored {
+				writeErr(w, http.StatusConflict, "This dependency already exists.")
+				return
+			}
+		}
+	}
+	if g := s.deps.Graph(); g != nil {
+		for _, up := range g.Upstream(to, 64) {
+			if up == from {
+				writeErr(w, http.StatusConflict, fmt.Sprintf("%s already depends on %s: this edge would make a loop.", to.Stack, from.Stack))
+				return
+			}
 		}
 	}
 	d, err := s.store.AddManualDep(r.Context(), from, to, currentUser(r).Username)
@@ -419,6 +449,31 @@ func (s *Server) ignoreDep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SetDepIgnored(r.Context(), d.ID, req.Ignored); err != nil {
+		s.engErr(w, err)
+		return
+	}
+	s.reloadDeps(r.Context())
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setDepAutoRestart sets the auto-restart policy of an edge (the dependent is restarted
+// when the stack it depends on recovers, or also after it was deployed).
+func (s *Server) setDepAutoRestart(w http.ResponseWriter, r *http.Request) {
+	d, ok := s.depOfPath(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if !store.ValidAutoRestart[req.Mode] {
+		writeErr(w, http.StatusBadRequest, "Pick off, on_recover or on_recover_and_deploy.")
+		return
+	}
+	if err := s.store.SetDepAutoRestart(r.Context(), d.ID, req.Mode); err != nil {
 		s.engErr(w, err)
 		return
 	}

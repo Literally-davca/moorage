@@ -42,6 +42,7 @@ var ErrGone = errors.New("subscription expired")
 type Service struct {
 	st      *store.Store
 	log     *slog.Logger
+	subMu   sync.RWMutex
 	subject string // VAPID "sub": the hub's public URL or the project page
 	client  *http.Client
 
@@ -50,7 +51,22 @@ type Service struct {
 	err  error
 }
 
-// New returns a Web Push service. publicURL (https) identifies the sender to push
+// SetPublicURL updates the VAPID subject live when the admin sets an HTTPS Public URL.
+func (s *Service) SetPublicURL(publicURL string) {
+	sub := "https://github.com/Literally-davca/moorage"
+	if strings.HasPrefix(publicURL, "https://") {
+		sub = strings.TrimRight(publicURL, "/")
+	}
+	s.subMu.Lock()
+	s.subject = sub
+	s.subMu.Unlock()
+}
+
+func (s *Service) getSubject() string {
+	s.subMu.RLock()
+	defer s.subMu.RUnlock()
+	return s.subject
+}
 // services; without one the project page is used.
 func New(st *store.Store, log *slog.Logger, publicURL string) *Service {
 	sub := "https://github.com/Literally-davca/moorage"
@@ -212,7 +228,7 @@ func (s *Service) Send(ctx context.Context, sub store.PushSubscription, data []b
 	if err != nil || u.Scheme != "https" {
 		return errors.New("invalid push endpoint")
 	}
-	jwt, err := vapidJWT(key, u.Scheme+"://"+u.Host, s.subject, time.Now())
+	jwt, err := vapidJWT(key, u.Scheme+"://"+u.Host, s.getSubject(), time.Now())
 	if err != nil {
 		return err
 	}

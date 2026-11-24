@@ -372,7 +372,6 @@
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
-    max-width: 820px;
   }
   .head {
     display: grid;

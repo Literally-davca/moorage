@@ -6,6 +6,7 @@
   import Confirm from '../lib/Confirm.svelte';
   import SystemUpdates from '../lib/SystemUpdates.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
+  import TerminalPanel from './TerminalPanel.svelte';
 
   let { onChanged }: { onChanged: () => void } = $props();
 
@@ -24,11 +25,15 @@
   let readOnly = $state(false);
   let copied = $state('');
 
-  // rename / remove
+  // rename / network / remove
   let editing = $state<string | null>(null);
   let editName = $state('');
+  let editIp = $state('');
+  let editDomain = $state('');
   let removing = $state<HostEntry | null>(null);
   let confirmRemove = $state(false);
+  let beszelUrl = $state('');
+  let hostTermTarget = $state<HostEntry | null>(null);
 
   // disk cleanup
   let pruneHost = $state<HostEntry | null>(null);
@@ -97,11 +102,14 @@
       app.hosts = r.hosts;
       agentPort = r.agentPort || '5081';
       acceptsAgents = r.acceptsAgents ?? false;
-      if (!hubAddr) hubAddr = `${location.hostname}:${agentPort}`;
+      if (!hubAddr) hubAddr = r.agentPublicAddr || `${location.hostname}:${agentPort}`;
       error = '';
     } catch (e) {
       error = (e as Error).message;
     }
+    api.sisterLinks()
+      .then((sl) => (beszelUrl = sl.beszelUrl))
+      .catch(() => {});
     if (isAdmin()) {
       try {
         const [w, chs] = await Promise.all([
@@ -147,9 +155,20 @@
     }
   }
 
-  async function rename(h: HostEntry) {
+  function startEdit(h: HostEntry) {
+    editing = h.id;
+    editName = h.name;
+    editIp = h.hostIp ?? '';
+    editDomain = h.baseDomain ?? '';
+  }
+
+  async function saveHostEdit(h: HostEntry) {
     try {
-      await api.renameHost(h.id, editName.trim());
+      const patch: { name?: string; hostIp?: string; baseDomain?: string } = {};
+      if (h.kind === 'agent') patch.name = editName.trim();
+      if (!h.hostIpFromEnv) patch.hostIp = editIp.trim();
+      if (!h.baseDomainFromEnv) patch.baseDomain = editDomain.trim();
+      await api.updateHost(h.id, patch);
       editing = null;
       await load();
       onChanged();
@@ -319,9 +338,27 @@ volumes:
           <span class="dot {h.connected ? 'up' : 'offline'}"></span>
           <div class="info">
             {#if editing === h.id}
-              <form class="rename" onsubmit={(e) => { e.preventDefault(); rename(h); }}>
-                <input class="field" bind:value={editName} maxlength="40" aria-label="Host name" />
-                <button class="btn btn-primary" disabled={!editName.trim()}>Save</button>
+              <form class="rename" onsubmit={(e) => { e.preventDefault(); saveHostEdit(h); }}>
+                {#if h.kind === 'agent'}
+                  <input class="field" bind:value={editName} maxlength="40" placeholder="Host name" aria-label="Host name" />
+                {/if}
+                <input
+                  class="field mono"
+                  bind:value={editIp}
+                  placeholder="Primary IP / hostname (e.g. 100.87.100.2)"
+                  aria-label="Primary IP or hostname"
+                  disabled={h.hostIpFromEnv}
+                  title={h.hostIpFromEnv ? 'Set via MOORAGE_HOST_IP environment variable' : 'Used for container port links'}
+                />
+                <input
+                  class="field mono"
+                  bind:value={editDomain}
+                  placeholder="Base domain (e.g. apps.example.com)"
+                  aria-label="Base domain"
+                  disabled={h.baseDomainFromEnv}
+                  title={h.baseDomainFromEnv ? 'Set via MOORAGE_BASE_DOMAIN environment variable' : 'Prefills template domains on this host'}
+                />
+                <button class="btn btn-primary" disabled={h.kind === 'agent' && !editName.trim()}>Save</button>
                 <button type="button" class="btn btn-ghost" onclick={() => (editing = null)}>Cancel</button>
               </form>
             {:else}
@@ -330,10 +367,15 @@ volumes:
                 {#if h.kind === 'local'}<span class="tag">This server</span>{/if}
                 {#if h.readOnly}<span class="tag ro"><Icon name="lock" /> Read-only</span>{/if}
                 {#if h.terminal && !h.readOnly}<span class="tag"><Icon name="terminal" /> Terminal</span>{/if}
+                {#if beszelUrl}
+                  <a class="ext-link" href={beszelUrl} target="_blank" rel="noopener noreferrer">Open in Beszel <Icon name="external" /></a>
+                {/if}
               </div>
             {/if}
             <div class="meta details">
               <span class:ok={h.connected}>{seen(h)}</span>
+              {#if h.hostIp}<span class="mono">{h.hostIp}</span>{/if}
+              {#if h.baseDomain}<span class="mono">*.{h.baseDomain}</span>{/if}
               {#if h.hostname && h.hostname !== h.name}<span>{h.hostname}</span>{/if}
               {#if engineLabel(h)}<span>{engineLabel(h)}</span>{/if}
               {#if h.version}<span>Agent {h.version}</span>{/if}
@@ -342,11 +384,29 @@ volumes:
           </div>
           {#if isAdmin() && editing !== h.id}
             <div class="row-actions">
+              {#if h.connected}
+                {@const hostTermOk = !!h.locks?.hostTerminal && !h.readOnly}
+                <button
+                  type="button"
+                  class="btn btn-ghost"
+                  disabled={!hostTermOk}
+                  title={
+                    hostTermOk
+                      ? 'Open interactive shell in this host OS'
+                      : h.readOnly
+                        ? 'Host is read-only (MOORAGE_READ_ONLY=true)'
+                        : 'Set MOORAGE_HOST_TERMINAL=true on this host to enable host terminal'
+                  }
+                  onclick={() => (hostTermTarget = h)}
+                >
+                  <Icon name={hostTermOk ? 'terminal' : 'lock'} /> Host terminal
+                </button>
+              {/if}
               {#if h.connected && !h.readOnly}
                 <button class="btn btn-ghost" onclick={() => openPrune(h)}>Disk cleanup</button>
               {/if}
+              <button class="btn btn-ghost" onclick={() => startEdit(h)}>Edit</button>
               {#if h.kind === 'agent'}
-                <button class="btn btn-ghost" onclick={() => { editing = h.id; editName = h.name; }}>Rename</button>
                 <button class="btn btn-ghost danger" onclick={() => { removing = h; confirmRemove = true; }}>Remove</button>
               {/if}
             </div>
@@ -355,6 +415,17 @@ volumes:
       {/each}
     {/if}
   </section>
+
+  {#if isAdmin() && hostTermTarget}
+    {#key hostTermTarget.id}
+      <TerminalPanel
+        mode="host"
+        hostId={hostTermTarget.id}
+        hostName={hostTermTarget.name}
+        onClose={() => (hostTermTarget = null)}
+      />
+    {/key}
+  {/if}
 
   {#if isAdmin() && pruneHost}
     <section class="card card-pad prune-card">
@@ -574,7 +645,14 @@ volumes:
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
-    max-width: 880px;
+  }
+  .ext-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--buoy-text);
   }
   .head {
     display: grid;

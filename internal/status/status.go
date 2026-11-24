@@ -32,6 +32,7 @@ import (
 const (
 	StateOperational = "operational"
 	StateDown        = "down"
+	StateDegraded    = "degraded" // a multi-target check where some targets fail
 	StateMaintenance = "maintenance"
 	StatePaused      = "paused"
 	StateNoData      = "nodata"
@@ -118,9 +119,10 @@ type FeedEvent struct {
 
 // Service manages public status page building, caching, routing and rendering.
 type Service struct {
-	st        *store.Store
-	mon       *monitor.Monitor
-	publicURL string
+	st              *store.Store
+	mon             *monitor.Monitor
+	publicURL       string
+	statusPublicURL string
 
 	TTL time.Duration
 	Now func() time.Time
@@ -193,6 +195,22 @@ func (s *Service) Invalidate() {
 	s.mu.Lock()
 	clear(s.cache)
 	s.index = nil
+	s.mu.Unlock()
+}
+
+// SetPublicURL updates the hub public URL live and clears cached feed/page links.
+func (s *Service) SetPublicURL(u string) {
+	s.mu.Lock()
+	s.publicURL = strings.TrimRight(u, "/")
+	clear(s.cache)
+	s.mu.Unlock()
+}
+
+// SetStatusPublicURL updates the separate status listener public URL live.
+func (s *Service) SetStatusPublicURL(u string) {
+	s.mu.Lock()
+	s.statusPublicURL = strings.TrimRight(u, "/")
+	clear(s.cache)
 	s.mu.Unlock()
 }
 
@@ -445,16 +463,17 @@ func (s *Service) buildItem(
 	for idx := int64(0); idx < 30; idx++ {
 		d := firstDay + idx
 		dateStr := time.UnixMilli(d * 86_400_000).UTC().Format("2 Jan 2006")
-		var up, down, silenced, paused, maint int
+		var up, down, degraded, silenced, paused, maint int
 		var dayUp *float64
 		for _, c := range enabled {
 			cnt := dailyMap[dayKey{c.ID, d}]
 			up += cnt.Up
 			down += cnt.Down
+			degraded += cnt.Degraded
 			silenced += cnt.Silenced
 			paused += cnt.Paused
 			maint += cnt.Maintenance
-			if n := cnt.Up + cnt.Down; n > 0 {
+			if n := cnt.Up + cnt.Down + cnt.Degraded; n > 0 {
 				if v := float64(cnt.Up) / float64(n); dayUp == nil || v < *dayUp {
 					dayUp = &v
 				}
@@ -464,6 +483,8 @@ func (s *Service) buildItem(
 		switch {
 		case down > 0:
 			dayState = StateDown
+		case degraded > 0:
+			dayState = StateDegraded
 		case maint > 0, silenced > 0 && up == 0:
 			dayState = StateMaintenance
 		case up > 0:
@@ -530,6 +551,8 @@ func mapCheckStatus(internal string) string {
 		return StateOperational
 	case monitor.StatusDown:
 		return StateDown
+	case monitor.StatusDegraded:
+		return StateDegraded
 	case monitor.StatusSilenced, monitor.StatusMaintenance:
 		return StateMaintenance
 	case monitor.StatusPaused:
@@ -543,6 +566,8 @@ func mapCheckStatus(internal string) string {
 func statusRank(st string) int {
 	switch st {
 	case StateDown:
+		return 6
+	case StateDegraded:
 		return 5
 	case StateMaintenance:
 		return 4
@@ -562,6 +587,8 @@ func PublicStatusLabel(st string) string {
 		return "Operational"
 	case StateDown:
 		return "Down"
+	case StateDegraded:
+		return "Partially down"
 	case StateMaintenance:
 		return "Maintenance"
 	case StatePaused:
@@ -575,11 +602,13 @@ func computeBanner(items []PublicItem) (status, text string) {
 	if len(items) == 0 {
 		return StateNoData, "No services configured yet"
 	}
-	var down, maint, op int
+	var down, degraded, maint, op int
 	for _, it := range items {
 		switch it.Status {
 		case StateDown:
 			down++
+		case StateDegraded:
+			degraded++
 		case StateMaintenance:
 			maint++
 		case StateOperational:
@@ -593,6 +622,12 @@ func computeBanner(items []PublicItem) (status, text string) {
 			word = "service"
 		}
 		return StateDown, fmt.Sprintf("%d of %d %s down", down, len(items), word)
+	case degraded > 0:
+		word := "services are"
+		if degraded == 1 {
+			word = "service is"
+		}
+		return StateDegraded, fmt.Sprintf("%d %s partially down", degraded, word)
 	case maint > 0:
 		return StateMaintenance, "Maintenance in progress"
 	case op > 0:
@@ -906,7 +941,12 @@ func (s *Service) pageLinks(r *http.Request, p store.StatusPage) (pageURL, feedU
 		base := "https://" + p.Domain
 		return base + "/", base + "/feed.xml"
 	}
-	base := s.publicURL
+	s.mu.Lock()
+	base := s.statusPublicURL
+	if base == "" {
+		base = s.publicURL
+	}
+	s.mu.Unlock()
 	if base == "" {
 		host := strings.TrimSpace(r.Host)
 		if host == "" {
@@ -1585,6 +1625,7 @@ html, body {
 .dot.operational { background: var(--afloat); }
 .dot.down { background: var(--adrift); }
 .dot.maintenance { background: var(--signal); }
+.dot.degraded { background: var(--signal); box-shadow: inset 0 0 0 2px var(--adrift); }
 .dot.paused, .dot.nodata { background: var(--becalmed); }
 
 .badge {
@@ -1616,6 +1657,11 @@ html, body {
   background: var(--signal-wash);
   color: var(--signal-text);
 }
+.badge.degraded {
+  background: var(--signal-wash);
+  color: var(--signal-text);
+  font-weight: 600;
+}
 
 .strip-row {
   margin-top: 10px;
@@ -1646,6 +1692,10 @@ html, body {
 .tick.maintenance {
   background: var(--signal);
   height: 12px;
+}
+.tick.degraded {
+  background: var(--signal);
+  height: 22px;
 }
 .tick.paused {
   background: var(--becalmed);

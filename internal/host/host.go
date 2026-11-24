@@ -83,6 +83,32 @@ type DiskPruner interface {
 	PruneDisk(ctx context.Context, req engine.PruneRequest) (engine.PruneResult, error)
 }
 
+// LogQuerier is implemented by hosts that support QueryLogs (host-wide, Since/Until, non-follow).
+type LogQuerier interface {
+	QueryLogs(ctx context.Context, opts engine.LogOptions, emit func(engine.LogLine)) error
+}
+
+// ContainerTerminalHost opens a shell inside any running container on the host (compose or standalone).
+type ContainerTerminalHost interface {
+	ContainerTerminal(ctx context.Context, containerRef, shell string, cols, rows int) (engine.TerminalSession, engine.ContainerInfo, error)
+}
+
+// HostTerminalProvider opens a shell in the host's own operating system (MOORAGE_HOST_TERMINAL=true).
+type HostTerminalProvider interface {
+	HostTerminal(ctx context.Context, shell string, cols, rows int) (engine.TerminalSession, error)
+}
+
+// BindMountRelocator moves relative bind-mount directories of a stack into add-ons/<id>/
+// during "Move to add-ons" (and restores them if the add-ons deploy fails).
+type BindMountRelocator interface {
+	RelocateBindMounts(ctx context.Context, fromStack, addonID string, rollback bool) error
+}
+
+// CommandExecutor runs a one-shot command inside a stack service container (stack-scheduler exec).
+type CommandExecutor interface {
+	ExecCommand(ctx context.Context, stack, service, command string) (output string, exitCode int, err error)
+}
+
 // Errors specific to hosts (engine errors pass through unchanged).
 var (
 	ErrOffline               = errors.New("this host is offline")
@@ -105,6 +131,9 @@ var codes = []struct {
 }{
 	{"not_found", engine.ErrNotFound, http.StatusNotFound},
 	{"read_only", engine.ErrReadOnly, http.StatusForbidden},
+	{"external_locked", engine.ErrExternalLocked, http.StatusForbidden},
+	{"host_terminal_locked", engine.ErrHostTerminalLocked, http.StatusForbidden},
+	{"exec_locked", engine.ErrExecLocked, http.StatusForbidden},
 	{"busy", engine.ErrBusy, http.StatusConflict},
 	{"exists", engine.ErrExists, http.StatusConflict},
 	{"has_running", engine.ErrHasRunning, http.StatusConflict},

@@ -23,6 +23,13 @@ export function parseEnv(text: string): EnvLine[] {
   const out: EnvLine[] = [];
   for (let i = 0; i < src.length; i++) {
     const line = src[i];
+    // A lone "=" (an empty assignment, e.g. from an old "Add variable") is no variable and
+    // breaks the .env syntax: drop it. "=value" becomes a row without a name to fix.
+    const orphan = /^\s*=(.*)$/.exec(line);
+    if (orphan) {
+      if (orphan[1].trim() !== '') out.push({ kind: 'var', key: '', value: orphan[1].trim() });
+      continue;
+    }
     const m = assignRe.exec(line);
     if (!m || line.trimStart().startsWith('#')) {
       out.push({ kind: 'other', raw: line });
@@ -81,13 +88,36 @@ export function serializeEnv(lines: EnvLine[]): string {
   if (!lines.length) return '';
   return (
     lines
-      .map((l) => {
-        if (l.kind === 'other') return l.raw;
-        if (l.raw !== undefined) return l.raw;
-        return `${l.exported ? 'export ' : ''}${l.key}=${formatValue(l.value)}`;
+      .flatMap((l) => {
+        if (l.kind === 'other') return [l.raw];
+        if (l.raw !== undefined) return [l.raw];
+        // A row without a name is never written as "=value" (invalid .env): an empty one
+        // is dropped, one with a value is kept as a comment so the value isn't lost.
+        if (!l.key) return l.value ? [`# =${l.value}`] : [];
+        return [`${l.exported ? 'export ' : ''}${l.key}=${formatValue(l.value)}`];
       })
       .join('\n') + '\n'
   );
+}
+
+/**
+ * unusedVars lists the .env keys compose.yaml never references. Empty when compose loads
+ * the whole file into containers (env_file: .env), where every key counts as used.
+ */
+export function unusedVars(env: string, compose: string): string[] {
+  if (!compose.trim()) return [];
+  const used = composeVars(compose);
+  if (used.envFile) return [];
+  const keys = parseEnv(env)
+    .filter((l): l is EnvVar => l.kind === 'var' && !!l.key)
+    .map((l) => l.key);
+  return [...new Set(keys.filter((k) => !used.all.has(k)))];
+}
+
+/** removeVars drops the given keys from .env text, keeping every other line as it was. */
+export function removeVars(env: string, keys: string[]): string {
+  const drop = new Set(keys);
+  return serializeEnv(parseEnv(env).filter((l) => l.kind !== 'var' || !drop.has(l.key)));
 }
 
 /** A key compose accepts in .env: letters, digits, underscore, dot and dash, not a digit first. */

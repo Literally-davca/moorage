@@ -44,17 +44,30 @@ type StackDep struct {
 	Ignored   bool      `json:"ignored"`
 	CreatedBy string    `json:"createdBy,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
+	// AutoRestart: off | on_recover | on_recover_and_deploy. Restart From when To recovers
+	// (and, with the second, after To was deployed or updated).
+	AutoRestart string `json:"autoRestart"`
 }
+
+// Auto-restart policies of an edge.
+const (
+	AutoRestartOff       = "off"
+	AutoRestartRecover   = "on_recover"
+	AutoRestartAndDeploy = "on_recover_and_deploy"
+)
+
+// ValidAutoRestart lists the policies.
+var ValidAutoRestart = map[string]bool{AutoRestartOff: true, AutoRestartRecover: true, AutoRestartAndDeploy: true}
 
 func (d StackDep) pair() string { return d.From.Key() + ">" + d.To.Key() }
 
-const depCols = `id, from_host, from_stack, to_host, to_stack, source, reason, detail, ignored, created_by, created_at`
+const depCols = `id, from_host, from_stack, to_host, to_stack, source, reason, detail, ignored, created_by, created_at, auto_restart`
 
 func scanDep(r scanner) (StackDep, error) {
 	var d StackDep
 	var ignored int
 	var created int64
-	if err := r.Scan(&d.ID, &d.From.HostID, &d.From.Stack, &d.To.HostID, &d.To.Stack, &d.Source, &d.Reason, &d.Detail, &ignored, &d.CreatedBy, &created); err != nil {
+	if err := r.Scan(&d.ID, &d.From.HostID, &d.From.Stack, &d.To.HostID, &d.To.Stack, &d.Source, &d.Reason, &d.Detail, &ignored, &d.CreatedBy, &created, &d.AutoRestart); err != nil {
 		return StackDep{}, err
 	}
 	d.Ignored = ignored == 1
@@ -135,7 +148,7 @@ func (s *Store) ReplaceDetected(ctx context.Context, hostID string, found []Stac
 		delete(want, d.pair())
 		switch {
 		case d.Source != DepDetected:
-		case !still && !d.Ignored:
+		case !still && !d.Ignored && (d.AutoRestart == "" || d.AutoRestart == AutoRestartOff):
 			if _, err := tx.ExecContext(ctx, `DELETE FROM stack_deps WHERE id = ?`, d.ID); err != nil {
 				return 0, 0, fmt.Errorf("remove detected: %w", err)
 			}
@@ -175,6 +188,18 @@ func (s *Store) AddManualDep(ctx context.Context, from, to StackRef, by string) 
 		return StackDep{}, fmt.Errorf("read manual dep: %w", err)
 	}
 	return d, nil
+}
+
+// SetDepAutoRestart sets the auto-restart policy of an edge.
+func (s *Store) SetDepAutoRestart(ctx context.Context, id int64, mode string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE stack_deps SET auto_restart = ? WHERE id = ?`, mode, id)
+	if err != nil {
+		return fmt.Errorf("auto-restart: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // DeleteDep removes one edge.

@@ -18,17 +18,18 @@ const (
 	labelService    = "com.docker.compose.service"
 	labelWorkingDir = "com.docker.compose.project.working_dir"
 
-	// LabelRole and RoleUpdater mark temporary Moorage helper containers created for
-	// container self-updates so stack discovery, stats, logs, and dependencies ignore them.
+	// LabelRole marks temporary Moorage helper containers (self-update, host-shell)
+	// so stack discovery, stats, logs, and dependencies ignore them.
 	LabelRole           = "moorage.role"
 	RoleUpdater         = "updater"
+	RoleHostShell       = "host-shell"
 	PrevContainerSuffix = "-moorage-prev"
 )
 
-// IsInternalContainer reports whether s is a temporary updater helper or a kept
-// rollback container created by Moorage self-update.
+// IsInternalContainer reports whether s is a temporary Moorage helper or a kept
+// rollback container created by Moorage.
 func IsInternalContainer(s container.Summary) bool {
-	if s.Labels[LabelRole] == RoleUpdater {
+	if s.Labels[LabelRole] != "" {
 		return true
 	}
 	for _, n := range s.Names {
@@ -174,22 +175,60 @@ func stackStatus(cs []Container) (status string, running int) {
 }
 
 func collectStackURLs(cs []Container) (coreURLs, proxyURLs []string) {
-	seen := map[string]bool{}
+	d := urlDedup{}
 	for _, c := range cs {
 		for _, u := range c.URLs {
-			if !seen[u] && len(coreURLs) < 10 {
-				seen[u] = true
-				coreURLs = append(coreURLs, u)
-			}
+			d.add(&coreURLs, u, 10)
 		}
+	}
+	for _, c := range cs {
 		for _, u := range c.ProxyURLs {
-			if !seen[u] && len(proxyURLs) < 10 {
-				seen[u] = true
-				proxyURLs = append(proxyURLs, u)
-			}
+			d.add(&proxyURLs, u, 10)
 		}
 	}
 	return coreURLs, proxyURLs
+}
+
+// urlKey is what makes two service URLs the same link: host (lower case, default port
+// dropped) and path without a trailing slash. The scheme is not part of it: Coolify writes
+// an http and an https Traefik router for every domain.
+func urlKey(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	h := strings.ToLower(u.Host)
+	if (u.Scheme == "https" && strings.HasSuffix(h, ":443")) || (u.Scheme == "http" && strings.HasSuffix(h, ":80")) {
+		h = h[:strings.LastIndexByte(h, ':')]
+	}
+	key := h + strings.TrimRight(u.Path, "/")
+	if u.RawQuery != "" {
+		key += "?" + u.RawQuery
+	}
+	return key
+}
+
+// urlDedup keeps one URL per urlKey across lists, preferring https.
+type urlDedup map[string]urlSlot
+
+type urlSlot struct {
+	list *[]string
+	i    int
+}
+
+func (d urlDedup) add(dst *[]string, u string, limit int) {
+	k := urlKey(u)
+	if prev, ok := d[k]; ok {
+		if old := (*prev.list)[prev.i]; strings.HasPrefix(u, "https://") && strings.HasPrefix(old, "http://") {
+			(*prev.list)[prev.i] = u // in place: the list keeps its order
+		}
+		return
+	}
+	if len(*dst) >= limit {
+		return
+	}
+	*dst = append(*dst, u)
+	d[k] = urlSlot{dst, len(*dst) - 1}
 }
 
 const maxContainerURLs = 5
@@ -208,17 +247,11 @@ func extractContainerURLs(labels map[string]string) (coreURLs, proxyURLs []strin
 	if len(labels) == 0 {
 		return nil, nil
 	}
-	seen := map[string]bool{}
+	d := urlDedup{}
 	add := func(dst *[]string, raw string) {
-		if len(*dst) >= maxContainerURLs {
-			return
+		if u := sanitizeServiceURL(raw); u != "" {
+			d.add(dst, u, maxContainerURLs)
 		}
-		u := sanitizeServiceURL(raw)
-		if u == "" || seen[u] {
-			return
-		}
-		seen[u] = true
-		*dst = append(*dst, u)
 	}
 
 	if v := labels["moorage.url"]; v != "" {
