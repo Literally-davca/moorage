@@ -150,3 +150,23 @@ func TestStackApplyHelperRefusesSecondRun(t *testing.T) {
 		t.Fatalf("no helper: %v", err)
 	}
 }
+
+func TestStackApplyHelperHubIgnoresOldVersionMismatch(t *testing.T) {
+	o, _ := stackApplyEnv(t)
+	o.IsHub = true
+	o.Version = "0.1.3"
+	f := newFakeContainerEngine()
+	f.addContainer(moorageCtr(true))
+	// Simulate new container writing healthy mark for v0.1.4 after tag update via Apply & restart.
+	_ = writeJSONFile(filepath.Join(o.DataDir, healthyMarkFile), HealthyMark{
+		Version: "0.1.4",
+		At:      o.Now().Add(time.Second),
+	}, 0o600)
+	up := func(context.Context, io.Writer) error { return nil }
+	if err := RunStackApplyHelper(context.Background(), f, up, o); err != nil {
+		t.Fatalf("expected hub apply with new version to succeed, got %v", err)
+	}
+	if r := readResult(t, o.DataDir); !r.OK || r.RolledBack {
+		t.Fatalf("expected OK without rollback, got %+v", r)
+	}
+}

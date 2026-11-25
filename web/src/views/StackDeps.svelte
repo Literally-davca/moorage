@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type AutoRestartMode, type HostDeps, type StackDep } from '../lib/api';
-  import { app, isAdmin, link } from '../lib/state.svelte';
+  import { app, isAdmin, link, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select, { type SelectItem } from '../lib/Select.svelte';
   import { autoRestartLabels, detectionText, edgeText, nodeClass, nodeText, refKey } from '../lib/deps';
 
   let { name }: { name: string } = $props();
@@ -13,7 +14,7 @@
   let adding = $state(false);
   let addHost = $state(app.host);
   let addStack = $state('');
-  let options = $state<string[]>([]);
+  let options = $state<SelectItem[]>([]);
 
   async function load() {
     try {
@@ -40,7 +41,14 @@
       api
         .stacksOf(h)
         .then((r) => {
-          if (h === addHost) options = r.stacks.map((s) => s.name).filter((n) => !(h === app.host && n === name));
+          if (h === addHost) {
+            options = r.stacks
+              .filter((s) => !(h === app.host && s.name === name))
+              .map((s) => {
+                const disp = stackLabel(h, s.name, s.displayName);
+                return { value: s.name, label: disp, meta: disp !== s.name ? s.name : undefined };
+              });
+          }
         })
         .catch(() => {});
     });
@@ -84,7 +92,8 @@
   function otherLabel(e: StackDep, other: 'from' | 'to'): string {
     const r = e[other];
     const n = nodes.get(refKey(r));
-    return r.hostId === app.host ? r.stack : `${r.stack} (${n?.hostName || r.hostId})`;
+    const disp = stackLabel(r.hostId, r.stack, n?.displayName);
+    return r.hostId === app.host ? disp : `${disp} (${n?.hostName || r.hostId})`;
   }
 </script>
 
@@ -98,17 +107,16 @@
     </span>
     {#if isAdmin()}
       {#if !e.ignored}
-        <select
-          class="field auto-sel"
-          aria-label="Auto-restart policy"
-          value={e.autoRestart ?? 'off'}
-          disabled={busy}
-          onchange={(ev) => act(() => api.setDepAutoRestart(name, e.id, ev.currentTarget.value as AutoRestartMode))}
-        >
-          {#each Object.entries(autoRestartLabels) as [val, txt] (val)}
-            <option value={val}>{txt}</option>
-          {/each}
-        </select>
+        <div class="auto-sel">
+          <Select
+            label="Auto-restart policy"
+            compact={true}
+            value={e.autoRestart ?? 'off'}
+            disabled={busy}
+            items={Object.entries(autoRestartLabels).map(([val, txt]) => ({ value: val, label: txt }))}
+            onchange={(v) => act(() => api.setDepAutoRestart(name, e.id, v as AutoRestartMode))}
+          />
+        </div>
       {/if}
       {#if e.source === 'manual'}
         <button class="btn btn-sm btn-ghost" disabled={busy} onclick={() => act(() => api.removeDep(name, e.id))}>Delete</button>
@@ -152,17 +160,26 @@
   {#if isAdmin()}
     {#if adding}
       <form class="add" onsubmit={add}>
-        <label>
+        <div class="add-host">
           <span class="meta">Host</span>
-          <select bind:value={addHost}>
-            {#each app.hosts as h (h.id)}<option value={h.id}>{h.name}</option>{/each}
-          </select>
-        </label>
-        <label class="grow">
-          <span class="meta">{name} depends on stack</span>
-          <input bind:value={addStack} list="dep-stacks" spellcheck="false" required maxlength="63" />
-          <datalist id="dep-stacks">{#each options as o (o)}<option value={o}></option>{/each}</datalist>
-        </label>
+          <Select
+            label="Dependency host"
+            value={addHost}
+            items={app.hosts.map((h) => ({ value: h.id, label: h.name }))}
+            onchange={(v) => (addHost = v)}
+          />
+        </div>
+        <div class="grow">
+          <span class="meta">{stackLabel(app.host, name)} depends on stack</span>
+          <Select
+            label="Upstream stack"
+            items={options}
+            bind:value={addStack}
+            allowCustom={true}
+            placeholder="Pick or type a stack name…"
+            customPlaceholder="Filter stacks or type a custom name…"
+          />
+        </div>
         <button class="btn" type="submit" disabled={busy || !addStack.trim()}>Add</button>
         <button class="btn btn-ghost" type="button" onclick={() => (adding = false)}>Cancel</button>
       </form>
@@ -231,9 +248,13 @@
     align-items: end;
     flex-wrap: wrap;
   }
-  .add label {
+  .add .add-host,
+  .add .grow {
     display: grid;
     gap: 4px;
+  }
+  .add .add-host {
+    min-width: 150px;
   }
   .add .grow {
     flex: 1;

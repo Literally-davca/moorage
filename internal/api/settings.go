@@ -437,7 +437,7 @@ func (s *Server) generateMetricsToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) buildDiagnostics(ctx context.Context, pubURL string) []diagnosticItem {
-	var out []diagnosticItem
+	out := []diagnosticItem{}
 	if pubURL == "" {
 		out = append(out, diagnosticItem{
 			Level:  "warn",

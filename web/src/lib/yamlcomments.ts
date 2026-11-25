@@ -2,7 +2,7 @@
 // and inline # comments and runs of blank lines; edits made in it are merged back into the
 // original so every line the user didn't touch keeps its comments.
 
-type Line = { text: string; clean: string | null }; // clean: the line without comment, null = hidden
+type Line = { text: string; clean: string | null; kind: 'content' | 'comment' | 'blank' }; // clean: null = hidden in clean mode
 
 /** commentStart finds the # that starts an inline comment, -1 when there is none. */
 function commentStart(line: string): number {
@@ -40,43 +40,51 @@ function analyse(text: string): Line[] {
   const src = text.replace(/\r\n/g, '\n').split('\n');
   const out: Line[] = [];
   let blockIndent = -1; // inside a block scalar (| or >) more indented than this line
-  for (const text of src) {
+  for (let i = 0; i < src.length; i++) {
+    const text = src[i];
     const t = text.trim();
     if (blockIndent >= 0) {
-      if (t === '' || indentOf(text) > blockIndent) {
-        out.push({ text, clean: text }); // literal content: # is text here
+      if (t === '') {
+        // Keep a blank line inside a block scalar only when the scalar actually continues afterwards.
+        const nextContent = src.slice(i + 1).find((s) => s.trim() !== '');
+        if (nextContent !== undefined && indentOf(nextContent) > blockIndent) {
+          out.push({ text, clean: text, kind: 'content' });
+          continue;
+        }
+        blockIndent = -1;
+      } else if (indentOf(text) > blockIndent) {
+        out.push({ text, clean: text, kind: 'content' }); // literal content: # belongs to the scalar
         continue;
+      } else {
+        blockIndent = -1;
       }
-      blockIndent = -1;
+    }
+    if (t === '') {
+      out.push({ text, clean: null, kind: 'blank' });
+      continue;
     }
     if (t.startsWith('#')) {
-      out.push({ text, clean: null });
+      out.push({ text, clean: null, kind: 'comment' });
       continue;
     }
     const hash = commentStart(text);
     const body = hash >= 0 ? text.slice(0, hash).trimEnd() : text;
-    out.push({ text, clean: body.trim() === '' && hash >= 0 ? null : body });
-    if (/[:-]\s*[|>][-+0-9]*\s*$/.test(body)) blockIndent = indentOf(text);
-  }
-  // collapse runs of blank lines to one
-  let blank = false;
-  for (const l of out) {
-    if (l.clean !== null && l.clean.trim() === '') {
-      if (blank) l.clean = null;
-      blank = true;
-    } else if (l.clean !== null) {
-      blank = false;
+    if (body.trim() === '' && hash >= 0) {
+      out.push({ text, clean: null, kind: 'comment' });
+    } else {
+      out.push({ text, clean: body, kind: 'content' });
     }
+    if (/[:-]\s*[|>][-+0-9]*\s*$/.test(body)) blockIndent = indentOf(text);
   }
   return out;
 }
 
-/** hasComments reports whether the clean view would hide anything. */
+/** hasComments reports whether the clean view would hide comments or blank lines. */
 export function hasComments(text: string): boolean {
   return analyse(text).some((l) => l.clean === null || l.clean !== l.text);
 }
 
-/** toClean returns the text without comments (and without repeated blank lines). */
+/** toClean returns the text without comments and without blank lines (outside block scalars). */
 export function toClean(text: string): string {
   return analyse(text)
     .filter((l) => l.clean !== null)
@@ -85,18 +93,20 @@ export function toClean(text: string): string {
 }
 
 /**
- * mergeClean applies an edit of the clean view to the original: lines that are unchanged
- * come back with their inline comments and the comment lines above them; changed and new
- * lines are taken as typed; comment lines above a deleted line stay.
+ * mergeClean applies an edit of the clean view to the original:
+ * - lines that are unchanged come back with their inline comments and the comment lines above them;
+ * - original blank lines are removed (Clean mode strips empty lines to save vertical space), while any
+ *   blank lines typed by the user in `editedClean` stay as part of `editedClean`;
+ * - changed and new lines are taken as typed; comment lines above a deleted line stay.
  */
 export function mergeClean(original: string, editedClean: string): string {
   const lines = analyse(original);
-  // clean lines of the original, each with the hidden lines just above it
+  // clean lines of the original, each with the hidden comment lines just above it (blank lines dropped)
   const anchors: { clean: string; text: string; before: string[] }[] = [];
   let pending: string[] = [];
   for (const l of lines) {
     if (l.clean === null) {
-      pending.push(l.text);
+      if (l.kind === 'comment') pending.push(l.text);
       continue;
     }
     anchors.push({ clean: l.clean, text: l.text, before: pending });

@@ -2,6 +2,9 @@
   import { untrack } from 'svelte';
   import { api, formatBytes, type ImportPreview, type RemoteBackupConfig } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
+  import AddonGate from '../lib/AddonGate.svelte';
+  import SetupHint from '../lib/SetupHint.svelte';
 
   // Local encrypted export / import (.mbk)
   let exportPw = $state('');
@@ -232,7 +235,17 @@
 
     {#if !preview}
       <form class="bk-row" onsubmit={doPreview}>
-        <input class="field" type="file" accept=".mbk,application/octet-stream" required onchange={(e) => (importFile = e.currentTarget.files?.[0] ?? null)} />
+        <label class="file-pick field" title={importFile ? importFile.name : 'Choose a .mbk backup archive'}>
+          <input
+            type="file"
+            class="sr-only"
+            accept=".mbk,application/octet-stream"
+            required
+            onchange={(e) => (importFile = e.currentTarget.files?.[0] ?? null)}
+          />
+          <span class="btn btn-ghost pick-btn"><Icon name="upload" /> Choose .mbk file</span>
+          <span class="file-name" class:empty={!importFile}>{importFile ? importFile.name : 'No file selected'}</span>
+        </label>
         <input class="field" type="password" bind:value={importPw} placeholder="Backup password" autocomplete="off" required />
         <button type="submit" class="btn" disabled={importing || !importFile}><Icon name="upload" /> {importing ? 'Checking…' : 'Check & preview'}</button>
       </form>
@@ -299,14 +312,20 @@
       </div>
 
       <div class="grid-3">
-        <label class="field-wrap">
+        <div class="field-wrap">
           <span>Storage provider</span>
-          <select class="field" bind:value={provider} disabled={remote.fromEnv.s3Endpoint || remote.fromEnv.webdavUrl}>
-            <option value="off">Disabled</option>
-            <option value="s3">S3 / Garage / Cloudflare R2 / MinIO</option>
-            <option value="webdav">WebDAV (Nextcloud / Hetzner Storage Box)</option>
-          </select>
-        </label>
+          <Select
+            label="Storage provider"
+            value={provider}
+            disabled={remote.fromEnv.s3Endpoint || remote.fromEnv.webdavUrl}
+            items={[
+              { value: 'off', label: 'Disabled' },
+              { value: 's3', label: 'S3 / Garage / Cloudflare R2 / MinIO' },
+              { value: 'webdav', label: 'WebDAV (Nextcloud / Hetzner Storage Box)' },
+            ]}
+            onchange={(v) => (provider = v as 'off' | 's3' | 'webdav')}
+          />
+        </div>
 
         <label class="field-wrap">
           <span class="label-row">
@@ -436,6 +455,19 @@
       </div>
     </form>
   {/if}
+
+  <AddonGate
+    addonId="restic-backup"
+    featureTitle="Application volume backups (Restic)"
+    featureDescription="Back up named Docker volumes on schedule to S3, B2, SFTP, or local storage."
+  >
+    <SetupHint
+      title="Restic volume backup sidecar is enabled"
+      detail="Configure repository, schedule, and volume targets directly in Settings → Add-ons → Restic Backup."
+      actionLabel="Open Restic Add-on"
+      actionHref="#/settings/addons"
+    />
+  </AddonGate>
 </div>
 
 <style>
@@ -451,6 +483,8 @@
   }
   .block {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    min-width: 0;
     gap: 14px;
   }
   .head-row {
@@ -476,6 +510,7 @@
     font-size: 13px;
     color: var(--mist);
     align-content: start;
+    min-width: 0;
   }
   .label-row {
     display: flex;
@@ -484,14 +519,46 @@
     flex-wrap: wrap;
   }
   .bk-row {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
     gap: 8px;
     align-items: center;
+    min-width: 0;
   }
   .bk-row .field {
-    flex: 1 1 200px;
+    width: 100%;
     min-width: 0;
+  }
+  @media (max-width: 720px) {
+    .bk-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  .file-pick {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 10px 2px 3px;
+    min-height: 36px;
+    cursor: pointer;
+    overflow: hidden;
+  }
+  .pick-btn {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 12.5px;
+    flex-shrink: 0;
+  }
+  .file-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--foam);
+  }
+  .file-name.empty {
+    color: var(--haze);
   }
   .bk-preview {
     display: grid;

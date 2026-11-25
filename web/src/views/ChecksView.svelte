@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type Check } from '../lib/api';
-  import { isAdmin } from '../lib/state.svelte';
+  import { isAdmin, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Strip from '../lib/Strip.svelte';
   import { checkStatusLabel, kindName, pct, targetCount } from '../lib/checks';
@@ -71,10 +71,10 @@
             <span class="name">{c.name}</span>
             <span class="target meta">
               <span class="kind">{kindName[c.kind]}</span>
-              <span class="mono">{c.kind === 'log' ? c.settings.pattern : c.target}</span>
+              <span class="mono">{c.kind === 'log' ? c.settings.pattern : (c.kind === 'stack' ? (c.targetDisplayName || stackLabel(c.hostId, c.target)) : c.target)}</span>
               {#if targetCount(c) > 1}<span>+{targetCount(c) - 1} more</span>{/if}
               {#if c.kind === 'log' && c.target}<span>in <span class="mono">{c.target}</span></span>{/if}
-              {#if c.stack && c.kind !== 'stack'}<span>· {c.stack}{c.hostName ? ` on ${c.hostName}` : ''}</span>{/if}
+              {#if c.stack && c.kind !== 'stack'}<span>· {stackLabel(c.hostId, c.stack, c.targetDisplayName)}{c.hostName ? ` on ${c.hostName}` : ''}</span>{/if}
               {#if c.kind === 'stack' && c.hostName}<span>· on {c.hostName}</span>{/if}
             </span>
             {#if c.state.status === 'down' || c.state.status === 'degraded' || c.state.status === 'pending'}

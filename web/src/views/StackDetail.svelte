@@ -16,11 +16,12 @@
     type StackImages,
     type Stat,
   } from '../lib/api';
-  import { app, canEdit, currentHost, go, isAdmin } from '../lib/state.svelte';
+  import { app, canEdit, currentHost, go, isAdmin, userPrefs } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import ComposeEditor from '../lib/ComposeEditor.svelte';
   import EnvEditor from '../lib/EnvEditor.svelte';
   import Confirm from '../lib/Confirm.svelte';
+  import SetupHint from '../lib/SetupHint.svelte';
   import LogViewer from './LogViewer.svelte';
   import OpPanel from './OpPanel.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
@@ -101,6 +102,8 @@
   let confirmDown = $state(false);
   let confirmDelete = $state(false);
   let confirmMoveAddons = $state(false);
+  let confirmActionOpen = $state(false);
+  let confirmAction = $state<{ title: string; confirmLabel: string; body: string; fn: () => Promise<void> } | null>(null);
   let movingAddons = $state(false);
   let coolifyBusy = $state(false);
   let coolifyEnvLoaded = $state(false);
@@ -441,6 +444,15 @@
     }
   }
 
+  function maybeConfirm(title: string, confirmLabel: string, body: string, fn: () => Promise<void>) {
+    if (userPrefs().confirmActions === 'all') {
+      confirmAction = { title, confirmLabel, body, fn };
+      confirmActionOpen = true;
+    } else {
+      void fn();
+    }
+  }
+
   // Moorage's own stack: Restart and Apply & restart take this node down for a moment.
   // On the hub's own host the page waits for Moorage to answer again and reloads.
   let selfMsg = $state('');
@@ -448,11 +460,16 @@
   async function waitForMoorage() {
     selfMsg = 'Moorage is restarting… this page reloads when it is back.';
     let sawDown = false;
+    const initialBoot = app.bootId;
     const until = Date.now() + 3 * 60 * 1000;
     while (Date.now() < until) {
       await new Promise((r) => setTimeout(r, 2000));
       try {
-        await api.session();
+        const s = await api.session();
+        if (s.bootId && initialBoot && s.bootId !== initialBoot) {
+          location.reload();
+          return;
+        }
         if (sawDown) {
           location.reload();
           return;
@@ -628,9 +645,29 @@
 
         {#if editable && stack.self}
           <div class="actions">
-            <button class="btn" onclick={selfRestart} disabled={stack.busy || stack.running === 0}><Icon name="refresh" /> Restart</button>
-            <button class="btn btn-primary" onclick={selfApply} disabled={stack.busy || !!validation}
-              title="Save the files and recreate Moorage; rolled back if it doesn't come back"><Icon name="play" /> Apply & restart</button>
+            <button
+              class="btn"
+              onclick={() =>
+                maybeConfirm(
+                  `Restart ${stack?.displayName || stack?.name}?`,
+                  'Restart',
+                  'This restarts Moorage temporarily and reloads the page once it reconnects.',
+                  selfRestart,
+                )}
+              disabled={stack.busy || stack.running === 0}><Icon name="refresh" /> Restart</button
+            >
+            <button
+              class="btn btn-primary"
+              onclick={() =>
+                maybeConfirm(
+                  'Apply changes & restart Moorage?',
+                  'Apply & restart',
+                  'Saves compose.yaml/.env and recreates Moorage. Automatically rolls back if Moorage fails to come back healthy.',
+                  selfApply,
+                )}
+              disabled={stack.busy || !!validation}
+              title="Save the files and recreate Moorage; rolled back if it doesn't come back"><Icon name="play" /> Apply & restart</button
+            >
             <div class="more" use:dismiss={() => (menuOpen = false)}>
               <button class="btn btn-icon" onclick={() => (menuOpen = !menuOpen)} aria-label="More actions" aria-expanded={menuOpen}><Icon name="dots" /></button>
               {#if menuOpen}
@@ -642,8 +679,28 @@
           </div>
         {:else if editable}
           <div class="actions">
-            <button class="btn" onclick={() => run('restart')} disabled={stack.busy || stack.running === 0}><Icon name="refresh" /> Restart</button>
-            <button class="btn" onclick={() => run('stop')} disabled={stack.busy || stack.running === 0}><Icon name="stop" /> Stop</button>
+            <button
+              class="btn"
+              onclick={() =>
+                maybeConfirm(
+                  `Restart ${stack?.displayName || stack?.name}?`,
+                  'Restart',
+                  'Restarts all containers in this stack.',
+                  () => run('restart'),
+                )}
+              disabled={stack.busy || stack.running === 0}><Icon name="refresh" /> Restart</button
+            >
+            <button
+              class="btn"
+              onclick={() =>
+                maybeConfirm(
+                  `Stop ${stack?.displayName || stack?.name}?`,
+                  'Stop',
+                  'Stops running containers in this stack (networks and containers stay until started again).',
+                  () => run('stop'),
+                )}
+              disabled={stack.busy || stack.running === 0}><Icon name="stop" /> Stop</button
+            >
             <div class="split" use:dismiss={() => (deployMenu = false)}>
               <button class="btn {dirty && tab === 'compose' ? '' : 'btn-primary'} split-main" onclick={() => deploy()} disabled={stack.busy}
                 title={dirty ? 'Save your changes first to deploy them' : strategy === 'rolling' ? 'Rolling / safe-swap deploy' : 'Recreate what changed'}>
@@ -715,11 +772,27 @@
           <p class="error-text" role="alert">Last Apply & restart ({new Date(stack.selfResult.at).toLocaleString()}): {stack.selfResult.message}</p>
         {/if}
       {/if}
-      {#if !stack.managed}
-        <p class="note">
-          This stack runs from <code>{stack.location || 'another folder'}</code>, outside the Moorage stacks folder. You can
-          watch its containers and logs. To manage it here, move its folder into the stacks folder.
-        </p>
+      {#if !stack.managed && !isCoolify && !manageExternal && !stack.self && userPrefs().guidesMode === 'extended'}
+        <div style="margin-top:10px">
+          <SetupHint
+            title="External stack (read-only)"
+            detail="This stack runs outside Moorage's stacks directory. You can inspect logs and stats, or enable external Start/Stop/Restart controls on the host agent."
+            snippet="MOORAGE_MANAGE_EXTERNAL=true"
+            actionLabel="Check host locks"
+            actionHref="#/settings/general"
+          />
+        </div>
+      {/if}
+      {#if !canTerminal && isAdmin() && stack.containers.length > 0 && !currentHost()?.readOnly && userPrefs().guidesMode === 'extended'}
+        <div style="margin-top:10px">
+          <SetupHint
+            title="Interactive container terminal is disabled"
+            detail="Enable the container shell on this host's environment configuration to attach directly from the browser."
+            snippet="MOORAGE_TERMINAL=true"
+            actionLabel="Environment locks"
+            actionHref="#/settings/general"
+          />
+        </div>
       {/if}
       {#if actionError}<p class="error-text" role="alert" style="margin-top:12px">{actionError}</p>{/if}
 
@@ -1093,6 +1166,17 @@
   <Confirm bind:open={confirmMoveAddons} title="Move {stack.name} to add-ons?" confirmLabel="Move to add-ons"
     body="Merges this stack into add-ons on the same host. Named Docker volumes keep their existing data (name: {stack.name}_<vol>) and relative bind mounts move under add-ons/{stack.name}/ without copying."
     onConfirm={moveToAddons} />
+  <Confirm
+    bind:open={confirmActionOpen}
+    title={confirmAction?.title ?? 'Confirm action'}
+    confirmLabel={confirmAction?.confirmLabel ?? 'Confirm'}
+    body={confirmAction?.body ?? ''}
+    onConfirm={() => {
+      const fn = confirmAction?.fn;
+      confirmAction = null;
+      if (fn) void fn();
+    }}
+  />
 {/if}
 
 <style>

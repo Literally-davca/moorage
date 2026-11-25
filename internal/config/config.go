@@ -13,7 +13,10 @@ import (
 
 // Config holds runtime settings. All fields come from MOORAGE_* variables.
 type Config struct {
-	Listen           string // MOORAGE_LISTEN, default ":5080"
+	Listen           string // MOORAGE_LISTEN, e.g. ":5080" (empty when WebUI is off)
+	WebUI            bool   // MOORAGE_WEB_UI, defaults to true when MOORAGE_LISTEN is set, else false (headless CLI mode)
+	WebUISet         bool   // true when MOORAGE_WEB_UI was explicitly set in env
+	SocketPath       string // MOORAGE_SOCKET, local Unix socket path (default <DataDir>/moorage.sock, "off" disables)
 	DataDir          string // MOORAGE_DATA_DIR, default "/data"
 	StacksDir        string // MOORAGE_STACKS_DIR, default "/opt/stacks"
 	SecureCookies    bool   // MOORAGE_SECURE_COOKIES, auto-detected from HTTPS when unset
@@ -73,7 +76,7 @@ type Config struct {
 
 // LockedVars are the host security locks that Settings shows but can never change.
 var LockedVars = []string{"MOORAGE_READ_ONLY", "MOORAGE_MANAGE_EXTERNAL", "MOORAGE_EXTRA_STACKS_DIRS", "MOORAGE_TERMINAL",
-	"MOORAGE_HOST_TERMINAL", "MOORAGE_EXEC", "MOORAGE_TRUSTED_PROXIES", "MOORAGE_LISTEN"}
+	"MOORAGE_HOST_TERMINAL", "MOORAGE_EXEC", "MOORAGE_TRUSTED_PROXIES", "MOORAGE_LISTEN", "MOORAGE_WEB_UI"}
 
 // RoleMapping turns external groups into a Moorage role: admin groups win over viewer
 // groups, then the default role ("none" refuses the sign-in, or "viewer").
@@ -112,8 +115,12 @@ const DefaultUpdateURL = "https://api.github.com/repos/Literally-davca/moorage/r
 
 // FromEnv builds a Config and checks that the directories are usable.
 func FromEnv() (Config, error) {
+	listenVal, listenSet := os.LookupEnv("MOORAGE_LISTEN")
+	listenVal = strings.TrimSpace(listenVal)
+	webVal, webSet := os.LookupEnv("MOORAGE_WEB_UI")
+	webVal = strings.TrimSpace(webVal)
+
 	c := Config{
-		Listen:    env("MOORAGE_LISTEN", ":5080"),
 		DataDir:   env("MOORAGE_DATA_DIR", "/data"),
 		StacksDir: env("MOORAGE_STACKS_DIR", "/opt/stacks"),
 		PUID:      -1,
@@ -130,6 +137,32 @@ func FromEnv() (Config, error) {
 		UpdateChannel:    strings.ToLower(strings.TrimSpace(env("MOORAGE_UPDATE_CHANNEL", "stable"))),
 		UpdateChannelSet: strings.TrimSpace(os.Getenv("MOORAGE_UPDATE_CHANNEL")) != "",
 		PublicURLSet:     strings.TrimSpace(os.Getenv("MOORAGE_PUBLIC_URL")) != "",
+	}
+	if webSet && webVal != "" {
+		b, err := strconv.ParseBool(webVal)
+		if err != nil {
+			return c, fmt.Errorf("MOORAGE_WEB_UI: %w", err)
+		}
+		c.WebUI = b
+		c.WebUISet = true
+		if c.WebUI {
+			if listenSet && listenVal != "" && !strings.EqualFold(listenVal, "off") {
+				c.Listen = listenVal
+			} else if strings.EqualFold(listenVal, "off") {
+				c.WebUI = false
+				c.Listen = ""
+			} else {
+				c.Listen = ":5080"
+			}
+		} else {
+			c.Listen = ""
+		}
+	} else if listenSet && listenVal != "" && !strings.EqualFold(listenVal, "off") {
+		c.WebUI = true
+		c.Listen = listenVal
+	} else {
+		c.WebUI = false
+		c.Listen = ""
 	}
 	if c.WatchdogListen == "off" {
 		c.WatchdogListen = ""
@@ -224,6 +257,17 @@ func FromEnv() (Config, error) {
 	c.TemplatesDir = env("MOORAGE_TEMPLATES_DIR", filepath.Join(c.DataDir, "templates"))
 	if c.TemplatesDir, err = filepath.Abs(c.TemplatesDir); err != nil {
 		return c, fmt.Errorf("MOORAGE_TEMPLATES_DIR: %w", err)
+	}
+	sock := strings.TrimSpace(os.Getenv("MOORAGE_SOCKET"))
+	switch {
+	case strings.EqualFold(sock, "off"):
+		c.SocketPath = ""
+	case sock == "":
+		c.SocketPath = filepath.Join(c.DataDir, "moorage.sock")
+	default:
+		if c.SocketPath, err = filepath.Abs(sock); err != nil {
+			return c, fmt.Errorf("MOORAGE_SOCKET: %w", err)
+		}
 	}
 	return c, nil
 }

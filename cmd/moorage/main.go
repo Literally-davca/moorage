@@ -22,6 +22,7 @@ import (
 
 	"moorage/internal/api"
 	"moorage/internal/auth"
+	clicmd "moorage/internal/cli/cmd"
 	"moorage/internal/config"
 	"moorage/internal/engine"
 	"moorage/internal/host"
@@ -33,24 +34,12 @@ import (
 
 var version = "dev"
 
-const usage = `Moorage – Docker compose stacks, live logs and uptime in one place.
-
-Usage:
-  moorage [all-in-one]   web UI + hub + this host's Docker (default)
-  moorage hub            web UI + hub only; every Docker host runs an agent
-  moorage agent          connect this host's Docker to a hub (no web UI)
-  moorage version        print the version
-
-Configuration is read from environment variables, see README.md.
-`
-
 func main() {
-	mode := "all-in-one"
-	if len(os.Args) > 1 {
-		mode = os.Args[1]
+	if len(os.Args) <= 1 {
+		runServer("all-in-one")
+		return
 	}
-	switch mode {
-	case "all-in-one", "hub", "agent":
+	switch os.Args[1] {
 	case "self-update-helper":
 		if err := runSelfUpdateHelper(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "self-update-helper: %v\n", err)
@@ -75,17 +64,15 @@ func main() {
 			os.Exit(1)
 		}
 		return
-	case "version", "--version", "-v":
-		fmt.Println(version)
-		return
-	case "help", "--help", "-h":
-		fmt.Print(usage)
-		return
-	default:
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
 	}
 
+	if err := clicmd.Execute(version, os.Args[1:], clicmd.ServerHooks{RunServer: runServer}); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runServer(mode string) {
 	setMemoryLimit()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})).With("mode", mode)
 	reexec, err := run(mode, log)
@@ -348,7 +335,7 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	}
 
 	var hub *tunnel.Hub
-	errc := make(chan error, 3)
+	errc := make(chan error, 4)
 	if cfg.AgentListen != "" {
 		ca, err := tunnel.LoadOrCreateCA(filepath.Join(cfg.DataDir, "ca"))
 		if err != nil {
@@ -409,29 +396,61 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	apiSrv.StartCleanupLoop(ctx)
 	// OIDC discovery runs in the background and retries: an IdP that is down or a broken
 	// setting never stops Moorage (the Users page shows the problem to admins).
-	apiSrv.StartSSO(ctx)
+	if cfg.WebUI {
+		apiSrv.StartSSO(ctx)
+	}
 	apiSrv.Updater().Start(ctx)
 	// Remote template indexes: refreshed daily in the background (and on demand).
 	apiSrv.Templates().Start(ctx)
 	sysUpd.Start(ctx)
-	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           apiSrv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
+
+	var sockSrv *http.Server
+	var sockLn net.Listener
+	if cfg.SocketPath != "" {
+		var sockCleanup func()
+		sockLn, sockCleanup, err = listenLocalSocket(cfg.SocketPath)
+		if err != nil {
+			return nil, err
+		}
+		defer sockCleanup()
+		if sockLn != nil {
+			sockSrv = &http.Server{
+				Handler:           apiSrv.SocketHandler(),
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			go func() {
+				log.Info("local CLI socket listening", "socket", cfg.SocketPath)
+				errc <- sockSrv.Serve(sockLn)
+			}()
+		}
 	}
-	ln, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return nil, fmt.Errorf("listen %s: %w", cfg.Listen, err)
+
+	var srv *http.Server
+	if cfg.WebUI && cfg.Listen != "" {
+		srv = &http.Server{
+			Addr:              cfg.Listen,
+			Handler:           apiSrv.Handler(),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		ln, err := net.Listen("tcp", cfg.Listen)
+		if err != nil {
+			return nil, fmt.Errorf("listen %s: %w", cfg.Listen, err)
+		}
+		go func() {
+			log.Info("moorage listening", "addr", cfg.Listen, "stacks", cfg.StacksDir, "version", version, "metrics", cfg.MetricsToken != "", "webUI", true)
+			errc <- srv.Serve(ln)
+		}()
+	} else {
+		if sockLn == nil {
+			return nil, fmt.Errorf("web UI is disabled (MOORAGE_WEB_UI=false / no MOORAGE_LISTEN) and no local Unix socket is available")
+		}
+		log.Info("moorage listening in CLI-only mode (web UI disabled)", "socket", cfg.SocketPath, "stacks", cfg.StacksDir, "version", version)
 	}
-	go func() {
-		log.Info("moorage listening", "addr", cfg.Listen, "stacks", cfg.StacksDir, "version", version, "metrics", cfg.MetricsToken != "")
-		errc <- srv.Serve(ln)
-	}()
-	// A hub update is confirmed only once this process actually serves HTTP.
+	// A hub update is confirmed only once this process actually starts serving.
 	sysUpd.MarkServing()
 
 	var statusSrv *http.Server
-	if cfg.StatusListen != "" {
+	if cfg.WebUI && cfg.StatusListen != "" {
 		statusSrv = &http.Server{
 			Addr:              cfg.StatusListen,
 			Handler:           apiSrv.StatusHandler(),
@@ -456,7 +475,14 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	if statusSrv != nil {
 		_ = statusSrv.Shutdown(shutdownCtx)
 	}
-	err = srv.Shutdown(shutdownCtx)
+	if sockSrv != nil {
+		_ = sockSrv.Shutdown(shutdownCtx)
+	}
+	if srv != nil {
+		err = srv.Shutdown(shutdownCtx)
+	} else {
+		err = nil
+	}
 	// Shutdown doesn't wait for hijacked WebSockets; let open terminals record "hub-stopped".
 	apiSrv.WaitTerminals(shutdownCtx)
 	if err != nil {

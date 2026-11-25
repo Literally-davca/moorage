@@ -219,6 +219,11 @@ func (s *Server) deleteMCPToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type mcpDraftDTO struct {
+	store.MCPDraft
+	StackDisplayName string `json:"stackDisplayName,omitempty"`
+}
+
 func (s *Server) listMCPDrafts(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	drafts, err := s.store.MCPDrafts(r.Context(), status)
@@ -226,10 +231,14 @@ func (s *Server) listMCPDrafts(w http.ResponseWriter, r *http.Request) {
 		s.engErr(w, err)
 		return
 	}
-	if drafts == nil {
-		drafts = []store.MCPDraft{}
+	out := make([]mcpDraftDTO, 0, len(drafts))
+	for _, d := range drafts {
+		out = append(out, mcpDraftDTO{
+			MCPDraft:         d,
+			StackDisplayName: s.StackDisplayName(r.Context(), d.HostID, d.Stack),
+		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"drafts": drafts})
+	writeJSON(w, http.StatusOK, map[string]any{"drafts": out})
 }
 
 func (s *Server) approveMCPDraft(w http.ResponseWriter, r *http.Request) {

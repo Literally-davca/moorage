@@ -10,6 +10,7 @@
   import Icon from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
+  import Select from '../lib/Select.svelte';
   import ComposeEditor from '../lib/ComposeEditor.svelte';
   import EnvEditor from '../lib/EnvEditor.svelte';
   import PromGenPanel from './PromGenPanel.svelte';
@@ -27,6 +28,75 @@
   let removing = $state<AddonInfo | null>(null);
   let confirmOpen = $state(false);
   let openPanel = $state<string | null>(null);
+  let openGuide = $state<string | null>(null);
+
+  const ADDON_GUIDES: Record<string, { title: string; steps: string[]; envNote?: string }> = {
+    'coolify-integration': {
+      title: 'Coolify Integration Guide',
+      steps: [
+        'Enable the Coolify integration add-on here.',
+        'Open Settings → Connections → Coolify API.',
+        'In Coolify open Keys & Tokens → API tokens and create a token with read + deploy scopes.',
+        'Paste your Coolify URL and token (enable Allow private/Tailscale IPs if needed) and click Test connection.',
+        'Moorage decodes Coolify stack UUIDs into real project/app names globally and adds Start, Stop, Restart, Redeploy, deployments & .env editing inside stack details.',
+      ],
+      envNote: 'Optional env overrides: MOORAGE_COOLIFY_URL, MOORAGE_COOLIFY_TOKEN, MOORAGE_COOLIFY_ALLOW_PRIVATE=1',
+    },
+    'proxy-labels': {
+      title: 'Reverse Proxy Labels Guide',
+      steps: [
+        'Enable Reverse proxy labels here.',
+        'Add Traefik (Host(...)), Caddy, or moorage.url labels to your compose services.',
+        'Open links appear automatically on stack headers and Ctrl+K Command Palette.',
+      ],
+    },
+    'official-templates': {
+      title: 'Official Templates Guide',
+      steps: [
+        'Enable Official Moorage templates here.',
+        'Open Templates in the top navigation bar to deploy curated stacks with auto-generated secrets and variables.',
+        'Add additional custom template repositories in Settings → Template sources.',
+      ],
+    },
+    'prometheus-grafana': {
+      title: 'Prometheus & Grafana Guide',
+      steps: [
+        'Enable Prometheus / Grafana metrics.',
+        'Click Generators on this card to copy VictoriaMetrics/Prometheus scrape configs or JSON dashboards.',
+        'Optionally pair Grafana URL + Service Account Token in Settings → Connections to push dashboards in 1 click.',
+      ],
+      envNote: 'Set MOORAGE_METRICS_TOKEN in env to lock metrics endpoints.',
+    },
+    'stack-scheduler': {
+      title: 'Stack Scheduler Guide',
+      steps: [
+        'Enable Stack Scheduler here and click Configure on this card.',
+        'Create cron tasks (e.g. 0 4 * * *) to run restart, start, stop, pull+up, or container exec jobs on any stack.',
+      ],
+    },
+    'socket-proxy-check': {
+      title: 'Socket Proxy Security Guide',
+      steps: [
+        'Enable Socket Proxy Auditor and click Configure → Scan hosts.',
+        'Inspect any stack mounting /var/run/docker.sock directly and replace it with a scoped docker-socket-proxy snippet.',
+      ],
+    },
+    'registry-webhooks': {
+      title: 'Registry Webhooks Guide',
+      steps: [
+        'Enable Registry Webhooks and click Configure to generate a webhook receiver URL & HMAC secret.',
+        'Add the URL to GHCR, Docker Hub, or Gitea webhooks to check or apply image updates automatically on push.',
+      ],
+    },
+    'mcp-server': {
+      title: 'MCP AI Server Guide',
+      steps: [
+        'Enable MCP Server and click Configure to generate an ACL-scoped bearer token.',
+        'Point Claude Desktop, Cursor, or another MCP client at the Streamable HTTP endpoint.',
+        'Keep "Require human approval" on so AI deploy drafts wait for your approval in this panel.',
+      ],
+    },
+  };
 
   // Filters
   let statusFilter = $state<'all' | 'installed' | 'enabled' | 'disabled' | 'not_installed'>('all');
@@ -380,24 +450,40 @@
 
     <div class="filters-bar">
       <input class="field search-in" bind:value={search} placeholder="Search add-ons…" aria-label="Search add-ons" />
-      <select class="field" bind:value={statusFilter} aria-label="Filter by status">
-        <option value="all">All statuses</option>
-        <option value="installed">Installed</option>
-        <option value="enabled">Enabled</option>
-        <option value="disabled">Disabled</option>
-        <option value="not_installed">Not installed</option>
-      </select>
-      <select class="field" bind:value={kindFilter} aria-label="Filter by type">
-        <option value="all">All types</option>
-        <option value="builtin">Built-in</option>
-        <option value="sidecar">Sidecar</option>
-      </select>
-      <select class="field" bind:value={categoryFilter} aria-label="Filter by category">
-        <option value="all">All categories</option>
-        {#each categories as cat (cat)}
-          <option value={cat}>{cat}</option>
-        {/each}
-      </select>
+      <div class="f-sel">
+        <Select
+          label="Filter by status"
+          value={statusFilter}
+          items={[
+            { value: 'all', label: 'All statuses' },
+            { value: 'installed', label: 'Installed' },
+            { value: 'enabled', label: 'Enabled' },
+            { value: 'disabled', label: 'Disabled' },
+            { value: 'not_installed', label: 'Not installed' },
+          ]}
+          onchange={(v) => (statusFilter = v as typeof statusFilter)}
+        />
+      </div>
+      <div class="f-sel">
+        <Select
+          label="Filter by type"
+          value={kindFilter}
+          items={[
+            { value: 'all', label: 'All types' },
+            { value: 'builtin', label: 'Built-in' },
+            { value: 'sidecar', label: 'Sidecar' },
+          ]}
+          onchange={(v) => (kindFilter = v as typeof kindFilter)}
+        />
+      </div>
+      <div class="f-sel">
+        <Select
+          label="Filter by category"
+          value={categoryFilter}
+          items={[{ value: 'all', label: 'All categories' }, ...categories.map((cat) => ({ value: cat, label: cat }))]}
+          onchange={(v) => (categoryFilter = v)}
+        />
+      </div>
       {#if hasFilters}
         <button type="button" class="btn btn-ghost" onclick={resetFilters}>Reset</button>
       {/if}
@@ -570,6 +656,16 @@
                 {#if rowError[key]}<p class="error-text" role="alert">{rowError[key]}</p>{/if}
               </div>
               <div class="addon-actions">
+                {#if ADDON_GUIDES[a.id] || a.docsUrl}
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-ghost"
+                    onclick={() => (openGuide = openGuide === a.id ? null : a.id)}
+                    aria-expanded={openGuide === a.id}
+                  >
+                    <Icon name="info" /> {openGuide === a.id ? 'Hide guide' : 'Guide'}
+                  </button>
+                {/if}
                 {#if a.id === 'prometheus-grafana' && a.enabled}
                   <button type="button" class="btn btn-sm" onclick={() => (openPanel = openPanel === a.id ? null : a.id)}>
                     <Icon name="code" /> {openPanel === a.id ? 'Hide generators' : 'Generators'}
@@ -610,6 +706,26 @@
                 {/if}
               </div>
             </div>
+            {#if openGuide === a.id && (ADDON_GUIDES[a.id] || a.docsUrl)}
+              <div class="guide-box">
+                <div class="head-row">
+                  <strong>{ADDON_GUIDES[a.id]?.title ?? `${a.name} Docs`}</strong>
+                  {#if a.docsUrl}
+                    <a class="meta" href={a.docsUrl} target="_blank" rel="noopener noreferrer">Full docs <Icon name="external" /></a>
+                  {/if}
+                </div>
+                {#if ADDON_GUIDES[a.id]}
+                  <ol class="guide-steps">
+                    {#each ADDON_GUIDES[a.id].steps as step, si (si)}
+                      <li>{step}</li>
+                    {/each}
+                  </ol>
+                  {#if ADDON_GUIDES[a.id].envNote}
+                    <p class="meta mono">{ADDON_GUIDES[a.id].envNote}</p>
+                  {/if}
+                {/if}
+              </div>
+            {/if}
             {#if openPanel === a.id && a.id === 'prometheus-grafana' && a.enabled}
               <PromGenPanel />
             {:else if openPanel === a.id && (a.id === 'stack-scheduler' || a.id === 'socket-proxy-check' || a.id === 'registry-webhooks' || a.id === 'mcp-server') && a.enabled}
@@ -845,5 +961,25 @@
     font-size: 12px;
     color: var(--mist);
     overflow-wrap: anywhere;
+  }
+  .f-sel {
+    min-width: 150px;
+  }
+  .guide-box {
+    margin-top: 8px;
+    padding: 12px 14px;
+    border-radius: var(--r-md);
+    background: var(--well);
+    border-left: 3px solid var(--buoy);
+    display: grid;
+    gap: 8px;
+  }
+  .guide-steps {
+    margin: 0;
+    padding-left: 18px;
+    display: grid;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--mist);
   }
 </style>

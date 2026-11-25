@@ -1,9 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type Channel, type CheckInput, type CheckKind, type CheckTestResult, type HostEntry, type Quorum, type StackSummary } from '../lib/api';
-  import { app } from '../lib/state.svelte';
+  import { app, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
+  import Select from '../lib/Select.svelte';
   import StatusCodes from '../lib/StatusCodes.svelte';
   import { emptyCheck, kindName, quorumText, remoteKinds, toInput, voteText } from '../lib/checks';
 
@@ -95,7 +96,16 @@
         hosts.map((h) =>
           api
             .stacksOf(h.id)
-            .then((r) => r.stacks.map((s) => ({ value: `${h.id}/${s.name}`, label: s.name, meta: h.name })))
+            .then((r) =>
+              r.stacks.map((s) => {
+                const disp = stackLabel(h.id, s.name, s.displayName);
+                return {
+                  value: `${h.id}/${s.name}`,
+                  label: disp,
+                  meta: disp !== s.name ? `${h.name} · ${s.name}` : h.name,
+                };
+              }),
+            )
             .catch(() => []),
         ),
       ).then((lists) => (allStacks = lists.flat()));
@@ -297,17 +307,26 @@
       {:else if form.kind === 'log'}
         <div class="three">
           <div>
-            <label class="label" for="host">Host</label>
-            <select id="host" class="field" bind:value={form.hostId}>
-              {#each app.hosts as h (h.id)}<option value={h.id}>{h.name}</option>{/each}
-            </select>
+            <span class="label">Host</span>
+            <Select
+              label="Host"
+              value={form.hostId}
+              items={app.hosts.map((h) => ({ value: h.id, label: h.name }))}
+              onchange={(v) => (form.hostId = v)}
+            />
           </div>
           <div>
-            <label class="label" for="stack">Stack</label>
-            <select id="stack" class="field" bind:value={form.stack}>
-              <option value="" disabled>Pick a stack</option>
-              {#each stacks as s (s.name)}<option value={s.name}>{s.name}</option>{/each}
-            </select>
+            <span class="label">Stack</span>
+            <Select
+              label="Stack"
+              placeholder="Pick a stack"
+              value={form.stack}
+              items={stacks.map((s) => {
+                const disp = stackLabel(form.hostId, s.name, s.displayName);
+                return { value: s.name, label: disp, meta: disp !== s.name ? s.name : undefined };
+              })}
+              onchange={(v) => (form.stack = v)}
+            />
             {#if stacksError}<p class="hint bad">{stacksError}</p>{/if}
           </div>
           <div>
@@ -393,10 +412,13 @@
       {:else if form.kind === 'dns'}
         <div class="three">
           <div>
-            <label class="label" for="rt">Record</label>
-            <select id="rt" class="field" bind:value={form.settings.recordType}>
-              {#each ['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS'] as t (t)}<option value={t}>{t}</option>{/each}
-            </select>
+            <span class="label">Record</span>
+            <Select
+              label="DNS record type"
+              value={form.settings.recordType ?? 'A'}
+              items={['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'NS'].map((t) => ({ value: t, label: t }))}
+              onchange={(v) => (form.settings.recordType = v)}
+            />
           </div>
           <div>
             <label class="label" for="exp">Answer contains <span class="opt">optional</span></label>
@@ -411,24 +433,46 @@
 
       <div class="three">
         <div>
-          <label class="label" for="iv">Every</label>
-          <select id="iv" class="field" bind:value={form.interval}>
-            {#each [[20, '20 s'], [30, '30 s'], [60, '1 min'], [120, '2 min'], [300, '5 min'], [900, '15 min'], [3600, '1 h']] as [v, l] (v)}
-              <option value={v}>{l}</option>
-            {/each}
-          </select>
+          <span class="label">Every</span>
+          <Select
+            label="Check interval"
+            value={String(form.interval)}
+            items={[
+              { value: '20', label: '20 s' },
+              { value: '30', label: '30 s' },
+              { value: '60', label: '1 min' },
+              { value: '120', label: '2 min' },
+              { value: '300', label: '5 min' },
+              { value: '900', label: '15 min' },
+              { value: '3600', label: '1 h' },
+            ]}
+            onchange={(v) => (form.interval = Number(v))}
+          />
         </div>
         <div>
-          <label class="label" for="to">Timeout</label>
-          <select id="to" class="field" bind:value={form.timeout}>
-            {#each [5, 10, 15, 30] as v (v)}<option value={v} disabled={v >= form.interval}>{v} s</option>{/each}
-          </select>
+          <span class="label">Timeout</span>
+          <Select
+            label="Timeout"
+            value={String(form.timeout)}
+            items={[5, 10, 15, 30].map((v) => ({
+              value: String(v),
+              label: `${v} s`,
+              disabled: v >= form.interval ? 'Must be < interval' : undefined,
+            }))}
+            onchange={(v) => (form.timeout = Number(v))}
+          />
         </div>
         <div>
-          <label class="label" for="rt2">Alert after</label>
-          <select id="rt2" class="field" bind:value={form.retries}>
-            {#each [1, 2, 3, 5] as v (v)}<option value={v}>{v === 1 ? 'the first failure' : `${v} failures in a row`}</option>{/each}
-          </select>
+          <span class="label">Alert after</span>
+          <Select
+            label="Failures before alert"
+            value={String(form.retries)}
+            items={[1, 2, 3, 5].map((v) => ({
+              value: String(v),
+              label: v === 1 ? 'the first failure' : `${v} failures in a row`,
+            }))}
+            onchange={(v) => (form.retries = Number(v))}
+          />
         </div>
       </div>
 
@@ -440,10 +484,13 @@
           {#if form.locations.length === 0}<p class="hint bad">Pick at least one location.</p>{/if}
           {#if form.locations.length >= 2}
             <div class="quorum">
-              <label class="label" for="quorum">Counts as down when</label>
-              <select id="quorum" class="field" bind:value={form.quorum}>
-                {#each quorums as q (q)}<option value={q}>{quorumText[q]}</option>{/each}
-              </select>
+              <span class="label">Counts as down when</span>
+              <Select
+                label="Counts as down when"
+                value={form.quorum}
+                items={quorums.map((q) => ({ value: q, label: quorumText[q] }))}
+                onchange={(v) => (form.quorum = v as Quorum)}
+              />
             </div>
           {/if}
           <p class="hint">
@@ -457,13 +504,24 @@
         <div class="link">
           <span class="label">Belongs to a stack <span class="opt">optional</span></span>
           <div class="two">
-            <select class="field" bind:value={form.hostId} aria-label="Host">
-              {#each app.hosts as h (h.id)}<option value={h.id}>{h.name}</option>{/each}
-            </select>
-            <select class="field" bind:value={form.stack} aria-label="Stack">
-              <option value="">No stack</option>
-              {#each stacks as s (s.name)}<option value={s.name}>{s.name}</option>{/each}
-            </select>
+            <Select
+              label="Host"
+              value={form.hostId}
+              items={app.hosts.map((h) => ({ value: h.id, label: h.name }))}
+              onchange={(v) => (form.hostId = v)}
+            />
+            <Select
+              label="Stack"
+              value={form.stack}
+              items={[
+                { value: '', label: 'No stack' },
+                ...stacks.map((s) => {
+                  const disp = stackLabel(form.hostId, s.name, s.displayName);
+                  return { value: s.name, label: disp, meta: disp !== s.name ? s.name : undefined };
+                }),
+              ]}
+              onchange={(v) => (form.stack = v)}
+            />
           </div>
           <p class="hint">Linked checks stay quiet while the stack deploys, show deploys on their strip, and attach the stack's last log lines to alerts.</p>
         </div>
@@ -499,11 +557,16 @@
               </div>
               <div class="two">
                 <div>
-                  <label class="label" for="mth">Method</label>
-                  <select id="mth" class="field" bind:value={form.settings.method}>
-                    <option value="">GET</option>
-                    <option value="HEAD">HEAD</option>
-                  </select>
+                  <span class="label">Method</span>
+                  <Select
+                    label="HTTP method"
+                    value={form.settings.method ?? ''}
+                    items={[
+                      { value: '', label: 'GET' },
+                      { value: 'HEAD', label: 'HEAD' },
+                    ]}
+                    onchange={(v) => (form.settings.method = v as '' | 'HEAD')}
+                  />
                 </div>
                 <label class="checkbox top"><input type="checkbox" bind:checked={form.settings.ignoreTls} /><span>Accept invalid TLS certificates (self-signed)</span></label>
               </div>

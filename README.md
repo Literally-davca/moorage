@@ -36,6 +36,7 @@ Plan and decisions: [PLAN.md](PLAN.md) · ideas: [ROADMAP.md](ROADMAP.md) · UI 
 - **Moorage's own stack is protected:** when Moorage runs from a compose stack, that stack can't be stopped, taken down or deleted from the UI; changes go through **Apply & restart**, which rolls back if Moorage doesn't come back.
 - **Stack templates** and **Prometheus metrics**, see below.
 - The check strip shows every result with deploys as anchors, so you see what changed before something broke.
+- **CLI & interactive TUI (`moorage cli`):** manage stacks, compose files, rollbacks, deleted stack restores, templates, `docker run` conversion, uptime checks, maintenance windows, updates, dependencies, hosts and encrypted backups from any script (`--json`) or the `lazydocker`-style TUI — locally over a `0600` Unix socket (even in headless `MOORAGE_WEB_UI=false` mode without any open HTTP port) or remotely via `--url` and scoped API bearer tokens (`Account → API tokens`).
 - Dark and light theme, works at phone width.
 
 ## Run with Docker
@@ -55,9 +56,10 @@ Open http://localhost:5080, enter the setup token, create the admin and scan the
 
 | Command | Runs | Use for |
 |---|---|---|
-| `moorage` (all-in-one) | web UI, hub, this host's Docker | one server, or the server that also hosts the UI |
-| `moorage hub` | web UI and hub, no Docker | a hub outside the hosts it manages |
+| `moorage` (`all-in-one`) | hub + local Docker (+ Web UI if `MOORAGE_LISTEN` set) | single server, or headless local socket daemon |
+| `moorage hub` | hub only; every Docker host runs an agent | central hub outside managed hosts |
 | `moorage agent` | this host's Docker, no UI | every other Docker host |
+| `moorage cli` / `stacks` / … | interactive TUI & scriptable CLI commands | manage local (`moorage.sock`) or remote (`--url`) hub |
 
 ### Add a host
 
@@ -221,11 +223,25 @@ Moorage detects Podman's Docker-compatible API and adapts stats, logs, health an
 
 `scripts/dev/podman-smoke.sh` runs a throwaway instance against `DOCKER_HOST` and prints PASS/FAIL per feature. Please report what fails.
 
+## Documentation
+
+Detailed guides for built-in integrations and features live in `docs/`:
+
+- [Coolify integration](docs/coolify.md) — Layer 1 container labels, Layer 2 REST API v1 setup, UUID decoding & token clearing
+- [Connections & SSO](docs/connections.md) — OIDC/SSO groups, private container registries, Grafana & Beszel links
+- [Backups & Restore](docs/backups.md) — encrypted `.mbk` exports, scheduled S3/WebDAV uploads, Restic volumes
+- [Add-ons & Integrations](docs/addons.md) — built-in add-ons, sidecar catalogs, custom add-on authoring & overrides
+- [Compose Editor & Experience Modes](docs/compose-editor.md) — Beginner/Advanced/Custom modes, lossless Form/Comments/Clean tabs, auto-indent & linter 1-click fixes
+- [CLI, Headless Mode & Interactive TUI](docs/cli.md) — `MOORAGE_WEB_UI=false`, Unix socket (`moorage.sock`), API bearer tokens, full CLI command reference & `moorage cli` TUI
+
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MOORAGE_LISTEN` | `:5080` | HTTP listen address |
+| `MOORAGE_LISTEN` | `:5080` in Docker; unset on bare binary | HTTP listen address (`off` / unset without `MOORAGE_WEB_UI=true` runs headless CLI-only mode) |
+| `MOORAGE_WEB_UI` | `true` when `MOORAGE_LISTEN` set; else `false` | set `false` to disable HTTP/Web UI and serve local CLI via `MOORAGE_SOCKET` only |
+| `MOORAGE_SOCKET` | `<MOORAGE_DATA_DIR>/moorage.sock` | Unix domain socket (`0600`) for local CLI & TUI on Linux/macOS (`off` disables) |
+| `MOORAGE_URL` / `MOORAGE_TOKEN` | – | CLI defaults for remote hub HTTP(S) URL and Bearer API token (`mrg_...`) |
 | `MOORAGE_DATA_DIR` | `/data` | SQLite database (accounts, sessions) and `history.git` (stack versions) |
 | `MOORAGE_STACKS_DIR` | `/opt/stacks` | one folder per stack with `compose.yaml` |
 | `MOORAGE_SECURE_COOKIES` | `false` | set `true` behind HTTPS |

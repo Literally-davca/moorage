@@ -6,6 +6,7 @@
   import { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching } from '@codemirror/language';
   import { yaml } from '@codemirror/lang-yaml';
   import { tags as t } from '@lezer/highlight';
+  import { autoIndentCompose as indentCompose, needsComposeIndent } from './composeIndent';
 
   let {
     value = $bindable(''),
@@ -13,7 +14,17 @@
     readonly = false,
     label,
     minHeight = 320,
-  }: { value: string; language?: 'yaml' | 'plain'; readonly?: boolean; label: string; minHeight?: number } = $props();
+    autoIndentCompose = false,
+    onAutoIndent,
+  }: {
+    value: string;
+    language?: 'yaml' | 'plain';
+    readonly?: boolean;
+    label: string;
+    minHeight?: number;
+    autoIndentCompose?: boolean;
+    onAutoIndent?: () => void;
+  } = $props();
 
   let host: HTMLDivElement;
   let view: EditorView | undefined;
@@ -66,11 +77,40 @@
           EditorView.updateListener.of((u) => {
             if (u.docChanged) value = u.state.doc.toString();
           }),
+          EditorView.domEventHandlers({
+            paste(event, ed) {
+              if (!autoIndentCompose || ro || language !== 'yaml') return false;
+              const text = event.clipboardData?.getData('text/plain');
+              if (!text || !needsComposeIndent(text)) return false;
+              const sel = ed.state.selection.main;
+              const existingEmpty = ed.state.doc.toString().trim() === '' || (sel.from === 0 && sel.to === ed.state.doc.length);
+              // Only reconstruct whole-snippet compose indentation when pasting a multi-line compose block
+              // at root column 0 (replacing doc or pasting into an empty line at indent 0).
+              const lineStart = ed.state.doc.lineAt(sel.from);
+              const atLineColZero = sel.from === lineStart.from && lineStart.text.trim() === '';
+              if (!existingEmpty && !atLineColZero) return false;
+              const res = indentCompose(text);
+              if (!res.changed) return false;
+              event.preventDefault();
+              ed.dispatch({
+                changes: { from: sel.from, to: sel.to, insert: res.text },
+                selection: { anchor: sel.from + res.text.length },
+                userEvent: 'input.paste',
+              });
+              onAutoIndent?.();
+              return true;
+            },
+          }),
         ],
       }),
     });
     return () => view?.destroy();
   });
+
+  export function undo() {
+    if (!view) return;
+    import('@codemirror/commands').then((m) => m.undo(view!));
+  }
 
   // external value changes (reload, convert) replace the document
   $effect(() => {

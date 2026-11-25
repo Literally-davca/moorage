@@ -207,10 +207,11 @@ func RunStackApplyHelper(ctx context.Context, eng ContainerEngine, up func(ctx c
 	o.Sleep(o.StartDelay)
 	out := os.Stdout
 
+	startedAt := o.Now()
 	reason := ""
 	if err := up(ctx, out); err != nil {
 		reason = "compose up failed: " + err.Error()
-	} else if why := waitStackHealthy(ctx, eng, o); why != "" {
+	} else if why := waitStackHealthy(ctx, eng, o, startedAt); why != "" {
 		reason = why
 	}
 	if reason == "" {
@@ -232,8 +233,8 @@ func RunStackApplyHelper(ctx context.Context, eng ContainerEngine, up func(ctx c
 }
 
 // waitStackHealthy waits for a running Moorage container of the project's service that
-// stays up for StableFor (and answers /api/session when it is the hub).
-func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOptions) string {
+// stays up for StableFor (and answers /api/session or writes a fresh healthy mark when it is the hub).
+func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOptions, startedAt time.Time) string {
 	deadline := o.Now().Add(o.HealthTimeout)
 	var stableSince time.Time
 	var stableKey string
@@ -247,7 +248,13 @@ func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOpti
 			if key != stableKey {
 				stableKey, stableSince = key, o.Now()
 			}
-			healthy := !o.IsHub || pollContainerSessionHealth(ctx, o.HTTPClient, *insp, o.ListenAddr, o.Version)
+			// Do not require matching the old o.Version: Apply & restart is commonly used to change the Moorage image tag.
+			healthy := !o.IsHub || pollContainerSessionHealth(ctx, o.HTTPClient, *insp, o.ListenAddr, "")
+			if !healthy && o.DataDir != "" {
+				if mark, ok := readHealthyMark(o.DataDir); ok && !mark.At.Before(startedAt.Add(-time.Second)) {
+					healthy = true
+				}
+			}
 			if !healthy {
 				last = "Moorage doesn't answer on its web port"
 			} else if o.Now().Sub(stableSince) >= o.StableFor {

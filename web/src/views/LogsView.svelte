@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type ContainerInfo } from '../lib/api';
-  import { app, currentHost, isAdmin } from '../lib/state.svelte';
+  import { app, currentHost, isAdmin, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
   import LogViewer from './LogViewer.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
 
@@ -70,16 +71,22 @@
       <div class="actions">
         {#if isAdmin() && runningContainers.length > 0}
           <div class="term-launch">
-            <select
-              class="term-sel"
-              bind:value={selectedTermId}
-              aria-label="Select running container for terminal"
-              disabled={!canContainerTerm}
-            >
-              {#each runningContainers as c (c.id)}
-                <option value={c.id}>{c.project ? `${c.project} / ${c.service || c.name}` : c.name}</option>
-              {/each}
-            </select>
+            <div class="term-sel">
+              <Select
+                label="Select running container for terminal"
+                disabled={!canContainerTerm}
+                value={selectedTermId}
+                items={runningContainers.map((c) => {
+                  const stackDisp = c.project ? stackLabel(app.host, c.project) : '';
+                  return {
+                    value: c.id,
+                    label: stackDisp ? `${stackDisp} / ${c.service || c.name}` : c.name,
+                    meta: stackDisp && stackDisp !== c.project ? c.project : undefined,
+                  };
+                })}
+                onchange={(v) => (selectedTermId = v)}
+              />
+            </div>
             <button
               type="button"
               class="btn"
@@ -175,19 +182,8 @@
     gap: 6px;
   }
   .term-sel {
-    height: 36px;
-    max-width: 240px;
-    padding: 0 10px;
-    border-radius: var(--r-md);
-    border: 0;
-    background: var(--well);
-    color: var(--foam);
-    box-shadow: inset 0 0 0 1px var(--rope);
-    font: 500 13px var(--font);
-  }
-  .term-sel option {
-    background: var(--hull);
-    color: var(--foam);
+    min-width: 200px;
+    max-width: 280px;
   }
   .btn.active {
     background: var(--buoy-wash);

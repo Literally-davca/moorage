@@ -1,14 +1,45 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api } from '../lib/api';
-  import { app } from '../lib/state.svelte';
+  import { app, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
+  import MultiSelect, { type MultiItem } from '../lib/MultiSelect.svelte';
 
   let tab = $state<'grafana' | 'scrape' | 'homelab'>('grafana');
   let scope = $state<'all' | 'host' | 'custom'>('all');
   let hostId = $state(untrack(() => app.host));
-  let stacksFilter = $state('');
+  let selectedStacks = $state<string[]>([]);
+  let stackItems = $state<MultiItem[]>([]);
   let datasourceUid = $state('${DS_PROMETHEUS}');
+
+  $effect(() => {
+    if (scope !== 'custom' || stackItems.length > 0) return;
+    const hosts = app.hosts.filter((h) => h.connected !== false);
+    untrack(async () => {
+      const lists = await Promise.all(
+        hosts.map((h) =>
+          api
+            .stacksOf(h.id)
+            .then((r) =>
+              r.stacks.map((s) => {
+                const disp = stackLabel(h.id, s.name, s.displayName);
+                return { value: s.name, label: disp, meta: disp !== s.name ? `${h.name} · ${s.name}` : h.name };
+              }),
+            )
+            .catch(() => []),
+        ),
+      );
+      const seen = new Set<string>();
+      const out: MultiItem[] = [];
+      for (const item of lists.flat()) {
+        if (seen.has(item.value)) continue;
+        seen.add(item.value);
+        out.push(item);
+      }
+      stackItems = out;
+    });
+  });
 
   let dashJson = $state('');
   let pushing = $state(false);
@@ -28,7 +59,7 @@
       const d = await api.promDashboard({
         scope,
         host: scope === 'host' ? hostId : undefined,
-        stacks: scope === 'custom' ? stacksFilter : undefined,
+        stacks: scope === 'custom' ? selectedStacks.join(',') : undefined,
         datasourceUid,
       });
       dashJson = JSON.stringify(d, null, 2);
@@ -47,9 +78,7 @@
       const res = await api.pushGrafanaDashboard({
         scope,
         hostId: scope === 'host' ? hostId : undefined,
-        stacks: scope === 'custom'
-          ? stacksFilter.split(',').map((s) => s.trim()).filter(Boolean)
-          : undefined,
+        stacks: scope === 'custom' ? selectedStacks : undefined,
         datasourceUid,
       });
       pushResult = { url: res.url, status: res.status };
@@ -134,28 +163,40 @@
 
   {#if tab === 'grafana'}
     <div class="controls">
-      <label class="ctrl">
+      <div class="ctrl">
         <span class="meta">Scope</span>
-        <select class="field" bind:value={scope}>
-          <option value="all">All hosts (Overview)</option>
-          <option value="host">Single host</option>
-          <option value="custom">Selected stacks</option>
-        </select>
-      </label>
+        <Select
+          label="Dashboard scope"
+          value={scope}
+          items={[
+            { value: 'all', label: 'All hosts (Overview)' },
+            { value: 'host', label: 'Single host' },
+            { value: 'custom', label: 'Selected stacks' },
+          ]}
+          onchange={(v) => (scope = v as typeof scope)}
+        />
+      </div>
       {#if scope === 'host'}
-        <label class="ctrl">
+        <div class="ctrl">
           <span class="meta">Host</span>
-          <select class="field" bind:value={hostId}>
-            {#each app.hosts as h (h.id)}
-              <option value={h.id}>{h.name}</option>
-            {/each}
-          </select>
-        </label>
+          <Select
+            label="Dashboard host"
+            value={hostId}
+            items={app.hosts.map((h) => ({ value: h.id, label: h.name }))}
+            onchange={(v) => (hostId = v)}
+          />
+        </div>
       {:else if scope === 'custom'}
-        <label class="ctrl">
-          <span class="meta">Stacks (comma-separated)</span>
-          <input class="field mono" bind:value={stacksFilter} placeholder="traefik, postgres" onchange={loadDashboard} />
-        </label>
+        <div class="ctrl ctrl-wide">
+          <span class="meta">Stacks</span>
+          <MultiSelect
+            label="Selected stacks"
+            placeholder="Pick stacks…"
+            items={stackItems}
+            bind:selected={selectedStacks}
+            onchange={() => void loadDashboard()}
+          />
+        </div>
       {/if}
       <label class="ctrl">
         <span class="meta">Datasource UID</span>

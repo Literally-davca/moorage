@@ -140,4 +140,25 @@ func TestQuickFixes(t *testing.T) {
 	if err != nil || r.Env != "# c\nB=2\n" {
 		t.Fatalf("remove-unused: %v %q", err, r.Env)
 	}
+	r, err = Apply(compose, "", Fix{Kind: "add-mem-limit", Service: "db"})
+	if err != nil || !strings.Contains(r.Compose, "  db:\n    mem_limit: 512m\n") {
+		t.Fatalf("add-mem-limit: %v\n%s", err, r.Compose)
+	}
+	r, err = Apply(compose, "", Fix{Kind: "add-healthcheck", Service: "db"})
+	if err != nil || !strings.Contains(r.Compose, "pg_isready") {
+		t.Fatalf("add-healthcheck postgres: %v\n%s", err, r.Compose)
+	}
+	httpCompose := "services:\n  api:\n    image: nginx:latest\n    ports:\n      - \"8080:80\"\n"
+	r, err = Apply(httpCompose, "", Fix{Kind: "add-healthcheck", Service: "api"})
+	if err != nil || !strings.Contains(r.Compose, "http://127.0.0.1:80/") {
+		t.Fatalf("add-healthcheck http: %v\n%s", err, r.Compose)
+	}
+	r, err = Apply(httpCompose, "", Fix{Kind: "pin-tag", Service: "api", TargetTag: "1.27.4"})
+	if err != nil || !strings.Contains(r.Compose, "image: nginx:1.27.4") {
+		t.Fatalf("pin-tag: %v\n%s", err, r.Compose)
+	}
+	r, err = Apply(compose, "A=1\n", Fix{Kind: "add-env-var", Keys: []string{"DB_PASS"}})
+	if err != nil || !strings.Contains(r.Env, "DB_PASS=") {
+		t.Fatalf("add-env-var: %v %q", err, r.Env)
+	}
 }

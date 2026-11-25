@@ -45,9 +45,10 @@ type checkDTO struct {
 	ID        int64            `json:"id"`
 	State     monitor.State    `json:"state"`
 	Uptime24h *float64         `json:"uptime24h"`
-	Ticks     []monitor.Tick   `json:"ticks"`
-	HostName  string           `json:"hostName,omitempty"`
-	Incidents []incidentDTO    `json:"incidents,omitempty"`
+	Ticks            []monitor.Tick   `json:"ticks"`
+	HostName         string           `json:"hostName,omitempty"`
+	StackDisplayName string           `json:"stackDisplayName,omitempty"`
+	Incidents        []incidentDTO    `json:"incidents,omitempty"`
 	Anchors   []monitor.Anchor `json:"anchors,omitempty"`
 	Uptime7d  *float64         `json:"uptime7d,omitempty"`
 	Uptime30d *float64         `json:"uptime30d,omitempty"`
@@ -348,6 +349,9 @@ func (s *Server) checkDTO(ctx context.Context, c store.Check, ticks int) checkDT
 	if c.HostID != "" && s.reg != nil {
 		_, e, _ := s.reg.Get(ctx, c.HostID)
 		d.HostName = e.Name
+	}
+	if c.HostID != "" && c.Stack != "" {
+		d.StackDisplayName = s.StackDisplayName(ctx, c.HostID, c.Stack)
 	}
 	return d
 }

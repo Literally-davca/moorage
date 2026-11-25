@@ -18,19 +18,22 @@ type updateSettingsDTO struct {
 }
 
 type stackImagesDTO struct {
-	HostID     string                `json:"hostId"`
-	HostName   string                `json:"hostName"`
-	ReadOnly   bool                  `json:"readOnly"`
-	Stack      string                `json:"stack"`
-	Managed    bool                  `json:"managed"`
-	Status     string                `json:"status"`
-	Running    int                   `json:"running"`
-	Policy     string                `json:"policy"`
-	AutoReason string                `json:"autoReason,omitempty"`
-	CheckedAt  time.Time             `json:"checkedAt,omitzero"`
-	Services   []store.ImageCheckRow `json:"services"`
-	LastUpdate *store.ImageUpdate    `json:"lastUpdate,omitempty"`
-	Updates    []store.ImageUpdate   `json:"updates,omitempty"`
+	HostID         string                `json:"hostId"`
+	HostName       string                `json:"hostName"`
+	ReadOnly       bool                  `json:"readOnly"`
+	Stack          string                `json:"stack"`
+	DisplayName    string                `json:"displayName,omitempty"`
+	CoolifyProject string                `json:"coolifyProject,omitempty"`
+	CoolifyUUID    string                `json:"coolifyUuid,omitempty"`
+	Managed        bool                  `json:"managed"`
+	Status         string                `json:"status"`
+	Running        int                   `json:"running"`
+	Policy         string                `json:"policy"`
+	AutoReason     string                `json:"autoReason,omitempty"`
+	CheckedAt      time.Time             `json:"checkedAt,omitzero"`
+	Services       []store.ImageCheckRow `json:"services"`
+	LastUpdate     *store.ImageUpdate    `json:"lastUpdate,omitempty"`
+	Updates        []store.ImageUpdate   `json:"updates,omitempty"`
 }
 
 func hubTimezoneName() string {
@@ -114,6 +117,11 @@ func (s *Server) listUpdates(w http.ResponseWriter, r *http.Request) {
 					AutoReason: autoDisabledReason(he.ReadOnly, sm.Managed),
 					CheckedAt:  checkedAt,
 					Services:   rows,
+				}
+				if cr := s.CoolifyMetaOf(ctx, he.ID, sm.Name); cr != nil {
+					dto.DisplayName = cr.Name
+					dto.CoolifyProject = cr.Project
+					dto.CoolifyUUID = cr.UUID
 				}
 				if lu, ok := lastUpdateByStack[key]; ok {
 					uCopy := lu
@@ -241,7 +249,7 @@ func (s *Server) getStackImages(w http.ResponseWriter, r *http.Request) {
 		u0 := updates[0]
 		lastUpdate = &u0
 	}
-	writeJSON(w, http.StatusOK, stackImagesDTO{
+	dto := stackImagesDTO{
 		HostID:     hostID,
 		HostName:   he.Name,
 		ReadOnly:   he.ReadOnly,
@@ -255,7 +263,13 @@ func (s *Server) getStackImages(w http.ResponseWriter, r *http.Request) {
 		Services:   rows,
 		LastUpdate: lastUpdate,
 		Updates:    updates,
-	})
+	}
+	if cr := s.CoolifyMetaOf(ctx, hostID, name); cr != nil {
+		dto.DisplayName = cr.Name
+		dto.CoolifyProject = cr.Project
+		dto.CoolifyUUID = cr.UUID
+	}
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *Server) saveStackImagePolicy(w http.ResponseWriter, r *http.Request) {

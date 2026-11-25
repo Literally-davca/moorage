@@ -9,8 +9,9 @@
     type ScheduledTask,
     type SocketFinding,
   } from '../lib/api';
-  import { app } from '../lib/state.svelte';
+  import { app, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
 
   let { addonId }: { addonId: 'stack-scheduler' | 'socket-proxy-check' | 'registry-webhooks' | 'mcp-server' } = $props();
 
@@ -226,20 +227,30 @@
   {#if addonId === 'stack-scheduler'}
     <form class="grid-form" onsubmit={createTask}>
       <input class="field" bind:value={taskName} placeholder="Task name (e.g. Nightly Nextcloud cron)" required />
-      <select class="field" bind:value={taskHost}>
-        {#each app.hosts as h (h.id)}
-          <option value={h.id}>{h.name}</option>
-        {/each}
-      </select>
+      <div class="sel-wrap">
+        <Select
+          label="Task host"
+          value={taskHost}
+          items={app.hosts.map((h) => ({ value: h.id, label: h.name }))}
+          onchange={(v) => (taskHost = v)}
+        />
+      </div>
       <input class="field mono" bind:value={taskStack} placeholder="Stack name" required />
       <input class="field mono" bind:value={taskCron} placeholder="0 4 * * *" title="5-field cron: min hour day month weekday" required />
-      <select class="field" bind:value={taskAction}>
-        <option value="restart">Restart</option>
-        <option value="pull-up">Pull + Up</option>
-        <option value="start">Start</option>
-        <option value="stop">Stop</option>
-        <option value="exec">Container exec</option>
-      </select>
+      <div class="sel-wrap">
+        <Select
+          label="Task action"
+          value={taskAction}
+          items={[
+            { value: 'restart', label: 'Restart' },
+            { value: 'pull-up', label: 'Pull + Up' },
+            { value: 'start', label: 'Start' },
+            { value: 'stop', label: 'Stop' },
+            { value: 'exec', label: 'Container exec' },
+          ]}
+          onchange={(v) => (taskAction = v as typeof taskAction)}
+        />
+      </div>
       {#if taskAction === 'exec'}
         <input class="field mono" bind:value={taskService} placeholder="Service (optional)" />
         <input class="field mono" bind:value={taskCommand} placeholder="Command (e.g. php occ cron:run)" required />
@@ -258,7 +269,7 @@
                 <strong>{t.name}</strong>
                 <span class="badge mono">{t.cron}</span>
                 <span class="badge">{t.action}</span>
-                <span class="meta mono">{t.hostId}/{t.stack}</span>
+                <span class="meta mono">{t.hostId}/{t.stackDisplayName || stackLabel(t.hostId, t.stack)}</span>
               </div>
               {#if t.lastStatus}
                 <div class="meta mono">Last: {t.lastStatus}{t.lastRunAt ? ` · ${new Date(t.lastRunAt).toLocaleString()}` : ''}</div>
@@ -278,10 +289,21 @@
       <button type="button" class="btn btn-primary" onclick={load} disabled={loading}>
         <Icon name="shield" /> {loading ? 'Scanning…' : 'Scan hosts'}
       </button>
-      <select class="field" style="width:auto" bind:value={proxyMode} onchange={load}>
-        <option value="ro">Read-only socket proxy</option>
-        <option value="write">Read-write socket proxy</option>
-      </select>
+      <div class="sel-wrap">
+        <Select
+          label="Socket proxy mode"
+          compact={true}
+          value={proxyMode}
+          items={[
+            { value: 'ro', label: 'Read-only socket proxy' },
+            { value: 'write', label: 'Read-write socket proxy' },
+          ]}
+          onchange={(v) => {
+            proxyMode = v as 'ro' | 'write';
+            void load();
+          }}
+        />
+      </div>
       <button type="button" class="btn" onclick={() => copy(proxySnippet, 'sock')}>
         <Icon name="copy" /> {copied === 'sock' ? 'Copied' : 'Copy socket-proxy snippet'}
       </button>
@@ -312,12 +334,19 @@
   {:else if addonId === 'registry-webhooks'}
     <form class="grid-form" onsubmit={createWebhook}>
       <input class="field" bind:value={whName} placeholder="Webhook name (e.g. GHCR Deploy)" required />
-      <select class="field" bind:value={whProvider}>
-        <option value="ghcr">GitHub Container Registry (GHCR)</option>
-        <option value="dockerhub">Docker Hub</option>
-        <option value="gitea">Gitea / Harbor</option>
-        <option value="generic">Generic</option>
-      </select>
+      <div class="sel-wrap">
+        <Select
+          label="Webhook registry provider"
+          value={whProvider}
+          items={[
+            { value: 'ghcr', label: 'GitHub Container Registry (GHCR)' },
+            { value: 'dockerhub', label: 'Docker Hub' },
+            { value: 'gitea', label: 'Gitea / Harbor' },
+            { value: 'generic', label: 'Generic' },
+          ]}
+          onchange={(v) => (whProvider = v)}
+        />
+      </div>
       <input class="field mono" type="password" bind:value={whSecret} placeholder="Optional HMAC secret (X-Hub-Signature-256)" />
       <label class="check">
         <input type="checkbox" bind:checked={whApplyNow} />
@@ -376,7 +405,7 @@
               <div class="rtitle">
                 <span class="badge degraded">Pending</span>
                 <strong>{d.tool}</strong>
-                <span class="mono">{d.hostId}/{d.stack}</span>
+                <span class="mono">{d.hostId}/{d.stackDisplayName || stackLabel(d.hostId, d.stack)}</span>
                 <span class="meta">by mcp:{d.tokenName}</span>
               </div>
               {#if d.compose}
@@ -394,18 +423,27 @@
 
     <form class="grid-form" onsubmit={createToken}>
       <input class="field" bind:value={mcpName} placeholder="Client name (e.g. Claude Desktop)" required />
-      <select class="field" bind:value={mcpHost}>
-        <option value="*">All hosts (*)</option>
-        {#each app.hosts as h (h.id)}
-          <option value={h.id}>{h.name}</option>
-        {/each}
-      </select>
+      <div class="sel-wrap">
+        <Select
+          label="MCP ACL Host"
+          value={mcpHost}
+          items={[{ value: '*', label: 'All hosts (*)' }, ...app.hosts.map((h) => ({ value: h.id, label: h.name }))]}
+          onchange={(v) => (mcpHost = v)}
+        />
+      </div>
       <input class="field mono" bind:value={mcpStackPat} placeholder="Stack glob (* or media-*)" />
-      <select class="field" bind:value={mcpScope}>
-        <option value="read">Read only</option>
-        <option value="operate">Operate (start/stop/restart/pull)</option>
-        <option value="deploy">Deploy (create/update/deploy)</option>
-      </select>
+      <div class="sel-wrap">
+        <Select
+          label="MCP ACL Scope"
+          value={mcpScope}
+          items={[
+            { value: 'read', label: 'Read only' },
+            { value: 'operate', label: 'Operate (start/stop/restart/pull)' },
+            { value: 'deploy', label: 'Deploy (create/update/deploy)' },
+          ]}
+          onchange={(v) => (mcpScope = v as typeof mcpScope)}
+        />
+      </div>
       <input class="field" type="number" min="0" bind:value={mcpExpiresDays} placeholder="Expiry days (0 = never)" />
       <label class="check">
         <input type="checkbox" bind:checked={mcpRequireApproval} />

@@ -75,6 +75,8 @@ type AddonInfo struct {
 	Detail      string `json:"detail,omitempty"`
 	LinkHref    string `json:"linkHref,omitempty"`
 	LinkLabel   string `json:"linkLabel,omitempty"`
+	DocsSlug    string `json:"docsSlug,omitempty"`
+	DocsURL     string `json:"docsUrl,omitempty"`
 }
 
 // AddonCatalogEntry is one entry in moorage-addons/index.json or a custom addon_source.
@@ -157,6 +159,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Enabled:     proxyOn,
 			Installed:   true,
 			Toggleable:  true,
+			DocsSlug:    "proxy-labels",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#proxy-labels",
 		},
 		{
 			ID:          addonOfficialTemplates,
@@ -172,6 +176,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Detail:      OfficialTemplatesURL,
 			LinkHref:    "#/settings/templates",
 			LinkLabel:   "Manage template sources",
+			DocsSlug:    "official-templates",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#official-templates",
 		},
 		{
 			ID:          addonPrometheusGrafana,
@@ -185,6 +191,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Installed:   true,
 			Toggleable:  s.cfg.MetricsToken == "",
 			Detail:      metricsDetail,
+			DocsSlug:    "prometheus-grafana",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#prometheus-grafana",
 		},
 		{
 			ID:          addonCoolify,
@@ -199,6 +207,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Toggleable:  true,
 			LinkHref:    "#/settings/connections",
 			LinkLabel:   "Configure Coolify API",
+			DocsSlug:    "coolify",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/coolify.md",
 		},
 		{
 			ID:          addonStackScheduler,
@@ -211,6 +221,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Enabled:     schedOn,
 			Installed:   true,
 			Toggleable:  true,
+			DocsSlug:    "stack-scheduler",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#stack-scheduler",
 		},
 		{
 			ID:          addonSocketProxyCheck,
@@ -223,6 +235,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Enabled:     sockOn,
 			Installed:   true,
 			Toggleable:  true,
+			DocsSlug:    "socket-proxy-check",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#socket-proxy-check",
 		},
 		{
 			ID:          addonRegistryWebhooks,
@@ -235,6 +249,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Enabled:     webhookOn,
 			Installed:   true,
 			Toggleable:  true,
+			DocsSlug:    "registry-webhooks",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#registry-webhooks",
 		},
 		{
 			ID:          addonMCPServer,
@@ -247,6 +263,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Enabled:     mcpOn,
 			Installed:   true,
 			Toggleable:  true,
+			DocsSlug:    "mcp-server",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#mcp-server",
 		},
 	}
 

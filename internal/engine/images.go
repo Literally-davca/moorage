@@ -1137,6 +1137,114 @@ func SelectNewerTagsFromRegistry(ctx context.Context, ref, currentTag string, cr
 	return same, major, nil
 }
 
+// LatestStableTagFromRegistry queries the registry HTTP API v2 tag list for ref and returns
+// the highest stable semantic version tag (preferring non-prerelease tags).
+func LatestStableTagFromRegistry(ctx context.Context, ref string, creds RegistryCreds, clientOverride *http.Client) (string, error) {
+	cl := registryHTTPClient
+	if clientOverride != nil {
+		cl = clientOverride
+	}
+	regHost, repo, curTag := ParseImageRef(ref)
+	wantSuffix := ""
+	if idx := strings.Index(curTag, "-"); idx > 0 && curTag != "latest" {
+		wantSuffix = curTag[idx:]
+	}
+	scheme := "https"
+	baseURL := fmt.Sprintf("%s://%s", scheme, regHost)
+	nextPath := fmt.Sprintf("/v2/%s/tags/list?n=1000", repo)
+
+	bearerToken := ""
+	totalSeen := 0
+	var best *VersionTag
+
+	consider := func(tag string) {
+		vt, ok := ParseVersionTag(tag)
+		if !ok || isPreReleaseSuffix(vt.Suffix) {
+			return
+		}
+		if wantSuffix != "" && vt.Suffix != wantSuffix {
+			return
+		}
+		if wantSuffix == "" && vt.Suffix != "" {
+			return
+		}
+		if best == nil || compareVersionSlices(vt.Parts, best.Parts) > 0 {
+			c := vt
+			best = &c
+		}
+	}
+
+	for nextPath != "" && totalSeen < maxRemoteTags {
+		fullURL := resolveRegistryURL(baseURL, nextPath)
+		resp, err := doRegistryGet(ctx, cl, fullURL, creds, bearerToken)
+		if err != nil && scheme == "https" && isLocalRegistryHost(regHost) {
+			scheme = "http"
+			baseURL = fmt.Sprintf("http://%s", regHost)
+			fullURL = resolveRegistryURL(baseURL, nextPath)
+			resp, err = doRegistryGet(ctx, cl, fullURL, creds, bearerToken)
+		}
+		if err != nil {
+			return "", err
+		}
+		if resp.StatusCode == http.StatusUnauthorized && bearerToken == "" {
+			challenge := resp.Header.Get("WWW-Authenticate")
+			resp.Body.Close()
+			tok, terr := fetchBearerToken(ctx, cl, challenge, creds)
+			if terr != nil {
+				return "", terr
+			}
+			bearerToken = tok
+			resp, err = doRegistryGet(ctx, cl, fullURL, creds, bearerToken)
+			if err != nil {
+				return "", err
+			}
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			resp.Body.Close()
+			return "", fmt.Errorf("registry answered %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		}
+		linkNext := parseNextLink(resp.Header.Get("Link"))
+		seenInPage, perr := streamTagsResponse(resp.Body, maxRemoteTags-totalSeen, consider)
+		resp.Body.Close()
+		if perr != nil {
+			return "", perr
+		}
+		totalSeen += seenInPage
+		if seenInPage == 0 || linkNext == "" || linkNext == nextPath {
+			break
+		}
+		nextPath = linkNext
+	}
+	if best == nil {
+		return "", errors.New("no stable version tag found in registry")
+	}
+	return best.Raw, nil
+}
+
+func compareVersionSlices(a, b []int) int {
+	n := len(a)
+	if len(b) > n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		av, bv := 0, 0
+		if i < len(a) {
+			av = a[i]
+		}
+		if i < len(b) {
+			bv = b[i]
+		}
+		if av != bv {
+			if av > bv {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
+}
+
 // manifestAccept lists the manifest types Moorage understands, index types first: the
 // digest of a multi-platform image is its index digest, the same DistributionInspect
 // returns and the one a pull records in RepoDigests.

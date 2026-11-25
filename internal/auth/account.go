@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -194,4 +195,21 @@ func (s *Service) RevokeOtherSessions(ctx context.Context, token string) (int64,
 		return 0, err
 	}
 	return s.db.DeleteUserSessions(ctx, u.ID, hashToken(token))
+}
+
+// SetPreferences saves normalized UX preferences for the signed-in user.
+func (s *Service) SetPreferences(ctx context.Context, token string, prefs UserPreferences) (UserPreferences, error) {
+	_, u, err := s.sessionAndUser(ctx, token)
+	if err != nil {
+		return UserPreferences{}, err
+	}
+	norm := prefs.Normalize()
+	b, err := json.Marshal(norm)
+	if err != nil {
+		return UserPreferences{}, err
+	}
+	if err := s.db.SetUserPreferences(ctx, u.ID, string(b)); err != nil {
+		return UserPreferences{}, err
+	}
+	return norm, nil
 }

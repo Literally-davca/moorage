@@ -1,10 +1,11 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type DeletedStack, type ImageLookup, type ImageCandidate, type LintIssue, type LintResult } from '../lib/api';
-  import { link } from '../lib/state.svelte';
+  import { link, userPrefs } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import ComposeEditor from '../lib/ComposeEditor.svelte';
   import EnvEditor from '../lib/EnvEditor.svelte';
+  import SetupHint from '../lib/SetupHint.svelte';
 
   let { onCreated }: { onCreated: (name: string) => void } = $props();
 
@@ -160,12 +161,21 @@
   <div class="head">
     <h1 class="title">New stack</h1>
     <div class="head-actions">
-      <a class="btn" href={link('templates')}><Icon name="template" /> From template</a>
+      <a class="btn" class:btn-primary={userPrefs().newStackDefault === 'templates'} href={link('templates')}><Icon name="template" /> From template</a>
       <button type="button" class="btn" onclick={() => { converted = ''; convError = ''; dlg.showModal(); }}>
         <Icon name="wand" /> Convert docker run
       </button>
     </div>
   </div>
+
+  {#if userPrefs().newStackDefault === 'templates'}
+    <SetupHint
+      title="Want a pre-configured app?"
+      detail="Your profile prefers starting from app templates. Browse ready-to-deploy Compose templates or continue editing below."
+      actionLabel="Browse templates"
+      actionHref={link('templates')}
+    />
+  {/if}
 
   <section class="from-image" aria-label="Start from an image">
     <label class="label" for="simage">Start from an image <span class="meta">optional</span></label>

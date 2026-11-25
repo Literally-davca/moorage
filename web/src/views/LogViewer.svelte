@@ -1,7 +1,9 @@
 <script lang="ts">
   import { api, hostPath, wsURL, type Container, type ContainerInfo, type LogLine } from '../lib/api';
+  import { app, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
+  import Select from '../lib/Select.svelte';
   import {
     ansiClass,
     parseAnsi,
@@ -57,12 +59,12 @@
   const selectItems = $derived.by(() => {
     if (hostContainers) {
       return hostContainers.map((c) => {
-        const grp = c.project || 'standalone';
+        const grp = c.project ? stackLabel(app.host, c.project) : 'standalone';
         const svc = c.service || c.name;
         return {
           value: c.name,
-          label: c.project ? `${c.project} / ${svc}` : svc,
-          meta: `${grp} · ${c.state}`,
+          label: c.project ? `${grp} / ${svc}` : svc,
+          meta: c.project && grp !== c.project ? `${c.project} · ${c.state}` : `${grp} · ${c.state}`,
         };
       });
     }
@@ -325,18 +327,22 @@
       >.*</button>
     </label>
 
-    <label class="range-sel">
-      <Icon name="clock" />
-      <span class="sr-only">Time range</span>
-      <select bind:value={rangePreset} aria-label="Time range">
-        <option value="live">Live (tail 300)</option>
-        <option value="15m">Last 15m</option>
-        <option value="1h">Last 1h</option>
-        <option value="6h">Last 6h</option>
-        <option value="24h">Last 24h</option>
-        <option value="custom">From – To…</option>
-      </select>
-    </label>
+    <div class="range-sel">
+      <Select
+        label="Time range"
+        compact={true}
+        value={rangePreset}
+        items={[
+          { value: 'live', label: 'Live (tail 300)' },
+          { value: '15m', label: 'Last 15m' },
+          { value: '1h', label: 'Last 1h' },
+          { value: '6h', label: 'Last 6h' },
+          { value: '24h', label: 'Last 24h' },
+          { value: 'custom', label: 'From – To…' },
+        ]}
+        onchange={(v) => (rangePreset = v as RangePreset)}
+      />
+    </div>
 
     <button
       type="button"
@@ -557,25 +563,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 32px;
-    padding: 0 8px;
-    border-radius: var(--r-md);
-    background: var(--well);
-    color: var(--mist);
-    box-shadow: inset 0 0 0 1px var(--rope);
-    font-size: 12px;
-  }
-  .range-sel select {
-    border: 0;
-    background: transparent;
-    color: var(--foam);
-    font: 500 12px var(--font);
-    outline: none;
-    cursor: pointer;
-  }
-  .range-sel select option {
-    background: var(--hull);
-    color: var(--foam);
+    min-width: 145px;
   }
   .re {
     height: 24px;

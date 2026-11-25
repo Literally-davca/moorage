@@ -28,21 +28,24 @@ type coolifyRes struct {
 	FQDN        string `json:"fqdn,omitempty"`
 }
 
-// coolifyHub keeps Coolify resources per host synced via Coolify REST API /api/v1.
+// coolifyHub keeps Coolify resources per host synced via Coolify REST API /api/v1
+// and caches Layer-1 label metadata seen on containers so UIDs resolve globally.
 type coolifyHub struct {
-	srv    *Server
-	mu     sync.RWMutex
-	byHost map[string]map[string]coolifyRes // hostID -> uuid -> res
-	lastAt map[string]time.Time
-	wake   chan struct{}
+	srv         *Server
+	mu          sync.RWMutex
+	byHost      map[string]map[string]coolifyRes // hostID -> uuid -> res (API)
+	labelByHost map[string]map[string]coolifyRes // hostID -> project/uuid -> res (container labels)
+	lastAt      map[string]time.Time
+	wake        chan struct{}
 }
 
 func newCoolifyHub(s *Server) *coolifyHub {
 	return &coolifyHub{
-		srv:    s,
-		byHost: map[string]map[string]coolifyRes{},
-		lastAt: map[string]time.Time{},
-		wake:   make(chan struct{}, 1),
+		srv:         s,
+		byHost:      map[string]map[string]coolifyRes{},
+		labelByHost: map[string]map[string]coolifyRes{},
+		lastAt:      map[string]time.Time{},
+		wake:        make(chan struct{}, 1),
 	}
 }
 
@@ -219,6 +222,90 @@ func (s *Server) coolifyResFor(ctx context.Context, hostID, uuid string) *coolif
 		return nil
 	}
 	return s.coolify.resource(ctx, hostID, uuid)
+}
+
+func (s *Server) recordCoolifyLabels(hostID string, lblMeta map[string]coolifyRes) {
+	if s.coolify == nil || len(lblMeta) == 0 {
+		return
+	}
+	s.coolify.mu.Lock()
+	if s.coolify.labelByHost == nil {
+		s.coolify.labelByHost = map[string]map[string]coolifyRes{}
+	}
+	m := s.coolify.labelByHost[hostID]
+	if m == nil {
+		m = map[string]coolifyRes{}
+		s.coolify.labelByHost[hostID] = m
+	}
+	for proj, r := range lblMeta {
+		if r.Name != "" {
+			m[proj] = r
+			if r.UUID != "" && r.UUID != proj {
+				m[r.UUID] = r
+			}
+		}
+	}
+	s.coolify.mu.Unlock()
+}
+
+// CoolifyMetaOf resolves a Coolify stack's human-readable metadata from API cache or label cache.
+func (s *Server) CoolifyMetaOf(ctx context.Context, hostID, stack string) *coolifyRes {
+	if s == nil || s.store == nil || stack == "" {
+		return nil
+	}
+	on, _ := s.store.AddonEnabled(ctx, addonCoolify)
+	if !on {
+		return nil
+	}
+	if cr := s.coolifyResFor(ctx, hostID, stack); cr != nil {
+		return cr
+	}
+	if s.coolify != nil {
+		s.coolify.mu.RLock()
+		r, ok := s.coolify.labelByHost[hostID][stack]
+		s.coolify.mu.RUnlock()
+		if ok && r.Name != "" {
+			cp := r
+			return &cp
+		}
+	}
+	return nil
+}
+
+// StackDisplayName returns the Coolify human name for hostID/stack, or "" if none.
+func (s *Server) StackDisplayName(ctx context.Context, hostID, stack string) string {
+	if cr := s.CoolifyMetaOf(ctx, hostID, stack); cr != nil && cr.Name != "" && cr.Name != stack {
+		return cr.Name
+	}
+	return ""
+}
+
+// coolifyNames returns a global hostId/stack -> display metadata map for the UI.
+func (s *Server) coolifyNames(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	on, _ := s.store.AddonEnabled(ctx, addonCoolify)
+	out := map[string]coolifyRes{}
+	if !on || s.coolify == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"names": out})
+		return
+	}
+	s.coolify.mu.RLock()
+	for hid, m := range s.coolify.labelByHost {
+		for k, v := range m {
+			if v.Name != "" {
+				out[hid+"/"+k] = v
+			}
+		}
+	}
+	for hid, m := range s.coolify.byHost {
+		for k, v := range m {
+			if v.Name != "" {
+				out[hid+"/"+k] = v
+			}
+		}
+	}
+	s.coolify.mu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{"names": out})
 }
 
 func (s *Server) coolifyOwns(ctx context.Context, hostID, project string) bool {

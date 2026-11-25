@@ -1,9 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type Check, type HostEntry, type MaintenanceInput, type MaintenanceStack, type MaintenanceWindow } from '../lib/api';
-  import { isAdmin } from '../lib/state.svelte';
+  import { isAdmin, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
+  import Select from '../lib/Select.svelte';
   import Confirm from '../lib/Confirm.svelte';
   import { fmtMinutes, fmtRange, stateText, weekdayShort, weekOrder } from '../lib/maintenance';
 
@@ -126,7 +127,16 @@
   });
   // The pickers list the chosen stacks too, so they can be unticked there.
   const allStacks = $derived([...stacks, ...stackChoices]);
-  const stackItems = $derived(allStacks.map((s) => ({ value: stackKey(s), label: s.stack, meta: 'on ' + hostName(s.hostId) })));
+  const stackItems = $derived(
+  allStacks.map((s) => {
+    const disp = stackLabel(s.hostId, s.stack);
+    return {
+      value: stackKey(s),
+      label: disp,
+      meta: disp !== s.stack ? `${s.stack} · on ${hostName(s.hostId)}` : 'on ' + hostName(s.hostId),
+    };
+  }),
+);
   function setStacks(keys: string[]) {
     const byKey = new Map(allStacks.map((s) => [stackKey(s), s]));
     stacks = keys.map((k) => byKey.get(k)).filter((s): s is MaintenanceStack => !!s);
@@ -262,10 +272,16 @@
             </div>
           </div>
           <div>
-            <label class="label" for="mw-tz">Time zone</label>
-            <input id="mw-tz" class="field" list="mw-zones" bind:value={timeZone} placeholder={hubTz || "Hub's time zone"}
-              spellcheck="false" autocomplete="off" disabled={readOnly} />
-            <datalist id="mw-zones">{#each zones as z (z)}<option value={z}></option>{/each}</datalist>
+            <span class="label">Time zone</span>
+            <Select
+              label="Time zone"
+              bind:value={timeZone}
+              disabled={readOnly}
+              allowCustom={true}
+              placeholder={hubTz || "Hub's time zone"}
+              customPlaceholder="Search or enter IANA zone…"
+              items={(zones ?? []).map((z) => ({ value: z, label: z }))}
+            />
           </div>
         </div>
         <p class="hint">

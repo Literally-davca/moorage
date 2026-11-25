@@ -70,6 +70,7 @@ type SourceInfo struct {
 type Catalog struct {
 	Templates []Entry      `json:"templates"`
 	Sources   []SourceInfo `json:"sources"`
+	LocalDir  string       `json:"localDir,omitempty"`
 }
 
 // RemoteSource is a remote index as admins manage it.
@@ -230,7 +231,7 @@ func urlHost(raw string) string {
 
 // List returns every template of every source. Broken templates are listed with their error.
 func (s *Service) List(ctx context.Context) (Catalog, error) {
-	c := Catalog{Templates: []Entry{}, Sources: []SourceInfo{}}
+	c := Catalog{Templates: []Entry{}, Sources: []SourceInfo{}, LocalDir: s.dir}
 	c.add(SourceInfo{Key: SourceBundled, Kind: "bundled", Label: "Bundled"}, s.bundled, nil)
 	if s.dir != "" {
 		items, err := loadFolders(os.DirFS(s.dir), false)

@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { api, type SettingsConfig } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
 
   let cfg = $state<SettingsConfig | null>(null);
   let error = $state('');
@@ -15,6 +16,8 @@
   let cleanupEnabled = $state(false);
   let cleanupSchedule = $state('03:30');
   let cleanupVolumes = $state(false);
+
+  const diags = $derived(cfg?.diagnostics ?? []);
 
   async function load() {
     try {
@@ -70,11 +73,11 @@
   {#if cfg === null && !error}
     <section class="card card-pad" aria-busy="true"><div class="skeleton" style="height:14px;width:45%"></div></section>
   {:else if cfg}
-    {#if cfg.diagnostics.length > 0}
+    {#if diags.length > 0}
       <section class="card card-pad diag">
         <h2 class="section-title">Diagnostics</h2>
         <div class="diag-list">
-          {#each cfg.diagnostics as d (d.id)}
+          {#each diags as d (d.id)}
             <div class="diag-row" class:warn={d.level === 'warn'}>
               <Icon name="alert" />
               <div>
@@ -86,6 +89,14 @@
         </div>
       </section>
     {/if}
+
+    <section class="card card-pad head-row" aria-label="Editor experience">
+      <div>
+        <h2 class="section-title">Experience &amp; editor defaults</h2>
+        <p class="meta">Beginner vs. Advanced mode, Compose Form/YAML defaults, linter tips, and confirmations are stored per user.</p>
+      </div>
+      <a class="btn btn-ghost" href="#/account"><Icon name="userCircle" /> Configure in Account</a>
+    </section>
 
     <form class="card card-pad form" onsubmit={save}>
       <h2 class="section-title">Hub network &amp; updates</h2>
@@ -121,17 +132,23 @@
           <span class="meta">Prefills <code>MOORAGE_HUB</code> in generated agent compose files when pairing a host.</span>
         </label>
 
-        <label class="field-wrap">
+        <div class="field-wrap">
           <span class="label-row">
             <span>Update channel</span>
             {#if cfg.fromEnv.updateChannel}<span class="pill env">Set via environment</span>{/if}
           </span>
-          <select class="field" bind:value={updateChannel} disabled={cfg.fromEnv.updateChannel}>
-            <option value="stable">Stable</option>
-            <option value="pre">Pre-release</option>
-          </select>
+          <Select
+            label="Update channel"
+            items={[
+              { value: 'stable', label: 'Stable' },
+              { value: 'pre', label: 'Pre-release' },
+            ]}
+            value={updateChannel}
+            disabled={cfg.fromEnv.updateChannel}
+            onchange={(v) => (updateChannel = v as 'stable' | 'pre')}
+          />
           <span class="meta">Release stream checked in <a href="#/settings/hosts">Hosts → Moorage updates</a>.</span>
-        </label>
+        </div>
       </div>
 
       <div class="divider"></div>

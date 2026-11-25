@@ -6,7 +6,10 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
   import { api, type LintIssue } from './api';
+  import { userPrefs } from './state.svelte';
   import CodeEditor from './CodeEditor.svelte';
+  import ComposeForm from './ComposeForm.svelte';
+  import { autoIndentCompose } from './composeIndent';
   import Icon from './Icon.svelte';
   import { hasComments, mergeClean, toClean } from './yamlcomments';
 
@@ -29,25 +32,51 @@
   } = $props();
 
   const VIEW_KEY = 'moorage-compose-view';
-  let view = $state<'comments' | 'clean'>('comments');
+  type ViewTab = 'form' | 'comments' | 'clean';
+  function prefToTab(): ViewTab {
+    const p = userPrefs().composeView;
+    if (p === 'form') return 'form';
+    if (p === 'yaml-clean') return 'clean';
+    return 'comments';
+  }
+  let view = $state<ViewTab>(prefToTab());
+  let userPickedView = false;
   try {
-    if (localStorage.getItem(VIEW_KEY) === 'clean') view = 'clean';
+    const saved = localStorage.getItem(VIEW_KEY);
+    if (saved === 'form' || saved === 'comments' || saved === 'clean') {
+      // Only override if no explicit server preference differs from default
+      if (userPrefs().mode === 'custom' || !userPrefs().onboardingDone) {
+        view = saved;
+      }
+    }
   } catch {
     /* private mode */
   }
+  $effect(() => {
+    const preferred = prefToTab();
+    if (!userPickedView) {
+      view = preferred;
+      if (preferred === 'clean') openClean(value);
+    }
+  });
+
   // In the clean view the editor shows cleanText; each edit is merged into base (the file
   // as it was when the view opened), so untouched lines keep their comments.
   let base = $state('');
   let cleanText = $state('');
   let lastMerged = $state<string | null>(null);
+  let editorRef = $state<CodeEditor | null>(null);
+  let autoIndented = $state(false);
 
   function openClean(v: string) {
     base = v;
     cleanText = toClean(v);
     lastMerged = v;
   }
-  function setView(v: 'comments' | 'clean') {
+  function setView(v: ViewTab) {
+    userPickedView = true;
     view = v;
+    autoIndented = false;
     if (v === 'clean') openClean(value);
     try {
       localStorage.setItem(VIEW_KEY, v);
@@ -72,6 +101,19 @@
     openClean(value);
   }
 
+  function fixIndentNow() {
+    if (view === 'clean') {
+      const res = autoIndentCompose(cleanText);
+      if (res.changed) onCleanInput(res.text);
+      return;
+    }
+    const res = autoIndentCompose(value);
+    if (res.changed) {
+      value = res.text;
+      autoIndented = true;
+    }
+  }
+
   // ---- linter ----
   const order = { error: 0, deploy_error: 1, warning: 2, info: 3 } as const;
   const sorted = $derived([...issues].sort((a, b) => order[a.severity] - order[b.severity] || (a.line ?? 0) - (b.line ?? 0)));
@@ -81,7 +123,12 @@
     warning: issues.filter((i) => i.severity === 'warning').length,
     info: issues.filter((i) => i.severity === 'info').length,
   });
-  let showInfo = $state(false);
+  let showInfo = $state(userPrefs().linterShowTips);
+  let infoToggled = false;
+  $effect(() => {
+    const def = userPrefs().linterShowTips;
+    if (!infoToggled) showInfo = def;
+  });
   const visible = $derived(sorted.filter((i) => showInfo || i.severity !== 'info'));
   let fixing = $state('');
   let fixError = $state('');
@@ -108,24 +155,61 @@
   <div class="ed-head">
     <span class="section-title">{title}</span>
     <div class="right">
-      {#if commented || view === 'clean'}
-        <div class="seg" role="tablist" aria-label="Compose view">
-          <button type="button" role="tab" aria-selected={view === 'comments'} class:on={view === 'comments'} onclick={() => setView('comments')}>Comments</button>
-          <button type="button" role="tab" aria-selected={view === 'clean'} class:on={view === 'clean'} onclick={() => setView('clean')}
-            title="Hide comments while editing; untouched lines keep them when you save">Clean</button>
-        </div>
+      <div class="seg" role="tablist" aria-label="Compose view">
+        <button type="button" role="tab" aria-selected={view === 'form'} class:on={view === 'form'} onclick={() => setView('form')}>Form</button>
+        <button type="button" role="tab" aria-selected={view === 'comments'} class:on={view === 'comments'} onclick={() => setView('comments')}>Comments</button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === 'clean'}
+          class:on={view === 'clean'}
+          onclick={() => setView('clean')}
+          title="Hide comments and blank lines while editing; untouched lines keep their comments when you save"
+        >Clean</button>
+      </div>
+      {#if !readonly && view !== 'form'}
+        <button type="button" class="btn btn-ghost" onclick={fixIndentNow} title="Reconstruct 2-space Compose indentation">
+          <Icon name="wand" /> Fix indent
+        </button>
       {/if}
       {@render actions?.()}
     </div>
   </div>
-  {#if view === 'clean'}
-    <CodeEditor bind:value={() => cleanText, onCleanInput} label="Compose file without comments" {readonly} minHeight={360} />
+  {#if autoIndented && view !== 'form'}
+    <div class="indent-bar" role="status">
+      <span>Auto-indented pasted YAML</span>
+      <div class="indent-acts">
+        <button type="button" class="link-btn" onclick={() => { editorRef?.undo(); autoIndented = false; }}>Undo</button>
+        <button type="button" class="link-btn" onclick={() => (autoIndented = false)}>Dismiss</button>
+      </div>
+    </div>
+  {/if}
+  {#if view === 'form'}
+    <ComposeForm bind:value {readonly} onSwitchYaml={() => setView('comments')} />
+  {:else if view === 'clean'}
+    <CodeEditor
+      bind:this={editorRef}
+      bind:value={() => cleanText, onCleanInput}
+      label="Compose file without comments or blank lines"
+      {readonly}
+      minHeight={360}
+      autoIndentCompose={true}
+      onAutoIndent={() => (autoIndented = true)}
+    />
     <p class="meta clean-note">
-      Comments are hidden, not removed: lines you don't change keep them when you save.
+      Comments and original blank lines are removed here to save space; untouched lines keep their comments when you save. Any blank lines you type here are kept.
       {#if !readonly && commented}<button type="button" class="link-btn" onclick={stripPermanently}>Strip comments permanently</button>{/if}
     </p>
   {:else}
-    <CodeEditor bind:value label="Compose file" {readonly} minHeight={360} />
+    <CodeEditor
+      bind:this={editorRef}
+      bind:value
+      label="Compose file"
+      {readonly}
+      minHeight={360}
+      autoIndentCompose={true}
+      onAutoIndent={() => (autoIndented = true)}
+    />
   {/if}
 
   {#if issues.length}
@@ -136,7 +220,15 @@
         {#if counts.deploy}<span class="pill bad soft">{counts.deploy} blocking deploy</span>{/if}
         {#if counts.warning}<span class="pill warn">{counts.warning} {counts.warning === 1 ? 'warning' : 'warnings'}</span>{/if}
         {#if counts.info}
-          <button type="button" class="pill info" aria-pressed={showInfo} onclick={() => (showInfo = !showInfo)}>{counts.info} {counts.info === 1 ? 'tip' : 'tips'} {showInfo ? '▴' : '▾'}</button>
+          <button
+            type="button"
+            class="pill info"
+            aria-pressed={showInfo}
+            onclick={() => {
+              infoToggled = true;
+              showInfo = !showInfo;
+            }}
+          >{counts.info} {counts.info === 1 ? 'tip' : 'tips'} {showInfo ? '▴' : '▾'}</button>
         {/if}
       </div>
       {#each visible as i, k (k)}
@@ -200,6 +292,21 @@
   .clean-note {
     font-size: 12px;
     margin: -4px 0 0;
+  }
+  .indent-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 10px;
+    border-radius: var(--r-sm);
+    background: var(--buoy-wash);
+    color: var(--foam);
+    font-size: 12.5px;
+  }
+  .indent-acts {
+    display: flex;
+    gap: 10px;
   }
   .link-btn {
     border: 0;

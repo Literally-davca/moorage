@@ -57,11 +57,12 @@ const usernameHelp = "Username needs 3–32 characters: lowercase letters, digit
 
 // User is the public view of an account.
 type User struct {
-	ID          int64  `json:"id"`
-	Username    string `json:"username"`
-	Role        string `json:"role"`
-	Source      string `json:"source"`
-	DisplayName string `json:"displayName,omitempty"`
+	ID          int64            `json:"id"`
+	Username    string           `json:"username"`
+	Role        string           `json:"role"`
+	Source      string           `json:"source"`
+	DisplayName string           `json:"displayName,omitempty"`
+	Preferences *UserPreferences `json:"preferences,omitempty"`
 }
 
 // Client is where a request comes from, kept on the session for the Account page.
@@ -295,7 +296,14 @@ func (s *Service) newSessionTTL(ctx context.Context, userID int64, c Client, ttl
 }
 
 func publicUser(u store.User) User {
-	return User{ID: u.ID, Username: u.Username, Role: u.Role, Source: u.AuthSource, DisplayName: u.DisplayName}
+	return User{
+		ID:          u.ID,
+		Username:    u.Username,
+		Role:        u.Role,
+		Source:      u.AuthSource,
+		DisplayName: u.DisplayName,
+		Preferences: ParsePreferences(u.PreferencesJSON),
+	}
 }
 
 // Only the SHA-256 of a session token is stored, so a leaked database can't be used to sign in.

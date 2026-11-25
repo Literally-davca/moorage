@@ -33,10 +33,11 @@ type User struct {
 	AuthSource  string // "local", "oidc" or "proxy"
 	Disabled    bool   // set by an admin; wins over the IdP and the proxy
 	CreatedBy   string // username of the admin who invited them, "" for setup and external users
-	LastLoginAt time.Time
-	DisplayName string // informational (OIDC claims or the invite)
-	Email       string // informational (OIDC claims)
-	CreatedAt   time.Time
+	LastLoginAt     time.Time
+	DisplayName     string // informational (OIDC claims or the invite)
+	Email           string // informational (OIDC claims)
+	PreferencesJSON string
+	CreatedAt       time.Time
 }
 
 // Session is a signed-in browser.
@@ -548,6 +549,21 @@ var migrations = []string{
 		secret     INTEGER NOT NULL DEFAULT 0,
 		updated_at INTEGER NOT NULL,
 		UNIQUE (key, host_id)
+	);`,
+	// M16A: per-user UX preferences (onboarding mode, editor defaults, manual add-on overrides).
+	`ALTER TABLE users ADD COLUMN preferences_json TEXT NOT NULL DEFAULT '';`,
+	// M16B: API tokens for CLI, TUI, and remote automation.
+	`CREATE TABLE api_tokens (
+		id           INTEGER PRIMARY KEY,
+		name         TEXT    NOT NULL,
+		prefix       TEXT    NOT NULL,
+		token_hash   TEXT    NOT NULL UNIQUE,
+		role         TEXT    NOT NULL DEFAULT 'admin',
+		scopes_json  TEXT    NOT NULL DEFAULT '["admin"]',
+		created_by   TEXT    NOT NULL DEFAULT '',
+		created_at   INTEGER NOT NULL,
+		expires_at   INTEGER NOT NULL DEFAULT 0,
+		last_used_at INTEGER NOT NULL DEFAULT 0
 	);`,
 }
 

@@ -3,6 +3,8 @@
   import { api, type TemplateCatalog, type TemplateEntry } from '../lib/api';
   import { isAdmin, link } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import AddonGate from '../lib/AddonGate.svelte';
+  import SetupHint from '../lib/SetupHint.svelte';
 
   let catalog = $state<TemplateCatalog | null>(null);
   let error = $state('');
@@ -56,18 +58,52 @@
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
   {#if problems.length}
-    <section class="card card-pad problems" aria-label="Source problems">
+    <section class="problems-wrap" aria-label="Source problems">
       {#each problems as p (p.key)}
-        <p class="problem"><Icon name="alert" /> <span><strong>{p.label}</strong>{p.name ? ` (${p.name})` : ''}: {p.error}</span></p>
+        {#if p.key === 'local' && catalog?.localDir}
+          <SetupHint
+            tone="warn"
+            title="{p.label}: {catalog.localDir}"
+            detail="Create this folder on the hub (or set MOORAGE_TEMPLATES_DIR) and add one subfolder per template with a compose.yaml inside."
+            snippet="mkdir -p {catalog.localDir}"
+            actionLabel={isAdmin() ? 'Template sources' : ''}
+            actionHref={isAdmin() ? '#/settings/templates' : ''}
+          />
+        {:else if p.key === 'local'}
+          <SetupHint
+            tone="warn"
+            title={p.label}
+            detail={p.error ?? 'Local templates folder does not exist yet.'}
+            actionLabel={isAdmin() ? 'Template sources' : ''}
+            actionHref={isAdmin() ? '#/settings/templates' : ''}
+          />
+        {:else}
+          <div class="card card-pad problem">
+            <Icon name="alert" />
+            <span><strong>{p.label}</strong>{p.name ? ` (${p.name})` : ''}: {p.error}</span>
+          </div>
+        {/if}
       {/each}
     </section>
   {/if}
 
+  {#if catalog && !catalog.sources.some((s) => s.key === 'official')}
+    <AddonGate
+      addonId="official-templates"
+      featureTitle="Official Moorage templates"
+      featureDescription="Enable curated self-hosted app templates alongside any custom local or remote template sources."
+      allowManualOverride={false}
+      onchanged={load}
+    >
+      <span></span>
+    </AddonGate>
+  {/if}
+
   <div class="filters">
-    <label class="search">
+    <label class="search field">
       <Icon name="search" />
       <span class="sr-only">Search templates</span>
-      <input class="field" bind:value={query} placeholder="Search templates" spellcheck="false" />
+      <input bind:value={query} placeholder="Search templates" spellcheck="false" />
     </label>
     {#if categories.length > 1}
       <div class="chips" role="group" aria-label="Category">
@@ -136,9 +172,9 @@
     font-weight: 600;
     letter-spacing: -0.015em;
   }
-  .problems {
+  .problems-wrap {
     display: grid;
-    gap: 6px;
+    gap: 8px;
   }
   .problem {
     display: flex;
@@ -152,20 +188,31 @@
     gap: 10px;
   }
   .search {
-    position: relative;
-    display: block;
-    max-width: 360px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 380px;
+    width: 100%;
+    padding: 0 12px;
+    min-height: 36px;
+    cursor: text;
   }
   .search :global(.icon) {
-    position: absolute;
-    left: 12px;
-    top: 50%;
-    transform: translateY(-50%);
-    pointer-events: none;
+    flex-shrink: 0;
     color: var(--haze);
   }
-  .search .field {
-    padding-left: 34px;
+  .search input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    color: var(--foam);
+    font: inherit;
+    outline: none;
+    padding: 0;
+  }
+  .search input::placeholder {
+    color: var(--haze);
   }
   .chips {
     display: flex;

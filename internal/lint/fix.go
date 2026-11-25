@@ -355,6 +355,24 @@ func Apply(compose, env string, f Fix) (Result, error) {
 		ef.remove(f.Keys)
 		res.Env, res.Changed = ef.String(), true
 		return res, nil
+	case "add-env-var":
+		if len(f.Keys) == 0 {
+			return res, ErrNoFix
+		}
+		ef := parseEnvFile(env)
+		changed := false
+		for _, k := range f.Keys {
+			k = strings.TrimSpace(k)
+			if validEnvKey(k) && !hasKey(ef, k) {
+				ef.set(k, "")
+				changed = true
+			}
+		}
+		if !changed {
+			return res, nil
+		}
+		res.Env, res.Changed = ef.String(), true
+		return res, nil
 	}
 	doc, err := parseNode(compose)
 	if err != nil {
@@ -450,11 +468,132 @@ func Apply(compose, env string, f Fix) (Result, error) {
 		}
 		res.Env = ef.String()
 		res.Moved = []string{name}
+	case "add-mem-limit":
+		sn, ok := findService(doc, f.Service)
+		if !ok || sn.node.Kind != yaml.MappingNode || sn.node.Style&yaml.FlowStyle != 0 || len(sn.node.Content) == 0 {
+			return res, ErrNoFix
+		}
+		if mapGet(sn.node, "mem_limit") != nil {
+			return res, nil
+		}
+		indent := strings.Repeat(" ", sn.node.Content[0].Column-1)
+		i := sn.key.Line
+		t.lines = append(t.lines[:i], append([]string{indent + "mem_limit: 512m"}, t.lines[i:]...)...)
+	case "add-healthcheck":
+		sn, ok := findService(doc, f.Service)
+		if !ok || sn.node.Kind != yaml.MappingNode || sn.node.Style&yaml.FlowStyle != 0 || len(sn.node.Content) == 0 {
+			return res, ErrNoFix
+		}
+		if mapGet(sn.node, "healthcheck") != nil {
+			return res, nil
+		}
+		indent := strings.Repeat(" ", sn.node.Content[0].Column-1)
+		hcLines := healthcheckBlock(indent, sn.node)
+		i := sn.key.Line
+		t.lines = append(t.lines[:i], append(hcLines, t.lines[i:]...)...)
+	case "pin-tag":
+		if strings.TrimSpace(f.TargetTag) == "" {
+			return res, ErrNoFix
+		}
+		sn, ok := findService(doc, f.Service)
+		if !ok {
+			return res, ErrNoFix
+		}
+		img := mapGet(sn.node, "image")
+		if img == nil || img.val.Kind != yaml.ScalarNode {
+			return res, ErrNoFix
+		}
+		ln, st, end, ok := t.scalarSpan(img.val)
+		if !ok {
+			return res, ErrNoFix
+		}
+		pinned := replaceImageTag(img.val.Value, strings.TrimSpace(f.TargetTag))
+		t.replace(ln, st, end, quoteYAML(pinned))
 	default:
 		return res, ErrNoFix
 	}
 	res.Compose, res.Changed = t.String(), true
 	return res, nil
+}
+
+// ServiceImage returns the raw image: string of service in compose, or "".
+func ServiceImage(compose, service string) string {
+	doc, err := parseNode(compose)
+	if err != nil {
+		return ""
+	}
+	sn, ok := findService(doc, service)
+	if !ok {
+		return ""
+	}
+	if img := mapGet(sn.node, "image"); img != nil && img.val.Kind == yaml.ScalarNode {
+		return strings.TrimSpace(img.val.Value)
+	}
+	return ""
+}
+
+func replaceImageTag(ref, newTag string) string {
+	ref = strings.TrimSpace(ref)
+	if idx := strings.Index(ref, "@"); idx >= 0 {
+		ref = ref[:idx]
+	}
+	lastSlash := strings.LastIndex(ref, "/")
+	lastColon := strings.LastIndex(ref, ":")
+	if lastColon > lastSlash {
+		ref = ref[:lastColon]
+	}
+	return ref + ":" + newTag
+}
+
+func healthcheckBlock(indent string, svc *yaml.Node) []string {
+	img := ""
+	if im := mapGet(svc, "image"); im != nil && im.val.Kind == yaml.ScalarNode {
+		img = strings.ToLower(im.val.Value)
+	}
+	testCmd := `["CMD-SHELL", "exit 0"] # adjust check command`
+	switch {
+	case strings.Contains(img, "postgres"):
+		testCmd = `["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres}"]`
+	case strings.Contains(img, "mariadb") || strings.Contains(img, "mysql"):
+		testCmd = `["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 || exit 1"]`
+	case strings.Contains(img, "redis") || strings.Contains(img, "valkey"):
+		testCmd = `["CMD", "redis-cli", "ping"]`
+	case strings.Contains(img, "mongo"):
+		testCmd = `["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]`
+	default:
+		if port := firstServicePort(svc); port != "" {
+			testCmd = fmt.Sprintf(`["CMD-SHELL", "wget -qO- http://127.0.0.1:%s/ >/dev/null || exit 1"]`, port)
+		}
+	}
+	sub := indent + "  "
+	return []string{
+		indent + "healthcheck:",
+		sub + "test: " + testCmd,
+		sub + "interval: 30s",
+		sub + "timeout: 5s",
+		sub + "retries: 3",
+		sub + "start_period: 15s",
+	}
+}
+
+func firstServicePort(svc *yaml.Node) string {
+	pn := mapGet(svc, "ports")
+	if pn == nil || pn.val.Kind != yaml.SequenceNode || len(pn.val.Content) == 0 {
+		return ""
+	}
+	first := pn.val.Content[0]
+	if first.Kind != yaml.ScalarNode {
+		return ""
+	}
+	raw, _, _ := strings.Cut(strings.TrimSpace(first.Value), "/")
+	parts := strings.Split(raw, ":")
+	target := strings.TrimSpace(parts[len(parts)-1])
+	for _, r := range target {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return target
 }
 
 func findService(doc *yaml.Node, name string) (svcNode, bool) {

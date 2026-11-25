@@ -329,6 +329,20 @@ func (s *Server) getAccount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, acc)
 }
 
+func (s *Server) setAccountPreferences(w http.ResponseWriter, r *http.Request) {
+	var req auth.UserPreferences
+	if !readJSON(w, r, &req) {
+		return
+	}
+	saved, err := s.auth.SetPreferences(r.Context(), sessionTokenOf(r), req)
+	if err != nil {
+		s.authErr(w, err)
+		return
+	}
+	setAuditTarget(r, currentUser(r).Username)
+	writeJSON(w, http.StatusOK, saved)
+}
+
 func (s *Server) changePassword(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Current, Password string }
 	if !readJSON(w, r, &req) {

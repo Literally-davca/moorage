@@ -3,12 +3,51 @@ import { app } from './state.svelte';
 
 export type Role = 'admin' | 'viewer';
 export type AuthSource = 'local' | 'oidc' | 'proxy';
+export type ExperienceMode = 'beginner' | 'advanced' | 'custom';
+export type ComposeViewMode = 'form' | 'yaml-comments' | 'yaml-clean';
+export type EnvViewMode = 'vars' | 'raw';
+
+export interface UserPreferences {
+  mode: ExperienceMode;
+  composeView: ComposeViewMode;
+  envView: EnvViewMode;
+  linterShowTips: boolean;
+  newStackDefault: 'templates' | 'blank';
+  guidesMode: 'extended' | 'compact';
+  confirmActions: 'all' | 'destructive';
+  onboardingDone: boolean;
+  manualOverrides?: Record<string, boolean>;
+}
+
+export interface CoolifyNameMeta {
+  uuid: string;
+  name: string;
+  project?: string;
+  environment?: string;
+  type?: string;
+  url?: string;
+  fqdn?: string;
+}
+
+export interface APIToken {
+  id: number;
+  name: string;
+  prefix: string;
+  role: Role;
+  scopes: string[];
+  createdBy: string;
+  createdAt: string;
+  expiresAt?: string;
+  lastUsedAt?: string;
+}
+
 export interface User {
   id: number;
   username: string;
   role: Role;
   source?: AuthSource;
   displayName?: string;
+  preferences?: UserPreferences;
 }
 /** Which ways to sign in the login page offers. */
 export interface LoginInfo {
@@ -21,6 +60,7 @@ export interface Session {
   setupRequired: boolean;
   user: User | null;
   version: string;
+  bootId?: string;
   login?: LoginInfo;
   /** Why the trusted proxy's user was refused. */
   proxyError?: string;
@@ -539,6 +579,7 @@ export interface LintFix {
   service?: string;
   line?: number;
   keys?: string[];
+  targetTag?: string;
 }
 export interface LintIssue {
   severity: LintSeverity;
@@ -596,6 +637,7 @@ export interface Incident {
   context?: {
     host?: string;
     stack?: string;
+    stackDisplayName?: string;
     containers?: Container[];
     matches?: LogLine[];
     logs?: LogLine[];
@@ -618,6 +660,7 @@ export interface Check extends CheckInput {
   uptime30d?: number | null;
   ticks: Tick[];
   hostName?: string;
+  targetDisplayName?: string;
   incidents?: Incident[];
   anchors?: Anchor[];
   /** The planned maintenance window running over the check now. */
@@ -978,6 +1021,9 @@ export interface StackDep {
 }
 export interface DepNode extends StackRef {
   hostName?: string;
+  displayName?: string;
+  coolifyProject?: string;
+  coolifyUuid?: string;
   status?: Status;
   running?: number;
   total?: number;
@@ -1027,6 +1073,9 @@ export interface StackImages {
   hostName: string;
   readOnly: boolean;
   stack: string;
+  displayName?: string;
+  coolifyProject?: string;
+  coolifyUuid?: string;
   managed: boolean;
   status: Status;
   running: number;
@@ -1068,6 +1117,7 @@ export interface AuditEntry {
   hostId: string;
   hostName?: string;
   stack: string;
+  stackDisplayName?: string;
   target: string;
   outcome: AuditOutcome;
 }
@@ -1108,6 +1158,7 @@ export interface TemplateSourceInfo {
 export interface TemplateCatalog {
   templates: TemplateEntry[];
   sources: TemplateSourceInfo[];
+  localDir?: string;
 }
 export interface TemplateVariable {
   name: string;
@@ -1162,6 +1213,8 @@ export interface AddonInfo {
   detail?: string;
   linkHref?: string;
   linkLabel?: string;
+  docsSlug?: string;
+  docsUrl?: string;
 }
 export interface AddonCatalogEntry {
   id: string;
@@ -1202,6 +1255,7 @@ export interface ScheduledTask {
   name: string;
   hostId: string;
   stack: string;
+  stackDisplayName?: string;
   cron: string;
   action: 'restart' | 'start' | 'stop' | 'pull-up' | 'exec';
   service?: string;
@@ -1253,6 +1307,7 @@ export interface MCPDraft {
   tool: string;
   hostId: string;
   stack: string;
+  stackDisplayName?: string;
   compose: string;
   envKeys: string[];
   note: string;
@@ -1707,6 +1762,12 @@ export const api = {
     request<void>('PUT', `/api/hosts/${enc(fromHost ?? app.host)}/stacks/${enc(name)}/deps/${id}/ignored`, { ignored }),
   setDepAutoRestart: (name: string, id: number, mode: AutoRestartMode, fromHost?: string) =>
     request<void>('PUT', `/api/hosts/${enc(fromHost ?? app.host)}/stacks/${enc(name)}/deps/${id}/auto-restart`, { mode }),
+  savePreferences: (prefs: UserPreferences) => request<UserPreferences>('PUT', '/api/account/preferences', prefs),
+  coolifyNames: () => request<{ names: Record<string, CoolifyNameMeta> }>('GET', '/api/coolify/names'),
+  apiTokens: () => request<{ tokens: APIToken[] }>('GET', '/api/tokens'),
+  createAPIToken: (body: { name: string; role: Role; scopes: string[]; expiresDays: number }) =>
+    request<{ token: APIToken; secret: string }>('POST', '/api/tokens', body),
+  deleteAPIToken: (id: number) => request<void>('DELETE', `/api/tokens/${id}`),
 };
 
 export function wsURL(path: string): string {

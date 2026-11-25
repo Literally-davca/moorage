@@ -3,6 +3,9 @@
   import { api, type ConnectionsConfig, type CoolifyHostConn, type SisterLink } from '../lib/api';
   import { app } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
+  import AddonGate from '../lib/AddonGate.svelte';
+  import SetupHint from '../lib/SetupHint.svelte';
 
   let data = $state<ConnectionsConfig | null>(null);
   let error = $state('');
@@ -11,6 +14,7 @@
   let oidcIssuer = $state('');
   let oidcClientId = $state('');
   let oidcClientSecret = $state('');
+  let oidcClearSecret = $state(false);
   let oidcScopes = $state('openid profile email groups');
   let oidcGroupsClaim = $state('groups');
   let oidcAdminGroups = $state('');
@@ -24,8 +28,9 @@
   // Coolify state
   let coolUrl = $state('');
   let coolToken = $state('');
+  let coolClearToken = $state(false);
   let coolAllowPrivate = $state(false);
-  let coolHosts = $state<CoolifyHostConn[]>([]);
+  let coolHosts = $state<(CoolifyHostConn & { clearToken?: boolean })[]>([]);
   let coolMsg = $state<{ ok: boolean; text: string } | null>(null);
   let coolBusy = $state(false);
 
@@ -37,6 +42,7 @@
   // Sister panels state
   let grafanaUrl = $state('');
   let grafanaToken = $state('');
+  let grafanaClearToken = $state(false);
   let grafanaFolderUid = $state('');
   let grafanaAllowPrivate = $state(false);
   let beszelUrl = $state('');
@@ -51,6 +57,7 @@
       oidcIssuer = c.oidc.issuer;
       oidcClientId = c.oidc.clientId;
       oidcClientSecret = '';
+      oidcClearSecret = false;
       oidcScopes = (c.oidc.scopes ?? []).join(' ') || 'openid profile email groups';
       oidcGroupsClaim = c.oidc.groupsClaim || 'groups';
       oidcAdminGroups = (c.oidc.adminGroups ?? []).join(', ');
@@ -61,8 +68,9 @@
 
       coolUrl = c.coolify.url;
       coolToken = '';
+      coolClearToken = false;
       coolAllowPrivate = c.coolify.allowPrivate;
-      coolHosts = (c.coolify.hosts ?? []).map((h) => ({ ...h, token: '' }));
+      coolHosts = (c.coolify.hosts ?? []).map((h) => ({ ...h, token: '', clearToken: false }));
 
       regRows = (c.registries ?? []).map((r) => ({
         server: r.server,
@@ -74,6 +82,7 @@
 
       grafanaUrl = c.panels.grafanaUrl;
       grafanaToken = '';
+      grafanaClearToken = false;
       grafanaFolderUid = c.panels.grafanaFolderUid ?? '';
       grafanaAllowPrivate = c.panels.grafanaAllowPrivate;
       beszelUrl = c.panels.beszelUrl;
@@ -119,7 +128,8 @@
         oidc: {
           issuer: oidcIssuer.trim(),
           clientId: oidcClientId.trim(),
-          clientSecret: oidcClientSecret,
+          clientSecret: oidcClearSecret ? '' : oidcClientSecret,
+          clearClientSecret: oidcClearSecret,
           scopes: oidcScopes.split(/\s+/).filter(Boolean),
           groupsClaim: oidcGroupsClaim.trim() || 'groups',
           adminGroups: splitCSV(oidcAdminGroups),
@@ -164,9 +174,14 @@
       await api.saveConnections({
         coolify: {
           url: coolUrl.trim(),
-          token: coolToken,
+          token: coolClearToken ? '' : coolToken,
+          clearToken: coolClearToken,
           allowPrivate: coolAllowPrivate,
-          hosts: coolHosts,
+          hosts: coolHosts.map((h) => ({
+            ...h,
+            token: h.clearToken ? '' : h.token,
+            clearToken: !!h.clearToken,
+          })),
         },
       });
       await load();
@@ -230,7 +245,8 @@
       await api.saveConnections({
         panels: {
           grafanaUrl: grafanaUrl.trim(),
-          grafanaToken,
+          grafanaToken: grafanaClearToken ? '' : grafanaToken,
+          clearGrafanaToken: grafanaClearToken,
           grafanaFolderUid: grafanaFolderUid.trim(),
           grafanaAllowPrivate,
           beszelUrl: beszelUrl.trim(),
@@ -283,13 +299,35 @@
           <span>Client ID</span>
           <input class="field mono" bind:value={oidcClientId} disabled={data.oidc.fromEnv} autocomplete="off" />
         </label>
-        <label class="field-wrap">
+        <div class="field-wrap">
           <span class="label-row">
             <span>Client Secret</span>
-            {#if data.oidc.clientSecretSet}<span class="pill on">Set (********)</span>{/if}
+            {#if oidcClearSecret}
+              <span class="pill warn-pill">Will clear on save</span>
+            {:else if data.oidc.clientSecretSet}
+              <span class="pill on">Set (********)</span>
+              {#if !data.oidc.fromEnv}
+                <button
+                  type="button"
+                  class="link-btn"
+                  onclick={() => {
+                    oidcClientSecret = '';
+                    oidcClearSecret = true;
+                  }}>Clear</button
+                >
+              {/if}
+            {/if}
           </span>
-          <input class="field mono" type="password" bind:value={oidcClientSecret} placeholder={data.oidc.clientSecretSet ? '********' : ''} disabled={data.oidc.fromEnv} autocomplete="new-password" />
-        </label>
+          <input
+            class="field mono"
+            type="password"
+            bind:value={oidcClientSecret}
+            oninput={() => (oidcClearSecret = false)}
+            placeholder={data.oidc.clientSecretSet && !oidcClearSecret ? '********' : ''}
+            disabled={data.oidc.fromEnv}
+            autocomplete="new-password"
+          />
+        </div>
         <label class="field-wrap">
           <span>Scopes</span>
           <input class="field mono" bind:value={oidcScopes} disabled={data.oidc.fromEnv} />
@@ -310,13 +348,19 @@
           <span>Viewer groups (comma-separated)</span>
           <input class="field mono" bind:value={oidcViewerGroups} placeholder="moorage-viewers" disabled={data.oidc.fromEnv} />
         </label>
-        <label class="field-wrap">
+        <div class="field-wrap">
           <span>Default role (outside groups)</span>
-          <select class="field" bind:value={oidcDefaultRole} disabled={data.oidc.fromEnv}>
-            <option value="none">Deny sign-in (none)</option>
-            <option value="viewer">Viewer</option>
-          </select>
-        </label>
+          <Select
+            label="Default OIDC role"
+            value={oidcDefaultRole}
+            disabled={data.oidc.fromEnv}
+            items={[
+              { value: 'none', label: 'Deny sign-in (none)' },
+              { value: 'viewer', label: 'Viewer' },
+            ]}
+            onchange={(v) => (oidcDefaultRole = v)}
+          />
+        </div>
       </div>
 
       <label class="check-row">
@@ -338,68 +382,125 @@
     </form>
 
     <!-- 2. Coolify API -->
-    <form class="card card-pad block" onsubmit={saveCoolify}>
-      <div class="head-row">
-        <div>
-          <h2 class="section-title">Coolify API</h2>
-          <p class="meta">Powers the <code>coolify-integration</code> add-on (live names, start/stop/redeploy, build logs and .env sync).</p>
+    <AddonGate
+      addonId="coolify-integration"
+      featureTitle="Coolify API"
+      featureDescription="Live stack names, start/stop/redeploy, build logs, and .env sync via Coolify API v1."
+    >
+      <form class="card card-pad block" onsubmit={saveCoolify}>
+        <div class="head-row">
+          <div>
+            <h2 class="section-title">Coolify API</h2>
+            <p class="meta">Powers the <code>coolify-integration</code> add-on (live names, start/stop/redeploy, build logs and .env sync).</p>
+          </div>
+          {#if data.coolify.fromEnv}<span class="pill env">Set via environment</span>{/if}
         </div>
-        {#if data.coolify.fromEnv}<span class="pill env">Set via environment</span>{/if}
-      </div>
 
-      <div class="grid-2">
-        <label class="field-wrap">
-          <span>Default Coolify URL</span>
-          <input class="field mono" bind:value={coolUrl} placeholder="https://coolify.example.com" disabled={data.coolify.fromEnv} />
-        </label>
-        <label class="field-wrap">
-          <span class="label-row">
-            <span>Bearer API Token</span>
-            {#if data.coolify.tokenSet}<span class="pill on">Set (********)</span>{/if}
-          </span>
-          <input class="field mono" type="password" bind:value={coolToken} placeholder={data.coolify.tokenSet ? '********' : ''} disabled={data.coolify.fromEnv} autocomplete="new-password" />
-        </label>
-      </div>
-
-      <label class="check-row">
-        <input type="checkbox" bind:checked={coolAllowPrivate} disabled={data.coolify.fromEnv} />
-        <span>Allow private / Tailscale IP addresses (e.g. <code>http://100.x.y.z:8000</code>)</span>
-      </label>
-
-      {#if coolHosts.length > 0}
-        <div class="sub-box">
-          <span class="sub-lbl">Per-host Coolify overrides</span>
-          {#each coolHosts as hc, idx (idx)}
-            <div class="inline-row">
-              <select class="field" bind:value={hc.hostId}>
-                {#each app.hosts as h (h.id)}<option value={h.id}>{h.name}</option>{/each}
-              </select>
-              <input class="field mono grow" bind:value={hc.url} placeholder="https://coolify.host.example" />
-              <input class="field mono" type="password" bind:value={hc.token} placeholder={hc.tokenSet ? '********' : 'API token'} autocomplete="new-password" />
-              <label class="check-row"><input type="checkbox" bind:checked={hc.allowPrivate} /><span>Private IP</span></label>
-              <button type="button" class="btn btn-sm" onclick={() => testCoolifyNow(hc)}>Test</button>
-              <button type="button" class="btn btn-sm btn-ghost danger" onclick={() => (coolHosts = coolHosts.filter((_, i) => i !== idx))}><Icon name="trash" /></button>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
-      {#if coolMsg}<p class={coolMsg.ok ? 'meta ok' : 'error-text'}>{coolMsg.text}</p>{/if}
-
-      <div class="actions">
-        <button type="submit" class="btn btn-primary" disabled={coolBusy}>Save Coolify</button>
-        <button type="button" class="btn" disabled={coolBusy || !coolUrl.trim()} onclick={() => testCoolifyNow()}>Test connection</button>
-        {#if app.hosts.length > 0}
-          <button
-            type="button"
-            class="btn btn-ghost"
-            onclick={() => (coolHosts = [...coolHosts, { hostId: app.hosts[0].id, url: '', token: '', allowPrivate: false }])}
-          >
-            <Icon name="plus" /> Per-host override
-          </button>
+        {#if !coolUrl.trim() && !data.coolify.tokenSet}
+          <SetupHint
+            title="Create a Coolify API token"
+            detail="In Coolify open Keys & Tokens → API tokens, create a token with read + deploy permissions, then paste your Coolify URL and token below."
+          />
         {/if}
-      </div>
-    </form>
+
+        <div class="grid-2">
+          <label class="field-wrap">
+            <span>Default Coolify URL</span>
+            <input class="field mono" bind:value={coolUrl} placeholder="https://coolify.example.com" disabled={data.coolify.fromEnv} />
+          </label>
+          <div class="field-wrap">
+            <span class="label-row">
+              <span>Bearer API Token</span>
+              {#if coolClearToken}
+                <span class="pill warn-pill">Will clear on save</span>
+              {:else if data.coolify.tokenSet}
+                <span class="pill on">Set (********)</span>
+                {#if !data.coolify.fromEnv}
+                  <button
+                    type="button"
+                    class="link-btn"
+                    onclick={() => {
+                      coolToken = '';
+                      coolClearToken = true;
+                    }}>Clear token</button
+                  >
+                {/if}
+              {/if}
+            </span>
+            <input
+              class="field mono"
+              type="password"
+              bind:value={coolToken}
+              oninput={() => (coolClearToken = false)}
+              placeholder={data.coolify.tokenSet && !coolClearToken ? '********' : ''}
+              disabled={data.coolify.fromEnv}
+              autocomplete="new-password"
+            />
+          </div>
+        </div>
+
+        <label class="check-row">
+          <input type="checkbox" bind:checked={coolAllowPrivate} disabled={data.coolify.fromEnv} />
+          <span>Allow private / Tailscale IP addresses (e.g. <code>http://100.x.y.z:8000</code>)</span>
+        </label>
+
+        {#if coolHosts.length > 0}
+          <div class="sub-box">
+            <span class="sub-lbl">Per-host Coolify overrides</span>
+            {#each coolHosts as hc, idx (idx)}
+              <div class="inline-row">
+                <div class="host-sel">
+                  <Select
+                    label="Host for Coolify override"
+                    value={hc.hostId}
+                    items={app.hosts.map((h) => ({ value: h.id, label: h.name }))}
+                    onchange={(v) => (hc.hostId = v)}
+                  />
+                </div>
+                <input class="field mono grow" bind:value={hc.url} placeholder="https://coolify.host.example" />
+                <input
+                  class="field mono"
+                  type="password"
+                  bind:value={hc.token}
+                  oninput={() => (hc.clearToken = false)}
+                  placeholder={hc.clearToken ? '(clearing token on save)' : hc.tokenSet ? '********' : 'API token'}
+                  autocomplete="new-password"
+                />
+                {#if hc.tokenSet && !hc.clearToken}
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-ghost"
+                    onclick={() => {
+                      hc.token = '';
+                      hc.clearToken = true;
+                    }}>Clear token</button
+                  >
+                {/if}
+                <label class="check-row"><input type="checkbox" bind:checked={hc.allowPrivate} /><span>Private IP</span></label>
+                <button type="button" class="btn btn-sm" onclick={() => testCoolifyNow(hc)}>Test</button>
+                <button type="button" class="btn btn-sm btn-ghost danger" onclick={() => (coolHosts = coolHosts.filter((_, i) => i !== idx))}><Icon name="trash" /></button>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if coolMsg}<p class={coolMsg.ok ? 'meta ok' : 'error-text'}>{coolMsg.text}</p>{/if}
+
+        <div class="actions">
+          <button type="submit" class="btn btn-primary" disabled={coolBusy}>Save Coolify</button>
+          <button type="button" class="btn" disabled={coolBusy || !coolUrl.trim()} onclick={() => testCoolifyNow()}>Test connection</button>
+          {#if app.hosts.length > 0}
+            <button
+              type="button"
+              class="btn btn-ghost"
+              onclick={() => (coolHosts = [...coolHosts, { hostId: app.hosts[0].id, url: '', token: '', allowPrivate: false }])}
+            >
+              <Icon name="plus" /> Per-host override
+            </button>
+          {/if}
+        </div>
+      </form>
+    </AddonGate>
 
     <!-- 3. Docker Registries -->
     <form class="card card-pad block" onsubmit={saveRegistries}>
@@ -452,82 +553,103 @@
     </form>
 
     <!-- 4. Sister Panels -->
-    <form class="card card-pad block" onsubmit={savePanels}>
-      <div class="head-row">
-        <div>
-          <h2 class="section-title">Sister panels (Grafana, Beszel &amp; shortcuts)</h2>
-          <p class="meta">Surfaces quick links on Host cards, Monitoring, <code>Ctrl+K</code> Command Palette, and enables 1-click Grafana dashboard push.</p>
+    <AddonGate
+      addonId="prometheus-grafana"
+      featureTitle="Sister panels (Grafana, Beszel & shortcuts)"
+      featureDescription="Link Grafana, Beszel, and custom dashboards or push Prometheus dashboards directly."
+    >
+      <form class="card card-pad block" onsubmit={savePanels}>
+        <div class="head-row">
+          <div>
+            <h2 class="section-title">Sister panels (Grafana, Beszel &amp; shortcuts)</h2>
+            <p class="meta">Surfaces quick links on Host cards, Monitoring, <code>Ctrl+K</code> Command Palette, and enables 1-click Grafana dashboard push.</p>
+          </div>
         </div>
-      </div>
 
-      <div class="grid-3">
-        <label class="field-wrap">
-          <span class="label-row">
-            <span>Grafana URL</span>
-            {#if data.panels.fromEnv?.grafanaUrl}<span class="pill env">Set via environment</span>{/if}
-          </span>
-          <input class="field mono" bind:value={grafanaUrl} placeholder="https://grafana.example.com" disabled={data.panels.fromEnv?.grafanaUrl} />
-        </label>
+        <div class="grid-3">
+          <label class="field-wrap">
+            <span class="label-row">
+              <span>Grafana URL</span>
+              {#if data.panels.fromEnv?.grafanaUrl}<span class="pill env">Set via environment</span>{/if}
+            </span>
+            <input class="field mono" bind:value={grafanaUrl} placeholder="https://grafana.example.com" disabled={data.panels.fromEnv?.grafanaUrl} />
+          </label>
 
-        <label class="field-wrap">
-          <span class="label-row">
-            <span>Grafana Service Account Token</span>
-            {#if data.panels.fromEnv?.grafanaToken}<span class="pill env">Set via environment</span>{:else if data.panels.grafanaTokenSet}<span class="pill on">Set (********)</span>{/if}
-          </span>
-          <input
-            class="field mono"
-            type="password"
-            bind:value={grafanaToken}
-            placeholder={data.panels.grafanaTokenSet ? '********' : 'glsa_... (optional, for Push to Grafana)'}
-            disabled={data.panels.fromEnv?.grafanaToken}
-            autocomplete="new-password"
-          />
-        </label>
+          <div class="field-wrap">
+            <span class="label-row">
+              <span>Grafana Service Account Token</span>
+              {#if data.panels.fromEnv?.grafanaToken}
+                <span class="pill env">Set via environment</span>
+              {:else if grafanaClearToken}
+                <span class="pill warn-pill">Will clear on save</span>
+              {:else if data.panels.grafanaTokenSet}
+                <span class="pill on">Set (********)</span>
+                <button
+                  type="button"
+                  class="link-btn"
+                  onclick={() => {
+                    grafanaToken = '';
+                    grafanaClearToken = true;
+                  }}>Clear token</button
+                >
+              {/if}
+            </span>
+            <input
+              class="field mono"
+              type="password"
+              bind:value={grafanaToken}
+              oninput={() => (grafanaClearToken = false)}
+              placeholder={data.panels.grafanaTokenSet && !grafanaClearToken ? '********' : 'glsa_... (optional, for Push to Grafana)'}
+              disabled={data.panels.fromEnv?.grafanaToken}
+              autocomplete="new-password"
+            />
+          </div>
 
-        <label class="field-wrap">
-          <span>Grafana Folder UID (optional)</span>
-          <input class="field mono" bind:value={grafanaFolderUid} placeholder="general" />
-        </label>
+          <label class="field-wrap">
+            <span>Grafana Folder UID (optional)</span>
+            <input class="field mono" bind:value={grafanaFolderUid} placeholder="general" />
+          </label>
 
-        <label class="field-wrap">
-          <span class="label-row">
-            <span>Beszel URL</span>
-            {#if data.panels.fromEnv?.beszelUrl}<span class="pill env">Set via environment</span>{/if}
-          </span>
-          <input class="field mono" bind:value={beszelUrl} placeholder="https://beszel.example.com" disabled={data.panels.fromEnv?.beszelUrl} />
-        </label>
-      </div>
-
-      <label class="check-row">
-        <input type="checkbox" bind:checked={grafanaAllowPrivate} />
-        <span>Allow private / Tailscale IP addresses when pushing dashboards to Grafana</span>
-      </label>
-
-      {#if customLinks.length > 0}
-        <div class="sub-box">
-          <span class="sub-lbl">Custom links in Command Palette</span>
-          {#each customLinks as lk, idx (idx)}
-            <div class="inline-row">
-              <input class="field" bind:value={lk.label} placeholder="VictoriaLogs" />
-              <input class="field mono grow" bind:value={lk.url} placeholder="https://logs.example.com" />
-              <button type="button" class="btn btn-sm btn-ghost danger" onclick={() => (customLinks = customLinks.filter((_, i) => i !== idx))}><Icon name="trash" /></button>
-            </div>
-          {/each}
+          <label class="field-wrap">
+            <span class="label-row">
+              <span>Beszel URL</span>
+              {#if data.panels.fromEnv?.beszelUrl}<span class="pill env">Set via environment</span>{/if}
+            </span>
+            <input class="field mono" bind:value={beszelUrl} placeholder="https://beszel.example.com" disabled={data.panels.fromEnv?.beszelUrl} />
+          </label>
         </div>
-      {/if}
 
-      {#if panelMsg}<p class={panelMsg.ok ? 'meta ok' : 'error-text'}>{panelMsg.text}</p>{/if}
+        <label class="check-row">
+          <input type="checkbox" bind:checked={grafanaAllowPrivate} />
+          <span>Allow private / Tailscale IP addresses when pushing dashboards to Grafana</span>
+        </label>
 
-      <div class="actions">
-        <button type="submit" class="btn btn-primary" disabled={panelBusy}>Save panels</button>
-        {#if grafanaUrl.trim()}
-          <button type="button" class="btn" disabled={panelBusy} onclick={testGrafanaNow}>Test Grafana</button>
+        {#if customLinks.length > 0}
+          <div class="sub-box">
+            <span class="sub-lbl">Custom links in Command Palette</span>
+            {#each customLinks as lk, idx (idx)}
+              <div class="inline-row">
+                <input class="field" bind:value={lk.label} placeholder="VictoriaLogs" />
+                <input class="field mono grow" bind:value={lk.url} placeholder="https://logs.example.com" />
+                <button type="button" class="btn btn-sm btn-ghost danger" onclick={() => (customLinks = customLinks.filter((_, i) => i !== idx))}><Icon name="trash" /></button>
+              </div>
+            {/each}
+          </div>
         {/if}
-        <button type="button" class="btn btn-ghost" onclick={() => (customLinks = [...customLinks, { label: '', url: '' }])}>
-          <Icon name="plus" /> Custom link
-        </button>
-      </div>
-    </form>
+
+        {#if panelMsg}<p class={panelMsg.ok ? 'meta ok' : 'error-text'}>{panelMsg.text}</p>{/if}
+
+        <div class="actions">
+          <button type="submit" class="btn btn-primary" disabled={panelBusy}>Save panels</button>
+          {#if grafanaUrl.trim()}
+            <button type="button" class="btn" disabled={panelBusy} onclick={testGrafanaNow}>Test Grafana</button>
+          {/if}
+          <button type="button" class="btn btn-ghost" onclick={() => (customLinks = [...customLinks, { label: '', url: '' }])}>
+            <Icon name="plus" /> Custom link
+          </button>
+        </div>
+      </form>
+    </AddonGate>
   {/if}
 </div>
 
@@ -598,6 +720,18 @@
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
+  }
+  .host-sel {
+    min-width: 150px;
+  }
+  .link-btn {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--buoy-text);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
   }
   .inline-row .field {
     width: auto;

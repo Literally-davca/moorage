@@ -1,12 +1,109 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import qrcode from 'qrcode-generator';
-  import { api, type Account, type SessionInfo, type TOTPEnrolment } from '../lib/api';
+  import {
+    api,
+    type Account,
+    type APIToken,
+    type ComposeViewMode,
+    type EnvViewMode,
+    type ExperienceMode,
+    type Role,
+    type SessionInfo,
+    type TOTPEnrolment,
+    type UserPreferences,
+  } from '../lib/api';
+  import { app, isAdmin, userPrefs } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import PushToggle from '../lib/PushToggle.svelte';
+  import Select from '../lib/Select.svelte';
 
   let acc = $state<Account | null>(null);
   let error = $state('');
+
+  // Experience & editor preferences
+  let prefs = $state<UserPreferences>(userPrefs());
+  let prefBusy = $state(false);
+  let prefMsg = $state('');
+  let prefError = $state('');
+
+  function applyPreset(m: 'beginner' | 'advanced') {
+    const curOverrides = prefs.manualOverrides ?? {};
+    prefs =
+      m === 'beginner'
+        ? {
+            mode: 'beginner',
+            composeView: 'form',
+            envView: 'vars',
+            linterShowTips: true,
+            newStackDefault: 'templates',
+            guidesMode: 'extended',
+            confirmActions: 'all',
+            onboardingDone: true,
+            manualOverrides: curOverrides,
+          }
+        : {
+            mode: 'advanced',
+            composeView: 'yaml-comments',
+            envView: 'raw',
+            linterShowTips: false,
+            newStackDefault: 'blank',
+            guidesMode: 'compact',
+            confirmActions: 'destructive',
+            onboardingDone: true,
+            manualOverrides: curOverrides,
+          };
+    prefMsg = '';
+  }
+
+  function detectMode(p: UserPreferences): ExperienceMode {
+    const isBeg =
+      p.composeView === 'form' &&
+      p.envView === 'vars' &&
+      p.linterShowTips &&
+      p.newStackDefault === 'templates' &&
+      p.guidesMode === 'extended' &&
+      p.confirmActions === 'all';
+    if (isBeg) return 'beginner';
+    const isAdv =
+      p.composeView === 'yaml-comments' &&
+      p.envView === 'raw' &&
+      !p.linterShowTips &&
+      p.newStackDefault === 'blank' &&
+      p.guidesMode === 'compact' &&
+      p.confirmActions === 'destructive';
+    if (isAdv) return 'advanced';
+    return 'custom';
+  }
+
+  function patchPref(patch: Partial<UserPreferences>) {
+    const next: UserPreferences = { ...prefs, ...patch, onboardingDone: true };
+    next.mode = detectMode(next);
+    prefs = next;
+    prefMsg = '';
+  }
+
+  async function savePrefs() {
+    prefBusy = true;
+    prefMsg = prefError = '';
+    try {
+      const saved = await api.savePreferences({ ...prefs, onboardingDone: true });
+      prefs = saved;
+      if (app.user) app.user = { ...app.user, preferences: saved };
+      prefMsg = 'Preferences saved.';
+    } catch (e) {
+      prefError = (e as Error).message;
+    } finally {
+      prefBusy = false;
+    }
+  }
+
+  const overrideKeys = $derived(Object.keys(prefs.manualOverrides ?? {}).filter((k) => prefs.manualOverrides?.[k]));
+
+  async function clearOverrides() {
+    await patchPref({ manualOverrides: {} });
+    await savePrefs();
+  }
 
   // password
   let current = $state('');
@@ -28,9 +125,24 @@
 
   let sessError = $state('');
 
+  // API tokens (admins)
+  let tokens = $state<APIToken[]>([]);
+  let tokName = $state('');
+  let tokRole = $state<Role>('admin');
+  let tokScope = $state('admin');
+  let tokDays = $state('0');
+  let tokBusy = $state(false);
+  let tokError = $state('');
+  let tokSecret = $state('');
+  let tokCopied = $state(false);
+
   async function load() {
     try {
       acc = await api.account();
+      if (acc.user.role === 'admin') {
+        const res = await api.apiTokens();
+        tokens = res.tokens ?? [];
+      }
       error = '';
     } catch (e) {
       error = (e as Error).message;
@@ -120,6 +232,49 @@
     }
   }
 
+  async function createToken(e: SubmitEvent) {
+    e.preventDefault();
+    tokError = '';
+    tokSecret = '';
+    tokCopied = false;
+    tokBusy = true;
+    try {
+      const scopes = tokRole === 'viewer' ? ['read'] : [tokScope];
+      const res = await api.createAPIToken({
+        name: tokName.trim(),
+        role: tokRole,
+        scopes,
+        expiresDays: Number(tokDays) || 0,
+      });
+      tokSecret = res.secret;
+      tokName = '';
+      tokens = [res.token, ...tokens];
+    } catch (err) {
+      tokError = (err as Error).message;
+    } finally {
+      tokBusy = false;
+    }
+  }
+
+  async function revokeToken(t: APIToken) {
+    tokError = '';
+    try {
+      await api.deleteAPIToken(t.id);
+      tokens = tokens.filter((item) => item.id !== t.id);
+    } catch (err) {
+      tokError = (err as Error).message;
+    }
+  }
+
+  async function copySecret() {
+    if (!tokSecret || !navigator.clipboard) return;
+    await navigator.clipboard.writeText(tokSecret);
+    tokCopied = true;
+    setTimeout(() => {
+      tokCopied = false;
+    }, 2000);
+  }
+
   const when = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   const fmt = (iso?: string) => (iso ? when.format(new Date(iso)) : '');
   const sourceText: Record<string, string> = {
@@ -149,6 +304,119 @@
   </section>
 
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
+
+  <section class="card card-pad grid1" aria-label="Experience and editor preferences">
+    <div class="pref-head">
+      <div>
+        <p class="section-title">Experience &amp; editor preferences</p>
+        <p class="meta">Choose Beginner, Advanced, or customize each editor default individually.</p>
+      </div>
+      <span class="badge">{prefs.mode === 'custom' ? 'Custom' : prefs.mode === 'beginner' ? 'Beginner' : 'Advanced'}</span>
+    </div>
+
+    <div class="preset-row">
+      <button type="button" class="btn" class:btn-primary={prefs.mode === 'beginner'} onclick={() => applyPreset('beginner')}>
+        Beginner preset
+      </button>
+      <button type="button" class="btn" class:btn-primary={prefs.mode === 'advanced'} onclick={() => applyPreset('advanced')}>
+        Advanced preset
+      </button>
+    </div>
+
+    <div class="two">
+      <div>
+        <span class="label">Default Compose view</span>
+        <Select
+          label="Default Compose view"
+          value={prefs.composeView}
+          items={[
+            { value: 'form', label: 'Form (lossless fields)' },
+            { value: 'yaml-comments', label: 'YAML (with comments)' },
+            { value: 'yaml-clean', label: 'YAML (clean, no comments/blanks)' },
+          ]}
+          onchange={(v) => patchPref({ composeView: v as ComposeViewMode })}
+        />
+      </div>
+      <div>
+        <span class="label">Default .env view</span>
+        <Select
+          label="Default .env view"
+          value={prefs.envView}
+          items={[
+            { value: 'vars', label: 'Variables table' },
+            { value: 'raw', label: 'Raw .env text' },
+          ]}
+          onchange={(v) => patchPref({ envView: v as EnvViewMode })}
+        />
+      </div>
+    </div>
+
+    <div class="two">
+      <div>
+        <span class="label">New stack starting point</span>
+        <Select
+          label="New stack starting point"
+          value={prefs.newStackDefault}
+          items={[
+            { value: 'templates', label: 'Templates catalog first' },
+            { value: 'blank', label: 'Blank Compose editor' },
+          ]}
+          onchange={(v) => patchPref({ newStackDefault: v as 'templates' | 'blank' })}
+        />
+      </div>
+      <div>
+        <span class="label">In-app guides &amp; setup hints</span>
+        <Select
+          label="In-app guides and hints"
+          value={prefs.guidesMode}
+          items={[
+            { value: 'extended', label: 'Extended guides & checklists' },
+            { value: 'compact', label: 'Compact hints' },
+          ]}
+          onchange={(v) => patchPref({ guidesMode: v as 'extended' | 'compact' })}
+        />
+      </div>
+    </div>
+
+    <div class="two">
+      <div>
+        <span class="label">Action confirmations</span>
+        <Select
+          label="Action confirmations"
+          value={prefs.confirmActions}
+          items={[
+            { value: 'all', label: 'Confirm all actions (stop, restart, pull, delete)' },
+            { value: 'destructive', label: 'Confirm destructive actions only' },
+          ]}
+          onchange={(v) => patchPref({ confirmActions: v as 'all' | 'destructive' })}
+        />
+      </div>
+      <div class="chk-wrap">
+        <span class="label">Linter tips</span>
+        <label class="chk-line">
+          <input
+            type="checkbox"
+            checked={prefs.linterShowTips}
+            onchange={(e) => patchPref({ linterShowTips: e.currentTarget.checked })}
+          />
+          <span>Expand linter tips by default</span>
+        </label>
+      </div>
+    </div>
+
+    {#if overrideKeys.length > 0}
+      <div class="override-bar">
+        <span class="meta">Manual add-on overrides active for: {overrideKeys.join(', ')}</span>
+        <button type="button" class="btn btn-ghost" disabled={prefBusy} onclick={clearOverrides}>Reset overrides</button>
+      </div>
+    {/if}
+
+    {#if prefError}<p class="error-text" role="alert">{prefError}</p>{/if}
+    {#if prefMsg}<p class="meta" role="status">{prefMsg}</p>{/if}
+    <div class="row">
+      <button type="button" class="btn btn-primary" aria-busy={prefBusy} disabled={prefBusy} onclick={savePrefs}>Save preferences</button>
+    </div>
+  </section>
 
   {#if acc && local}
     <section class="card card-pad grid1" aria-label="Password">
@@ -250,6 +518,112 @@
     </section>
 
     <PushToggle />
+
+    {#if isAdmin()}
+      <section class="card card-pad grid1" aria-label="API tokens">
+        <p class="section-title">API tokens (CLI &amp; remote access)</p>
+        <p class="meta">
+          Bearer tokens let the <code>moorage</code> CLI or scripts connect to a remote hub over HTTP(S). Local CLI commands on the server use the Unix socket automatically without a token.
+        </p>
+
+        {#if tokSecret}
+          <div class="token-reveal">
+            <p class="meta"><strong>Copy this token now — it won't be shown again:</strong></p>
+            <code class="secret">{tokSecret}</code>
+            <p class="meta">Example: <code>moorage --url {window.location.origin} --token {tokSecret} stacks ls</code></p>
+            <div class="row gap">
+              <button type="button" class="btn btn-primary" onclick={copySecret}>{tokCopied ? 'Copied' : 'Copy token'}</button>
+              <button type="button" class="btn btn-ghost" onclick={() => { tokSecret = ''; }}>Dismiss</button>
+            </div>
+          </div>
+        {/if}
+
+        <form class="form" onsubmit={createToken}>
+          <div class="two">
+            <div>
+              <label class="label" for="tok-name">Token name</label>
+              <input id="tok-name" class="field" bind:value={tokName} maxlength="64" placeholder="e.g. laptop-cli or ci-deploy" required />
+            </div>
+            <div>
+              <span class="label">Role</span>
+              <Select
+                label="Role"
+                value={tokRole}
+                items={[
+                  { value: 'admin', label: 'Admin' },
+                  { value: 'viewer', label: 'Viewer (read-only)' },
+                ]}
+                onchange={(v) => { tokRole = v as Role; }}
+              />
+            </div>
+          </div>
+          <div class="two">
+            <div>
+              <span class="label">Scope</span>
+              {#if tokRole === 'viewer'}
+                <p class="meta" style="margin-top: 8px">Viewer tokens are locked to <code>read</code> scope.</p>
+              {:else}
+                <Select
+                  label="Scope"
+                  value={tokScope}
+                  items={[
+                    { value: 'admin', label: 'Full admin (stacks, settings, tokens)' },
+                    { value: 'deploy', label: 'Deploy & stacks (deploy, rollback, restore, checks)' },
+                    { value: 'read', label: 'Read only (status, logs, diff)' },
+                  ]}
+                  onchange={(v) => { tokScope = v; }}
+                />
+              {/if}
+            </div>
+            <div>
+              <span class="label">Expiration</span>
+              <Select
+                label="Expiration"
+                value={tokDays}
+                items={[
+                  { value: '0', label: 'No expiration' },
+                  { value: '30', label: '30 days' },
+                  { value: '90', label: '90 days' },
+                  { value: '365', label: '1 year' },
+                ]}
+                onchange={(v) => { tokDays = v; }}
+              />
+            </div>
+          </div>
+          {#if tokError}<p class="error-text" role="alert">{tokError}</p>{/if}
+          <div class="row"><button class="btn btn-primary" aria-busy={tokBusy} disabled={tokBusy}>Create API token</button></div>
+        </form>
+
+        {#if tokens.length > 0}
+          <ul class="list">
+            {#each tokens as t (t.id)}
+              <li class="item">
+                <div class="item-main">
+                  <p class="name">
+                    {t.name}
+                    <code class="meta" style="margin-left: 6px">{t.prefix}…</code>
+                    <span class="badge" style="margin-left: 6px">{t.role}</span>
+                    {#each t.scopes as sc}
+                      <span class="badge" style="margin-left: 4px">{sc}</span>
+                    {/each}
+                  </p>
+                  <p class="meta">
+                    Created {fmt(t.createdAt)} by {t.createdBy}
+                    {#if t.lastUsedAt} · last used {fmt(t.lastUsedAt)}{/if}
+                    {#if t.expiresAt} · expires {fmt(t.expiresAt)}{/if}
+                  </p>
+                </div>
+                <div class="item-actions">
+                  <button type="button" class="btn btn-ghost" onclick={() => revokeToken(t)}>Revoke</button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="meta">No API tokens created yet.</p>
+        {/if}
+      </section>
+    {/if}
   {/if}
 </div>
 
@@ -349,5 +723,48 @@
   .item-actions {
     display: flex;
     gap: 6px;
+  }
+  .pref-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .preset-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .chk-wrap {
+    display: grid;
+    align-content: start;
+  }
+  .chk-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 36px;
+    font-size: 13px;
+    color: var(--foam);
+    cursor: pointer;
+  }
+  .override-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    background: var(--well);
+  }
+  .token-reveal {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border-radius: var(--r-md);
+    border: 1px solid var(--rope-strong);
+    background: var(--well);
   }
 </style>

@@ -19,6 +19,7 @@
   import TemplatesView from './TemplatesView.svelte';
   import TemplateDeploy from './TemplateDeploy.svelte';
   import AccountView from './AccountView.svelte';
+  import ModeOnboarding from './ModeOnboarding.svelte';
   import CommandPalette from '../lib/CommandPalette.svelte';
 
   let { onSignedOut }: { onSignedOut: () => void } = $props();
@@ -247,6 +248,8 @@
       try {
         const s = await api.session();
         if (stopped) return;
+        // Boot ID changes on every process start — catches sub-2s container restarts even if sawDisconnect never fired.
+        if (s.bootId && app.bootId && s.bootId !== app.bootId) return done();
         if (s.version && s.version !== target.fromVersion) return done();
         // Same version answering: either not stopped yet, or rolled back. The job tells.
         const job = await hubJob(target.jobId);
@@ -647,6 +650,10 @@
 </div>
 
 <CommandPalette bind:open={paletteOpen} />
+
+{#if app.user && app.user.preferences && !app.user.preferences.onboardingDone}
+  <ModeOnboarding />
+{/if}
 
 {#if app.restarting && restartPhase !== 'waiting'}
   <div class="restart-overlay" role="dialog" aria-modal="true" aria-labelledby="restart-title">

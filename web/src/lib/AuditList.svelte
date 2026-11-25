@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { AuditEntry } from './api';
+  import { stackLabel } from './state.svelte';
   import { auditLabel, auditTime } from './audit';
 
   // where=false hides host / stack (the stack's own Logbook already says which stack).
@@ -7,7 +8,8 @@
 
   function place(e: AuditEntry): string {
     const h = e.hostId ? e.hostName || e.hostId : '';
-    return [h, e.stack].filter(Boolean).join(' / ');
+    const st = e.stack ? stackLabel(e.hostId, e.stack, e.stackDisplayName) : '';
+    return [h, st].filter(Boolean).join(' / ');
   }
   const stackHref = (e: AuditEntry) => `#/h/${encodeURIComponent(e.hostId)}/stacks/${encodeURIComponent(e.stack)}`;
 </script>

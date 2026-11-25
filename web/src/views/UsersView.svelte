@@ -3,6 +3,7 @@
   import { api, type LinkResult, type Role, type UserInfo, type UsersPage } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
+  import Select from '../lib/Select.svelte';
 
   let page = $state<UsersPage | null>(null);
   let error = $state('');
@@ -142,11 +143,16 @@
           <input id="nd" class="field" bind:value={displayName} autocomplete="off" />
         </div>
         <div>
-          <label class="label" for="nr">Role</label>
-          <select id="nr" class="field" bind:value={role}>
-            <option value="viewer">Viewer</option>
-            <option value="admin">Admin</option>
-          </select>
+          <span class="label">Role</span>
+          <Select
+            label="Invite role"
+            value={role}
+            items={[
+              { value: 'viewer', label: 'Viewer' },
+              { value: 'admin', label: 'Admin' },
+            ]}
+            onchange={(v) => (role = v as Role)}
+          />
         </div>
       </div>
       {#if createError}<p class="error-text" role="alert">{createError}</p>{/if}
@@ -204,12 +210,18 @@
             {#if !self}
               <div class="item-actions">
                 {#if u.source === 'local'}
-                  <label class="sr-only" for="role-{u.id}">Role of {u.username}</label>
-                  <select id="role-{u.id}" class="field rolesel" value={u.role}
-                    onchange={(e) => act(u, () => api.setUserRole(u.id, (e.currentTarget as HTMLSelectElement).value as Role))}>
-                    <option value="viewer">Viewer</option>
-                    <option value="admin">Admin</option>
-                  </select>
+                  <div class="rolesel">
+                    <Select
+                      label="Role of {u.username}"
+                      compact={true}
+                      value={u.role}
+                      items={[
+                        { value: 'viewer', label: 'Viewer' },
+                        { value: 'admin', label: 'Admin' },
+                      ]}
+                      onchange={(v) => act(u, () => api.setUserRole(u.id, v as Role))}
+                    />
+                  </div>
                   <button type="button" class="btn btn-ghost" onclick={() => newLink(u)}>
                     <Icon name="key" /> {u.status === 'invited' ? 'New invite link' : 'Reset link'}
                   </button>

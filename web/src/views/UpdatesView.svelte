@@ -10,8 +10,10 @@
     type StackImages,
     type UpdateSettings,
   } from '../lib/api';
-  import { isAdmin } from '../lib/state.svelte';
+  import { isAdmin, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
+  import MultiSelect from '../lib/MultiSelect.svelte';
 
   let settings = $state<UpdateSettings | null>(null);
   let stacks = $state<StackImages[] | null>(null);
@@ -219,12 +221,15 @@
 
           <div class="grid-3">
             <div>
-              <label class="label" for="upd-interval">Check interval</label>
-              <select id="upd-interval" class="field" bind:value={settings.interval}>
-                {#each intervals as it (it.v)}
-                  <option value={it.v}>{it.label}</option>
-                {/each}
-              </select>
+              <span class="label">Check interval</span>
+              <Select
+                label="Check interval"
+                value={String(settings.interval)}
+                items={intervals.map((it) => ({ value: String(it.v), label: it.label }))}
+                onchange={(v) => {
+                  if (settings) settings.interval = Number(v);
+                }}
+              />
             </div>
             <div>
               <label class="label" for="upd-start">Apply window start</label>
@@ -244,19 +249,19 @@
           {#if channels.length > 0}
             <div>
               <span class="label">Notification channels</span>
-              <div class="ch-pills">
-                {#each channels as ch (ch.id)}
-                  <button
-                    type="button"
-                    class="pill"
-                    class:on={settings.channels.includes(ch.id)}
-                    onclick={() => toggleChannel(ch.id)}
-                  >
-                    <span class="dot {ch.enabled ? 'up' : 'paused'}"></span>
-                    <span>{ch.name}</span>
-                  </button>
-                {/each}
-              </div>
+              <MultiSelect
+                label="Notification channels"
+                placeholder="No channels selected"
+                items={channels.map((ch) => ({
+                  value: String(ch.id),
+                  label: ch.name,
+                  meta: ch.enabled ? 'enabled' : 'disabled',
+                }))}
+                selected={settings.channels.map(String)}
+                onchange={(next) => {
+                  if (settings) settings.channels = next.map(Number);
+                }}
+              />
             </div>
           {:else}
             <p class="hint">
@@ -305,8 +310,11 @@
               <div class="stack-title-wrap">
                 <span class="dot {st.status}"></span>
                 <a class="stack-link" href={`#/h/${encodeURIComponent(st.hostId)}/stacks/${encodeURIComponent(st.stack)}`}>
-                  {st.stack}
+                  {st.displayName || stackLabel(st.hostId, st.stack)}
                 </a>
+                {#if (st.displayName || stackLabel(st.hostId, st.stack)) !== st.stack}
+                  <span class="meta mono">{st.coolifyProject ? `${st.coolifyProject} · ` : ''}{st.stack}</span>
+                {/if}
                 {#if !st.managed}
                   <span class="badge neutral" title="Lives outside the Moorage stacks folder">Unmanaged</span>
                 {/if}

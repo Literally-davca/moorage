@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type SharedVar } from './api';
-  import { app } from './state.svelte';
+  import { app, userPrefs } from './state.svelte';
   import CodeEditor from './CodeEditor.svelte';
   import Icon from './Icon.svelte';
   import { composeVars, looksSecret, parseEnv, removeVars, serializeEnv, unusedVars, validKey, type EnvLine, type EnvVar } from './dotenv';
@@ -17,13 +17,22 @@
   }: { value?: string; compose?: string; readonly?: boolean; label?: string } = $props();
 
   const MODE_KEY = 'moorage-env-mode';
-  let mode = $state<'vars' | 'raw'>('vars');
+  let mode = $state<'vars' | 'raw'>(userPrefs().envView);
+  let userPickedMode = false;
   try {
-    if (localStorage.getItem(MODE_KEY) === 'raw') mode = 'raw';
+    const saved = localStorage.getItem(MODE_KEY);
+    if ((saved === 'raw' || saved === 'vars') && (userPrefs().mode === 'custom' || !userPrefs().onboardingDone)) {
+      mode = saved;
+    }
   } catch {
     /* private mode */
   }
+  $effect(() => {
+    const pref = userPrefs().envView;
+    if (!userPickedMode) mode = pref;
+  });
   function setMode(m: 'vars' | 'raw') {
+    userPickedMode = true;
     mode = m;
     try {
       localStorage.setItem(MODE_KEY, m);

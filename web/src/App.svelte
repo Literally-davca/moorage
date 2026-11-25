@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, setUnauthorizedHandler, type LoginInfo } from './lib/api';
-  import { app, inviteToken } from './lib/state.svelte';
+  import { app, inviteToken, loadCoolifyNames } from './lib/state.svelte';
   import Setup from './views/Setup.svelte';
   import Login from './views/Login.svelte';
   import Invite from './views/Invite.svelte';
@@ -15,7 +15,9 @@
     try {
       const s = await api.session();
       app.version = s.version;
+      app.bootId = s.bootId ?? '';
       app.user = s.user;
+      if (s.user) void loadCoolifyNames();
       if (s.login) login = s.login;
       proxyError = s.proxyError ?? '';
       // An invite or reset link wins over an existing session: the link is for someone else

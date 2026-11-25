@@ -314,6 +314,13 @@ func waitContainerHealthy(ctx context.Context, eng ContainerEngine, newID string
 							if pollContainerSessionHealth(ctx, httpCli, insp, opt.ListenAddr, opt.ToVer) {
 								return ""
 							}
+							if opt.DataDir != "" {
+								if mark, ok := readHealthyMark(opt.DataDir); ok &&
+									strings.TrimPrefix(mark.Version, "v") == strings.TrimPrefix(opt.ToVer, "v") &&
+									!mark.At.Before(startedAt.Add(-time.Second)) {
+									return ""
+								}
+							}
 						} else if opt.DataDir != "" {
 							// Agent with persistent /update-data writes healthy mark when tunnel handshakes.
 							if mark, ok := readHealthyMark(opt.DataDir); ok &&
@@ -376,7 +383,7 @@ func pollContainerSessionHealth(ctx context.Context, cli *http.Client, insp cont
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&s)
 		_ = resp.Body.Close()
 		cancel()
-		if resp.StatusCode == http.StatusOK && strings.TrimPrefix(s.Version, "v") == strings.TrimPrefix(wantVersion, "v") {
+		if resp.StatusCode == http.StatusOK && (wantVersion == "" || strings.TrimPrefix(s.Version, "v") == strings.TrimPrefix(wantVersion, "v")) {
 			return true
 		}
 	}

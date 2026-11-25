@@ -1,5 +1,5 @@
 // App-wide reactive state: session, hash route, theme.
-import type { HostEntry, NavSummary, User } from './api';
+import { api, type CoolifyNameMeta, type HostEntry, type NavSummary, type User, type UserPreferences } from './api';
 
 export type SettingsTab =
   | 'general'
@@ -116,9 +116,12 @@ export const app = $state<{
   hosts: HostEntry[];
   theme: 'dark' | 'light';
   version: string;
+  bootId: string;
   restarting: HubRestartState | null;
   /** Last answer of GET /api/nav-summary (badges in the top bar and the Monitoring tabs). */
   nav: NavSummary | null;
+  /** Cached Coolify UUID -> displayName metadata keyed by `${hostId}:${uuid}`. */
+  coolifyNames: Record<string, CoolifyNameMeta>;
 }>({
   user: null,
   route: first.route,
@@ -126,9 +129,65 @@ export const app = $state<{
   hosts: [],
   theme: 'dark',
   version: '',
+  bootId: '',
   restarting: null,
   nav: null,
+  coolifyNames: {},
 });
+
+export const DEFAULT_PREFS: UserPreferences = {
+  mode: 'beginner',
+  composeView: 'form',
+  envView: 'vars',
+  linterShowTips: true,
+  newStackDefault: 'templates',
+  guidesMode: 'extended',
+  confirmActions: 'all',
+  onboardingDone: false,
+  manualOverrides: {},
+};
+
+export function userPrefs(): UserPreferences {
+  const p = app.user?.preferences;
+  if (!p) return { ...DEFAULT_PREFS, manualOverrides: {} };
+  return {
+    ...DEFAULT_PREFS,
+    ...p,
+    manualOverrides: { ...(p.manualOverrides ?? {}) },
+  };
+}
+
+export function isManualOverride(addonId: string): boolean {
+  return !!app.user?.preferences?.manualOverrides?.[addonId];
+}
+
+export function setCoolifyNames(map: Record<string, CoolifyNameMeta>) {
+  app.coolifyNames = { ...app.coolifyNames, ...map };
+}
+
+export async function loadCoolifyNames() {
+  try {
+    const res = await api.coolifyNames();
+    setCoolifyNames(res.names ?? {});
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Returns human display name for a Coolify stack UUID (or falls back to raw stack name). */
+export function stackLabel(hostId: string | undefined, stack: string, fallbackDisplay?: string): string {
+  if (fallbackDisplay && fallbackDisplay !== stack) return fallbackDisplay;
+  if (!stack) return '';
+  if (hostId) {
+    const byHost = app.coolifyNames[`${hostId}/${stack}`];
+    if (byHost?.name) return byHost.name;
+  }
+  const suffix = `/${stack}`;
+  for (const [k, v] of Object.entries(app.coolifyNames)) {
+    if (k.endsWith(suffix) && v?.name) return v.name;
+  }
+  return fallbackDisplay || stack;
+}
 
 /** NavBadge is the single badge of a navigation item: red = failing, blue = information. */
 export type NavBadge = { n: number; tone: 'red' | 'blue'; title: string };

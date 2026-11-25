@@ -243,16 +243,25 @@ func (ts *taskScheduler) runTask(parentCtx context.Context, task store.Scheduled
 
 // ---- HTTP handlers ---------------------------------------------------------------------
 
+type scheduledTaskDTO struct {
+	store.ScheduledTask
+	StackDisplayName string `json:"stackDisplayName,omitempty"`
+}
+
 func (s *Server) listSchedulerTasks(w http.ResponseWriter, r *http.Request) {
 	tasks, err := s.store.ScheduledTasks(r.Context())
 	if err != nil {
 		s.engErr(w, err)
 		return
 	}
-	if tasks == nil {
-		tasks = []store.ScheduledTask{}
+	out := make([]scheduledTaskDTO, 0, len(tasks))
+	for _, t := range tasks {
+		out = append(out, scheduledTaskDTO{
+			ScheduledTask:    t,
+			StackDisplayName: s.StackDisplayName(r.Context(), t.HostID, t.Stack),
+		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tasks": tasks})
+	writeJSON(w, http.StatusOK, map[string]any{"tasks": out})
 }
 
 func (s *Server) saveSchedulerTask(w http.ResponseWriter, r *http.Request) {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type AuditEntry, type TerminalAuditRow } from '../lib/api';
-  import { app } from '../lib/state.svelte';
+  import { app, stackLabel } from '../lib/state.svelte';
   import { auditGroups } from '../lib/audit';
   import AuditList from '../lib/AuditList.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
@@ -157,7 +157,7 @@
                 </td>
                 <td>
                   <a href={`#/h/${encodeURIComponent(ts.hostId)}/stacks/${encodeURIComponent(ts.stack)}`}>
-                    {ts.hostName || ts.hostId} / {ts.stack}
+                    {ts.hostName || ts.hostId} / {stackLabel(ts.hostId, ts.stack)}
                   </a>
                 </td>
                 <td class="mono">{ts.containerName} · {ts.shell}</td>

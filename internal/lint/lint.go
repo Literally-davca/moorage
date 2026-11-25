@@ -48,11 +48,12 @@ type Issue struct {
 
 // Fix is a quick fix the UI can apply with POST .../lint/fix.
 type Fix struct {
-	Kind    string   `json:"kind"` // bind-localhost, add-restart, remove-version, extract-secret, remove-unused, move-env
-	Label   string   `json:"label"`
-	Service string   `json:"service,omitempty"`
-	Line    int      `json:"line,omitempty"`
-	Keys    []string `json:"keys,omitempty"` // remove-unused
+	Kind      string   `json:"kind"` // bind-localhost, add-restart, remove-version, extract-secret, remove-unused, move-env, add-mem-limit, add-healthcheck, pin-tag, add-env-var
+	Label     string   `json:"label"`
+	Service   string   `json:"service,omitempty"`
+	Line      int      `json:"line,omitempty"`
+	Keys      []string `json:"keys,omitempty"`      // remove-unused, add-env-var
+	TargetTag string   `json:"targetTag,omitempty"` // pin-tag
 }
 
 // PortUse is a host port a running container (outside the linted stack) publishes.
@@ -171,7 +172,8 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 	}
 	sort.Strings(missing)
 	for _, k := range missing {
-		add(Issue{Severity: DeployError, Code: "missing-var", Message: fmt.Sprintf("${%s} has no default and isn't set in .env.", k)})
+		add(Issue{Severity: DeployError, Code: "missing-var", Message: fmt.Sprintf("${%s} has no default and isn't set in .env.", k),
+			Fix: &Fix{Kind: "add-env-var", Label: "Add " + k + " to .env", Keys: []string{k}}})
 	}
 
 	if proj == nil {
@@ -244,14 +246,17 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 		}
 		if s.Image != "" && s.Build == nil {
 			if tag := imageTag(s.Image); tag == "" || tag == "latest" {
-				add(Issue{Severity: Info, Code: "latest-tag", Service: name, Line: ln, Message: fmt.Sprintf("%s uses a moving tag (%s): pin a version so updates are deliberate.", name, s.Image)})
+				add(Issue{Severity: Info, Code: "latest-tag", Service: name, Line: ln, Message: fmt.Sprintf("%s uses a moving tag (%s): pin a version so updates are deliberate.", name, s.Image),
+					Fix: &Fix{Kind: "pin-tag", Label: "Pin latest stable tag", Service: name, Line: ln}})
 			}
 		}
 		if s.MemLimit == 0 && (s.Deploy == nil || s.Deploy.Resources.Limits == nil || s.Deploy.Resources.Limits.MemoryBytes == 0) {
-			add(Issue{Severity: Info, Code: "no-mem-limit", Service: name, Line: ln, Message: fmt.Sprintf("%s has no memory limit.", name)})
+			add(Issue{Severity: Info, Code: "no-mem-limit", Service: name, Line: ln, Message: fmt.Sprintf("%s has no memory limit.", name),
+				Fix: &Fix{Kind: "add-mem-limit", Label: "Add mem_limit: 512m", Service: name, Line: ln}})
 		}
 		if s.HealthCheck == nil {
-			add(Issue{Severity: Info, Code: "no-healthcheck", Service: name, Line: ln, Message: fmt.Sprintf("%s has no healthcheck in compose.yaml (the image may still define one).", name)})
+			add(Issue{Severity: Info, Code: "no-healthcheck", Service: name, Line: ln, Message: fmt.Sprintf("%s has no healthcheck in compose.yaml (the image may still define one).", name),
+				Fix: &Fix{Kind: "add-healthcheck", Label: "Add healthcheck", Service: name, Line: ln}})
 		}
 	}
 	return out

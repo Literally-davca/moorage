@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type AutoRestartMode, type DepNode, type HostDeps, type StackDep } from '../lib/api';
-  import { app, currentHost, isAdmin } from '../lib/state.svelte';
+  import { app, currentHost, isAdmin, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select, { type SelectItem } from '../lib/Select.svelte';
   import {
     autoRestartLabels,
     computeSubtree,
@@ -25,7 +26,7 @@
   // Filters
   let onlyUnhealthy = $state(false);
   let hideExternal = $state(false);
-  let showStandalone = $state(false);
+  let showStandalone = $state(true);
   let hideIgnored = $state(false);
 
   // Selection & hover (blast radius)
@@ -39,8 +40,8 @@
   let fromStack = $state('');
   let toHost = $state(app.host);
   let toStack = $state('');
-  let fromOptions = $state<string[]>([]);
-  let toOptions = $state<string[]>([]);
+  let fromOptions = $state<SelectItem[]>([]);
+  let toOptions = $state<SelectItem[]>([]);
 
   // Zoom & pan state
   let zoom = $state(1);
@@ -85,7 +86,12 @@
       fromOptions = [];
       api.stacksOf(fh)
         .then((r) => {
-          if (fh === fromHost) fromOptions = r.stacks.map((s) => s.name);
+          if (fh === fromHost) {
+            fromOptions = r.stacks.map((s) => {
+              const disp = stackLabel(fh, s.name, s.displayName);
+              return { value: s.name, label: disp, meta: disp !== s.name ? s.name : undefined };
+            });
+          }
         })
         .catch(() => {});
     });
@@ -98,7 +104,12 @@
       toOptions = [];
       api.stacksOf(th)
         .then((r) => {
-          if (th === toHost) toOptions = r.stacks.map((s) => s.name);
+          if (th === toHost) {
+            toOptions = r.stacks.map((s) => {
+              const disp = stackLabel(th, s.name, s.displayName);
+              return { value: s.name, label: disp, meta: disp !== s.name ? s.name : undefined };
+            });
+          }
         })
         .catch(() => {});
     });
@@ -217,13 +228,13 @@
 
   const aloneText = $derived.by(() => {
     if (!alone.length) return '';
-    if (scope !== 'all') return alone.map((n) => n.stack).join(', ');
+    if (scope !== 'all') return alone.map((n) => stackLabel(n.hostId, n.stack, n.displayName)).join(', ');
     const byHost = new Map<string, string[]>();
     for (const n of alone) {
-      const label = n.hostName || n.hostId;
-      const list = byHost.get(label) ?? [];
-      list.push(n.stack);
-      byHost.set(label, list);
+      const hlabel = n.hostName || n.hostId;
+      const list = byHost.get(hlabel) ?? [];
+      list.push(stackLabel(n.hostId, n.stack, n.displayName));
+      byHost.set(hlabel, list);
     }
     return [...byHost.entries()].map(([h, s]) => `${h}: ${s.join(', ')}`).join(' · ');
   });
@@ -266,14 +277,22 @@
   }
 
   function label(n: DepNode): string {
-    return n.external || scope === 'all' ? `${n.stack} (${n.hostName || n.hostId})` : n.stack;
+    const disp = stackLabel(n.hostId, n.stack, n.displayName);
+    return n.external || scope === 'all' ? `${disp} (${n.hostName || n.hostId})` : disp;
+  }
+
+  function refDisplay(r: { hostId: string; stack: string }): string {
+    const n = nodeByKey.get(refKey(r));
+    if (n) return stackLabel(n.hostId, n.stack, n.displayName);
+    return stackLabel(r.hostId, r.stack);
   }
 
   function keyLabel(k: string): string {
     const n = nodeByKey.get(k);
     if (n) return label(n);
     const [h, s] = k.split('/');
-    return h === app.host && scope !== 'all' ? s : `${s} (${h})`;
+    const disp = stackLabel(h, s);
+    return h === app.host && scope !== 'all' ? disp : `${disp} (${h})`;
   }
 
   function clip(s: string, max = 20): string {
@@ -409,38 +428,48 @@
         <div class="endpoint">
           <span class="meta ep-lbl">Dependent stack</span>
           <div class="ep-fields">
-            <select class="field" bind:value={fromHost} aria-label="Dependent host">
-              {#each app.hosts as h (h.id)}<option value={h.id}>{h.name}</option>{/each}
-            </select>
-            <input
-              class="field grow"
-              bind:value={fromStack}
-              list="dep-from-stacks"
-              placeholder="Stack name (e.g. app)"
-              spellcheck="false"
-              required
-              maxlength="63"
-            />
-            <datalist id="dep-from-stacks">{#each fromOptions as o (o)}<option value={o}></option>{/each}</datalist>
+            <div class="ep-host">
+              <Select
+                label="Dependent host"
+                value={fromHost}
+                items={app.hosts.map((h) => ({ value: h.id, label: h.name }))}
+                onchange={(v) => (fromHost = v)}
+              />
+            </div>
+            <div class="grow">
+              <Select
+                label="Dependent stack"
+                items={fromOptions}
+                bind:value={fromStack}
+                allowCustom={true}
+                placeholder="Stack name (e.g. app)"
+                customPlaceholder="Filter or type stack name…"
+              />
+            </div>
           </div>
         </div>
         <span class="meta arrow-word">depends on →</span>
         <div class="endpoint">
           <span class="meta ep-lbl">Upstream stack</span>
           <div class="ep-fields">
-            <select class="field" bind:value={toHost} aria-label="Upstream host">
-              {#each app.hosts as h (h.id)}<option value={h.id}>{h.name}</option>{/each}
-            </select>
-            <input
-              class="field grow"
-              bind:value={toStack}
-              list="dep-to-stacks"
-              placeholder="Stack it needs (e.g. postgres)"
-              spellcheck="false"
-              required
-              maxlength="63"
-            />
-            <datalist id="dep-to-stacks">{#each toOptions as o (o)}<option value={o}></option>{/each}</datalist>
+            <div class="ep-host">
+              <Select
+                label="Upstream host"
+                value={toHost}
+                items={app.hosts.map((h) => ({ value: h.id, label: h.name }))}
+                onchange={(v) => (toHost = v)}
+              />
+            </div>
+            <div class="grow">
+              <Select
+                label="Upstream stack"
+                items={toOptions}
+                bind:value={toStack}
+                allowCustom={true}
+                placeholder="Stack it needs (e.g. postgres)"
+                customPlaceholder="Filter or type stack name…"
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -591,10 +620,10 @@
                       onclick={(ev) => selectEdge(e.id, ev)}
                       role="button"
                       tabindex="0"
-                      aria-label="{e.from.stack} depends on {e.to.stack}"
+                      aria-label="{refDisplay(e.from)} depends on {refDisplay(e.to)}"
                       onkeydown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') selectEdge(e.id, ev as unknown as MouseEvent); }}
                     >
-                      <title>{e.from.stack} depends on {e.to.stack} · {edgeText(e)}{e.autoRestart && e.autoRestart !== 'off' ? ` · ${autoRestartLabels[e.autoRestart]}` : ''}</title>
+                      <title>{refDisplay(e.from)} depends on {refDisplay(e.to)} · {edgeText(e)}{e.autoRestart && e.autoRestart !== 'off' ? ` · ${autoRestartLabels[e.autoRestart]}` : ''}</title>
                     </path>
                   </g>
                 {/if}
@@ -624,7 +653,7 @@
                 >
                   <rect x={p.x + PAD} y={p.y + PAD} width={W} height={H} rx="8" class="box {cls}" class:loop={p.node.inCycle} />
                   <circle cx={p.x + PAD + 14} cy={p.y + PAD + 16} r="4" class="st {cls}" />
-                  <text x={p.x + PAD + 24} y={p.y + PAD + 20} class="nname">{clip(p.node.stack)}</text>
+                  <text x={p.x + PAD + 24} y={p.y + PAD + 20} class="nname">{clip(stackLabel(p.node.hostId, p.node.stack, p.node.displayName))}</text>
                   <text x={p.x + PAD + 24} y={p.y + PAD + 36} class="nstat">
                     {clip(nodeText(p.node) + (p.node.total ? ` · ${p.node.running ?? 0}/${p.node.total}` : '') + (p.node.inCycle ? ' · loop' : ''), 25)}
                   </text>
@@ -693,26 +722,23 @@
             <aside class="floating-panel" aria-label="Selected dependency edge">
               <div class="fp-head">
                 <div>
-                  <div class="fp-title">{selectedEdge.from.stack} → {selectedEdge.to.stack}</div>
+                  <div class="fp-title">{refDisplay(selectedEdge.from)} → {refDisplay(selectedEdge.to)}</div>
                   <div class="meta">{edgeText(selectedEdge)}{selectedEdge.detail ? ` · ${selectedEdge.detail}` : ''}</div>
                 </div>
                 <button type="button" class="btn btn-sm btn-ghost btn-icon" onclick={() => (selectedEdgeId = null)} aria-label="Close"><Icon name="x" /></button>
               </div>
               {#if isAdmin()}
                 {#if !selectedEdge.ignored}
-                  <label class="fp-field">
+                  <div class="fp-field">
                     <span class="meta">Auto-restart dependent stack</span>
-                    <select
-                      class="field"
+                    <Select
+                      label="Auto-restart dependent stack"
                       value={selectedEdge.autoRestart ?? 'off'}
                       disabled={busy}
-                      onchange={(ev) => act(() => api.setDepAutoRestart(selectedEdge.from.stack, selectedEdge.id, ev.currentTarget.value as AutoRestartMode, selectedEdge.from.hostId))}
-                    >
-                      {#each Object.entries(autoRestartLabels) as [val, txt] (val)}
-                        <option value={val}>{txt}</option>
-                      {/each}
-                    </select>
-                  </label>
+                      items={Object.entries(autoRestartLabels).map(([val, txt]) => ({ value: val, label: txt }))}
+                      onchange={(v) => act(() => api.setDepAutoRestart(selectedEdge.from.stack, selectedEdge.id, v as AutoRestartMode, selectedEdge.from.hostId))}
+                    />
+                  </div>
                 {/if}
                 <div class="fp-foot">
                   {#if selectedEdge.source === 'manual'}
@@ -768,17 +794,16 @@
             {#if isAdmin()}
               <div class="row-actions">
                 {#if !e.ignored}
-                  <select
-                    class="field auto-sel"
-                    aria-label="Auto-restart policy for {e.from.stack}"
-                    value={e.autoRestart ?? 'off'}
-                    disabled={busy}
-                    onchange={(ev) => act(() => api.setDepAutoRestart(e.from.stack, e.id, ev.currentTarget.value as AutoRestartMode, e.from.hostId))}
-                  >
-                    {#each Object.entries(autoRestartLabels) as [val, txt] (val)}
-                      <option value={val}>{txt}</option>
-                    {/each}
-                  </select>
+                  <div class="auto-sel">
+                    <Select
+                      label="Auto-restart policy for {refDisplay(e.from)}"
+                      compact={true}
+                      value={e.autoRestart ?? 'off'}
+                      disabled={busy}
+                      items={Object.entries(autoRestartLabels).map(([val, txt]) => ({ value: val, label: txt }))}
+                      onchange={(v) => act(() => api.setDepAutoRestart(e.from.stack, e.id, v as AutoRestartMode, e.from.hostId))}
+                    />
+                  </div>
                 {/if}
                 {#if e.source === 'manual'}
                   <button
@@ -896,9 +921,8 @@
     display: flex;
     gap: 8px;
   }
-  .ep-fields select {
-    width: auto;
-    min-width: 110px;
+  .ep-fields .ep-host {
+    min-width: 130px;
   }
   .ep-fields .grow {
     flex: 1;

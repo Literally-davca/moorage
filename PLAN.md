@@ -720,3 +720,126 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 - **Files editor:** nikdy nezapisovat mimo `StacksDir/<stack>`; při souběžné úpravě mimo Moorage se před uložením provede `syncExternal` do `history.git`.
 - **VPN přepnutí portů:** pokud na hostu neběží Tailscale/NetBird (chybí IP rozhraní), tlačítko pro omezení na VPN zůstane neaktivní s vysvětlením.
 - **Bulk actions:** při selhání jednoho stacku pokračovat u dalších nebo zastavit podle volby, na konci ukázat souhrn úspěchů/chyb.
+
+---
+
+## M16 – Opravy, Coolify & UI kvalita (Vlna A) + Headless CLI & interaktivní TUI (Vlna B) (implementováno 2026-11-25)
+
+**Cíl:** Opravit klíčové UI/self-update/Coolify nedostatky, doplnit režimy Začátečník/Pokročilý/Vlastní, bezztrátový formulář + auto-odsazení Compose, 1-klik tipy linteru a dokumentaci (Vlna A), a následně zpřístupnit celé jádro Moorage přes skriptovatelné `moorage` CLI, volitelný headless režim bez web portu a interaktivní TUI `moorage cli` (Vlna B).
+
+### Hlavní uživatelské toky
+1. **Vlna A (Web UI, opravy, Coolify, režimy a editor Compose, dokumentace):** Nový uživatel si při prvním přihlášení (Setup, Invite, OIDC i Forward-Auth) jedním klikem vybere režim **Začátečník** (formulářové pole Compose, `.env` jako Variables, rozbalené tipy linteru s 1-klikem, Templates/Image jako výchozí cesta, rozšířené `<SetupHint>` průvodce, potvrzování i pro Stop/Restart/Down) nebo **Pokročilý** (YAML + Raw `.env`, kompaktní nápovědy, potvrzování jen pro destruktivní akce), případně si v **Account → Preferences** (s odkazem ze Settings) zapne režim **Vlastní**. V Compose editoru vloží neodsazený YAML a editor ho automaticky odsadí s možností `Ctrl+Z`; v linteru jedním klikem doplní `mem_limit`, chytrý `healthcheck`, konkrétní stabilní tag místo `latest` nebo chybějící proměnnou do `.env`. Admin otevře `Settings → General`, `Backups` či `Templates` bez rozbití nebo přetečení; v Clean modu smaže staré prázdné řádky při zachování vlastních nově přidaných řádků i původních komentářů; v celém UI vidí čitelné názvy Coolify stacků místo surových UUID a po self-updatu či restartu se stránka spolehlivě sama obnoví bez falešného rollbacku.
+2. **Vlna B (Headless CLI & TUI):** Uživatel spustí `moorage` bez `MOORAGE_LISTEN` (nebo s `MOORAGE_WEB_UI=false`), takže proces naslouchá jen na lokálním Unix socketu `<data>/moorage.sock` (`0600`) bez otevřeného web portu; odkudkoli spouští `moorage stacks ...`, `moorage rollback`, `moorage restore`, `moorage templates`, `moorage convert`, `moorage checks` (lokálně i vzdáleně přes `--url` + API token), nebo otevře `moorage cli` pro živý interaktivní TUI layout ve stylu `lazydocker`.
+
+### Rozdělení na vlny realizace
+- **M16A (Vlna A — Hotovo):** Opravy UI/API (`settings/general`, `BackupsView`, `TemplatesView`), self-update/restart spolehlivost (`bootId`, `stackapply.go`, `container_helper.go`), globální Coolify názvy, odebrání Coolify/OIDC/Grafana tokenů, Clean mode prázdných řádků, `Dependencies` na hostu, režimy **Začátečník / Pokročilý / Vlastní** + onboarding, bezztrátový formulář Compose (`yaml` AST), 1-klik tipy linteru, auto-odsazení při vložení YAML, jednotné komponenty `Select.svelte` / `MultiSelect.svelte` napříč celým UI, `<AddonGate>` (1-klik povolení / instalace + manual override), kontextové průvodce `<SetupHint>`, dokumentace v repu (`docs/*.md`, `README.md`) i v aplikaci.
+- **M16B (Vlna B — Hotovo):** `MOORAGE_WEB_UI` + Unix socket server (`<data>/moorage.sock`, `0600`), `api_tokens` v SQLite + `Bearer` auth + UI správa tokenů (`AccountView.svelte`), sdílený Go klient (`internal/cli/client`), všechny CLI příkazy jádra (`cobra` + `--json`), interaktivní TUI (`moorage cli` nad `moby/term` + `go-runewidth` bez nových externích závislostí) a dokumentace [`docs/cli.md`](docs/cli.md).
+
+---
+
+### Rozhodnutí (Vlna A i Vlna B)
+
+#### Uživatelská rozhodnutí `[U]`
+- **[U] Režim `MOORAGE_WEB_UI` bez web portu (Vlna B):** Web UI se automaticky vypne (`MOORAGE_WEB_UI=false`), pokud není nastaven `MOORAGE_LISTEN` (nebo je prázdný / `"off"`), případně když je `MOORAGE_WEB_UI=false` explicitně. `Dockerfile` a `compose.yaml` dál nastavují `MOORAGE_LISTEN=:5080`, takže stávající Docker/Compose instalace při self-updatu nikdy neztratí `:5080`.
+- **[U] Jednotná architektura CLI a TUI ve dvou vlnách (Vlna B):** CLI i TUI komunikují s běžícím hubem/all-in-one procesem přes jednotné API: lokálně automaticky přes Unix socket (`<data>/moorage.sock`, práva `0600`), vzdáleně přes HTTPS `--url` + `Bearer` API token (`MOORAGE_TOKEN` / `--token`). Realizace je rozdělena na **Vlnu A** (nejdříve) a **Vlnu B** (následně).
+- **[U] Compose Clean mode a prázdné řádky (Vlna A):** Clean mode v editoru skryje komentáře i původní prázdné řádky. Při úpravě a uložení z Clean modu se původní prázdné řádky trvale odstraní, zatímco prázdné řádky, které uživatel nově dopsal během editace, zůstanou zachované. Prázdné řádky uvnitř YAML blokových skalárů (`|` / `>`) se nikdy nemažou; nezměněné řádky si své komentáře ponechají.
+- **[U] Zobrazení stacků v `Dependencies` (Vlna A):** Na stránce `Dependencies` se uvnitř boxu příslušného hosta zobrazují ve výchozím stavu **všechny stacky** včetně samostatných (bez hran, `showStandalone = true` jako výchozí), přičemž výchozí filtr rozsahu zůstává **Current host** (přepínač **All hosts** zůstává zachován).
+- **[U] Režimy Začátečník / Pokročilý / Vlastní (Vlna A):** Režim řídí 6 přepínačů UX:
+  1. Výchozí zobrazení Compose editoru (`form` vs. `yaml`),
+  2. Výchozí zobrazení `.env` editoru (`vars` vs. `raw`),
+  3. Linter tipy (`expanded` s 1-klikem vs. `collapsed`),
+  4. Výchozí cesta pro nový stack (`guided` – Templates/Image vs. `yaml` – prázdný compose),
+  5. Kontextové průvodce `<SetupHint>` a vysvětlivky (`extended` vs. `compact`),
+  6. Potvrzování akcí (`all` – potvrzovat i Stop/Restart/Down vs. `destructive` – jen Delete/Rollback).
+  Přepnutím kteréhokoli jednotlivého přepínače se režim automaticky přepne na **Vlastní** (`custom`).
+- **[U] Bezztrátový formulář Compose pro režim Začátečník (Vlna A):** Záložka **Form** v `ComposeEditor.svelte` (`Form | Comments | Clean`) zobrazuje přehledná pole pro hlavní vlastnosti každé služby (`image`, `ports`, `volumes`, `environment`, `restart`, `networks`, `depends_on`, `mem_limit`, `healthcheck`, `labels` / `moorage.url`) + přidání/odebrání služby. Úpravy se promítají do YAML dokumentu cílenou aktualizací příslušných větví, takže pokročilá pole (`deploy`, `logging`, `cap_add`, `x-*`, komentáře…) zůstávají v souboru bezztrátově nedotčena (s informativním štítkem a odkazem na záložku YAML).
+- **[U] Uložení a onboarding režimu per-user (Vlna A):** Preference se ukládají per-user v SQLite (`users.preferences_json`, endpoint `PUT /api/account/preferences`) a jsou kdykoli upravitelné v **Account → Preferences** (s rychlým odkazem ze **Settings**). Každý nový uživatel bez nastaveného profilu dostane po prvním přihlášení (Setup, Invite, OIDC i Forward-Auth) jednokrokovou obrazovku/modal pro volbu **Začátečník vs. Pokročilý**.
+- **[U] 1-klik tipy v Compose linteru (Vlna A):** Rozšíření `internal/lint/fix.go` o jedno-klikové opravy tipů (a `missing-var`):
+  - `no-mem-limit` → doplní `mem_limit: 512m` pod příslušnou službu;
+  - `no-healthcheck` → doplní chytrou šablonu `healthcheck:` podle image/portu služby (PostgreSQL `pg_isready`, MySQL/MariaDB `mysqladmin`, Redis/Valkey `redis-cli ping`, HTTP/web `wget`/`curl` na exponovaný port, nebo obecný základ);
+  - `latest-tag` → `GET /api/lint/image-tags` (přes `updater` logiku) dohledá nejnovější stabilní semver tag v registru a nabídne tlačítko **Pin to `<verze>`** (při nedostupném registru vysvětlující hláška bez selhání linteru);
+  - `missing-var` (`deploy_error`) → jedním klikem přidá chybějící klíč do `.env` a přepne pozornost na jeho hodnotu.
+- **[U] Jednotný `Select.svelte` a `MultiSelect.svelte` napříč celou aplikací (Vlna A):** Vytvořit jedno-výběrový protějšek `Select.svelte` ve stylu `MultiSelect.svelte` (klávesová navigace, vyhledávání od 8+ položek nebo volitelně vždy, podtitulek `meta` např. pro Coolify UID, tmavý/světlý motiv Moorage, volitelně `allowCustom` pro zadání vlastní hodnoty místo `<datalist>`) a nahradit **všechny** nativní `<select>`, `<datalist>` (`DepsView`, `StackDeps`, `MaintenanceForm`) i nekonzistentní ruční multi-výběry (`UpdatesView` notifikační kanály, `PromGenPanel` stacky → `MultiSelect`).
+- **[U] Komponenta `<AddonGate>` – přímé povolení / instalace add-onu + Manual override (Vlna A):** Na každém místě, kde funkce vyžaduje vestavěný nebo sidecar add-on (`ConnectionsView` Coolify/Grafana, `BackupsView` Restic volumes, `TemplatesView` `official-templates`, `StackDetail` Coolify/proxy-labels, `AddonsView`), zobrazit `<AddonGate>` s 1-klik tlačítkem **Enable add-on** (u sidecarů **Install & enable** s `MultiSelect` výběrem hostů) a sekundární volbou **Manual override** tam, kde dává smysl ruční/externí konfigurace (vlastní Restic/zálohy, vlastní Prometheus/Grafana, vlastní Coolify/external řízení, vlastní zdroje šablon, ruční `moorage.url`), přičemž volba manual override se pamatuje a odemkne příslušnou manuální konfiguraci bez nucení instalovat add-on.
+
+#### Architektonická rozhodnutí a opravy `[A]`
+- **[A] Oprava `Settings → General` (`settings/general`) (Vlna A):**
+  - `buildDiagnostics` v `internal/api/settings.go` aktuálně vrací `var out []diagnosticItem`, což se při nulovém počtu varování serializuje jako `"diagnostics": null` a `GeneralSettingsView.svelte` spadne na `cfg.diagnostics.length`.
+  - Oprava: v Go vždy inicializovat `out := []diagnosticItem{}` (a stejná kontrola pro `HostLocks`) a v `GeneralSettingsView.svelte` přidat defenzivní `cfg.diagnostics?.length`.
+- **[A] Opravy UI ze screenshotů (Vlna A):**
+  - **Backups (`BackupsView.svelte`):** `.block` (i ostatní grid kontejnery) dostanou `grid-template-columns: minmax(0, 1fr)` a `min-width: 0`; nativní `<input type="file">` (jehož tlačítko „Procházet… Soubor nevybrán.“ roztahuje flex řádek přes pravý okraj karty) nahradíme stylovaným tlačítkem pro výběr `.mbk` souboru v design systému Moorage se zkrácením dlouhého názvu (`text-overflow: ellipsis`).
+  - **Templates (`TemplatesView.svelte`):** ikona lupy má `position: absolute` a překrývá placeholder `Search templates` (protože chybí `padding-left` s vyšší prioritou / flex wrapper). Přepíšeme search pole na stejný flex container jako v `Shell.svelte` (ikona + `<input>` vedle sebe). U upozornění `Local folder` zobrazíme konkrétní cestu složky (`MOORAGE_TEMPLATES_DIR`) a odkaz do `Settings → Templates`.
+- **[A] Spolehlivost self-updatu a restartu Moorage (Vlna A):**
+  - **Falešný rollback při `Apply & restart` (`internal/selfupdate/stackapply.go`):** `waitStackHealthy` dnes předává do `pollContainerSessionHealth` původní `o.Version` – jakmile uživatel v compose změní tag image na novější verzi, kontrola verze selže a po 120 s provede rollback. Pro `self-stack-helper` nesmí selhat na neshodě staré verze (ověřuje se HTTP 200 `/api/session` a stabilita kontejneru `StableFor`).
+  - **Falešný rollback přes síť (`internal/selfupdate/container_helper.go`):** helper u hubu ověřoval jen HTTP `/api/session` zevnitř jedné sítě; v multi-network/proxy/headless konfiguraci mohl selhat. Rozšíříme kontrolu tak, aby přijala jak HTTP `/api/session`, tak souborové potvrzení `/update-data/self-update-healthy.json` zapsané novým procesem po startu HTTP/socket serveru.
+  - **Spolehlivý auto-reload UI (`Shell.svelte` & `StackDetail.svelte`):** Dnes UI čeká na zachycení výpadku (`sawDown`). Pokud se kontejner restartuje rychleji než za 2s poll interval, `sawDown` se nikdy nezachytí a stránka se neobnoví. Přidáme `bootId` (náhodné UUID/hex generované při startu procesu) do odpovědi `GET /api/session`; jakmile UI uvidí změněné `bootId` při HTTP 200 (nebo po `sawDown`), provede okamžitý reload.
+- **[A] Odebrání výchozího Coolify tokenu (Vlna A):**
+  - Backend v `internal/api/connections.go` už podporuje `clearToken: true` (`clearClientSecret`, `clearGrafanaToken`), ale `ConnectionsView.svelte` ho neposílá. Přidáme tlačítko **Clear token** (pro default Coolify token, per-host Coolify přepisy, OIDC Client Secret i Grafana token), které při uložení pošle příznak smazání.
+- **[A] Globální dekódování Coolify UID → čitelná jména (Vlna A):**
+  - Přidáme jednotný resolver v `coolifyhub.go` (a fallback z labelů `coolify.resourceName`/`coolify.name`), který obohatí `displayName` (a `coolifyProject`/`coolifyUuid`) nejen v seznamu stacků, ale ve všech API DTO a UI pohledech: **Image updates** (`UpdatesView.svelte`), **Dependencies** (uzly grafu, boční panel, selecty při přidávání hrany), **Monitoring** (`CheckForm` výběr stacku, `ChecksView`, `CheckDetail`, alerty), **Logs**, **Audit**, **Maintenance**, **Status pages**, **Scheduler/Webhooks/MCP** v `BuiltinAddonPanel` a globální hledání **`Ctrl+K`** (`CommandPalette.svelte`).
+- **[A] Kontextové průvodce `<SetupHint>` a srozumitelné akční hlášky (Vlna A):**
+  - Jednotná znovupoužitelná komponenta `<SetupHint>` pro stavy, kdy funkce není nakonfigurována (např. chybějící notifikační kanál při zakládání kontroly, chybějící Coolify URL/token, prázdný `MOORAGE_TEMPLATES_DIR`, vypnutý terminál/host-terminal/exec, chybějící veřejná URL nebo agent watchdog adresa). Každá hláška jasně řekne **co chybí**, **kde to nastavit** a nabídne přímý odkaz (`#/settings/...`) nebo zkopírovatelnou `MOORAGE_*` proměnnou u env zámků.
+- **[A] Dokumentace (Vlna A):**
+  - Aktualizace `README.md` (M10–M16A funkce) a vytvoření strukturovaných návodů v `docs/` (Coolify integrace, Connections & OIDC, Backups `.mbk` & S3/WebDAV, Add-ons: Scheduler, Socket Guard, Registry Webhooks, MCP Server, Prometheus/Grafana, Terminal & Host locks).
+  - Doplnění pole `docsUrl` / in-app náhledu dokumentace ke všem vestavěným add-onům v `addons.go` a `AddonsView.svelte` (včetně Coolify integrace), aby žádný add-on nebyl bez dokumentace.
+- **[A] Auto-odsazení neodsazeného Compose při vložení (`composeIndent.ts` + `CodeEditor.svelte`) (Vlna A):**
+  - Při vložení (`paste`) v YAML režimu detektor ověří, zda vložený text není rozbitý / neodsazený (známé top-level a service klíče Compose Spec na sloupci 0 bez odpovídajícího vnoření, případně tabulátory `\t`). Již validně odsazený YAML se nikdy neupravuje.
+  - Neodsazený text se zrekonstruuje podle hierarchie Compose Spec (`services` → `<service>` → `image`, `ports`, `volumes`, `environment`, `healthcheck`, `deploy`… → položky seznamů `- ...` a vnořené mapy) s respektem k odsazení řádku na pozici kurzoru (pro vložení jedné služby).
+  - Změna proběhne jako standardní CodeMirror transakce: **`Ctrl+Z` vrátí původní surově vložený text** a pod editorem se zobrazí diskrétní lišta *„Auto-indented pasted YAML · Undo“*. V hlavičce editoru bude i ruční tlačítko **Fix indent**.
+- **[A] CLI + TUI vrstva (`M16B` – Vlna B):**
+  - **Transport & Auth:** Když běží lokální instance na stejném stroji, hub/all-in-one otevře Unix domain socket `<data>/moorage.sock` (`0600`). Vzdálené volání (`--url https://...`) používá dlouhodobé **API tokeny** uložené v SQLite tabulce `api_tokens` (hashované SHA-256, volitelný scope `read` / `deploy` / `admin`, expirace, správa v `Settings → Account / Connections` i přes `moorage token`).
+  - **CLI příkazy (`github.com/spf13/cobra`, již v `go.mod`):** Plné pokrytí jádra včetně `--host`, `--json`, `--quiet`, `-y`:
+    - `moorage stacks list|status|up|down|restart|stop|pull|update|delete|logs|stats`
+    - `moorage compose get|edit|validate|lint|clean`
+    - `moorage history list|diff|rollback|restore` (vč. obnovy smazaného stacku)
+    - `moorage convert <docker run ...>` (funguje i offline bez běžícího hubu)
+    - `moorage templates list|inspect|deploy`
+    - `moorage checks list|test|pause|resume` & `moorage maintenance list|create|delete`
+    - `moorage hosts list|pair|remove|prune`
+    - `moorage backup export|preview|restore` & `moorage system update|rollback|status`
+  - **Interaktivní TUI (`moorage cli`):** Nad `charmbracelet/bubbletea` + `lipgloss` v barevné paletě Moorage („klidný přístav“). Panely: Hosté/Stacky vlevo (s Coolify skupinami a dekódovanými jmény), vpravo přepínatelné záložky Kontejnery & Stats / Živé logy (regex filtr + follow) / Compose & Env / Historie & Rollback / Kontroly & Alerting; horní lišta s globálním stavem, klávesové zkratky (`?` nápověda, `/` filtr, `u/d/r` akce, `l` logy, `t` exec shell, `Tab` přepínání panelů, `q` konec).
+  - **Pravidlo udržitelnosti:** Nové funkce v jádru Moorage se od M16B navrhují jako API-first endpointy sdílené mezi Web UI, CLI a TUI (žádná duplicitní byznys logika v CLI).
+
+---
+
+### Okrajové stavy
+- **Clean mode prázdné řádky:** `mergeClean` rozlišuje původní skryté prázdné řádky (které se při úpravě z Clean modu nevrací zpět) od nových prázdných řádků zadaných uživatelem v editoru (ty se zapíší). Blokové skaláry (`|`/`>`) se nesmí ořezávat, aby se nezměnil obsah konfiguračního souboru nebo certifikátu.
+- **Formulář Compose & neznámá pole:** Pokud `compose.yaml` obsahuje YAML kotvy (`&`/`*`), nevalidní syntaxi nebo pokročilé sekce mimo formulář, záložka **Form** zachová nedotčenou strukturu při úpravě podporovaných polí, a při nevalidním YAML zobrazí banner s přepnutím do YAML záložky.
+- **Auto-odsazení při paste:** Pokud uživatel vloží platný už odsazený YAML nebo víceřádkový blokový skalár, auto-indenter nezasahuje; při nechtěné úpravě funguje okamžitý `Ctrl+Z` / tlačítko *Undo*.
+- **1-klik `latest-tag` bez přístupu k registru:** Pokud registr neodpovídá nebo vyžaduje přihlášení, dotaz vrátí srozumitelnou hlášku bez blokování editoru a linteru.
+- **Onboarding u stávajících uživatelů po upgradu:** Stávající uživatelé s prázdným `preferences_json` po upgradu mohou dostat jednorázový výběr režimu (nebo plynule pokračovat výchozím nastavením a změnit si ho v `Account → Preferences`).
+- **Rychlý restart (< 2 s) při self-updatu:** Pokud nový kontejner naběhne mezi dvěma HTTP polly, UI díky změně `bootId` pozná nový proces i bez zachycení výpadku sítě a provede reload.
+- **Headless mód (`MOORAGE_WEB_UI=false`):** Self-update helper nemůže volat HTTP `/api/session`; potvrzuje zdraví přes `<data>/self-update-healthy.json` a `moorage.sock`. V tomto režimu jsou `MOORAGE_OIDC_*` a status page port neaktivní (pokud není výslovně nastaven `MOORAGE_STATUS_LISTEN`).
+- **Offline CLI příkazy:** `moorage convert`, `moorage compose validate --local` a `moorage version` fungují i bez běžícího hubu/socketu.
+- **Read-only host & host locks:** Všechny CLI/TUI akce i Coolify akce respektují `readOnly` a `selfStack` na straně serveru i agenta (CLI vypíše srozumitelnou chybu a nenulový exit code).
+- **Coolify API nedostupné:** Pokud je Coolify API offline nebo bez tokenu, resolver plynule spadne na labely kontejnerů (`coolify.resourceName` / `coolify.name`), takže se neztratí jména běžících stacků.
+- **TUI terminál & rozměry:** Při malém okně terminálu TUI přepne na kompaktní rozložení jednoho aktivního panelu; při odpojení socketu zobrazí stavový banner a automaticky se znovu připojí.
+- **RAM limit (< 100 MB PSS):** Přidání `bubbletea`/`lipgloss` do binárky nesmí zvýšit klidovou RAM serveru (TUI se inicializuje výhradně při spuštění příkazu `moorage cli`).
+
+---
+
+### Databázové migrace, API a pořadí vydání
+
+1. **Vlna A (DB migrace `preferences_json` + UI/API opravy):**
+   - DB migrace (aditivní): sloupec `preferences_json TEXT NOT NULL DEFAULT ''` v tabulce `users` (případné prázdné `''` znamená nevybraný onboarding profil).
+   - API: `PUT /api/account/preferences` + rozšíření `/api/session` a `/api/account` o `preferences` a `bootId`; non-nil `diagnostics` & `hostLocks` v `/api/settings/config`, globální `displayName` / `coolifyProject` / `coolifyUuid` v DTO endpointů (updates, deps, monitoring, logs, audit, maintenance, status-pages, addons, search), `docsUrl` v `/api/addons`, rozšíření `internal/lint/fix.go` (`add-mem-limit`, `add-healthcheck`, `pin-tag`, `add-env-var`) a lookup stabilního tagu z registru.
+   - Self-update: oprava `stackapply.go` a `container_helper.go`.
+   - Frontend: onboarding výběr **Začátečník / Pokročilý** + **Account → Preferences** (režim `Vlastní`), bezztrátový **Form** tab v `ComposeEditor.svelte`, `composeIndent.ts` auto-odsazení v `CodeEditor.svelte` (`Ctrl+Z` + Undo bar + **Fix indent**), nový `Select.svelte` a sjednocení všech `<select>`/`<datalist>`/multi-výběrů na `Select`/`MultiSelect`, `<AddonGate>` (1-klik Enable/Install & Manual override), oprava `GeneralSettingsView`, `BackupsView`, `TemplatesView`, `ConnectionsView` (Clear token), `yamlcomments.ts` (Clean mode), `DepsView` (`showStandalone = true`), `Shell.svelte`/`StackDetail.svelte` (`bootId` reload), `<SetupHint>` napříč obrazovkami, `AddonsView` dokumentace.
+   - Docs: aktualizace `README.md` + `docs/*.md`.
+   - **Ověření & vydání A:** `go test ./...`, `svelte-check`, `vite build`, kontrola v prohlížeči (desktop i mobilní šířka) → vydání verze po schválení.
+2. **Vlna B (DB migrace + CLI/TUI):**
+   - DB migrace: nová tabulka `api_tokens (id, name, prefix, token_hash, role, scopes_json, created_by, created_at, expires_at, last_used_at)`.
+   - Backend: Unix socket listener `<data>/moorage.sock` (`0600`), middleware pro `Bearer` API tokeny, `GET/POST/DELETE /api/tokens`, `MOORAGE_WEB_UI` v `config.go`.
+   - CLI/TUI: `internal/cli/client`, `internal/cli/cmd/*`, `internal/cli/tui/*`, zapojení do `cmd/moorage/main.go`.
+   - **Ověření & vydání B:** unit a integrační testy CLI přes Unix socket i token, testy TUI modelu, `go test ./...`, kontrola binární velikosti a klidové RAM (`< 100 MB PSS`).
+
+---
+
+### Mimo rozsah (odloženo do `ROADMAP.md`)
+- Automatické generování shell completions (`bash` / `zsh` / `fish`) a multi-profilový správce připojení (`~/.config/moorage/config.json`) → `ROADMAP.md`.
+- Lokální CLI přes Windows Named Pipe (na Windows zatím přes `--url` + API token) → `ROADMAP.md`.
+- Vlastní uživatelské barevné motivy a remapování kláves v TUI → `ROADMAP.md`.
+
+### Otevřené otázky
+- Žádné blokující otázky pro **Vlnu A**.
+- Pro **Vlnu B** při zahájení případně upřesníme preferované klávesové zkratky v TUI (`lazydocker` styl vs. vim `j/k` navigace – navrhneme obojí současně).

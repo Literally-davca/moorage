@@ -509,4 +509,26 @@ func TestContainerCloneHelperRollbackAndModeDetect(t *testing.T) {
 		t.Fatalf("expected original container ID %s running after manual rollback, got %s running=%v",
 			targetID, afterRb.Container.ID, afterRb.Container.State.Running)
 	}
+
+	// 6. Hub upgrade confirms via healthy mark when HTTP port isn't reachable from helper network.
+	engHub := newFakeContainerEngine()
+	engHub.addContainer(sampleTargetInspect(targetID))
+	hubData := t.TempDir()
+	nowHub := time.Unix(1_800_001_000, 0)
+	_ = writeJSONFile(filepath.Join(hubData, healthyMarkFile), HealthyMark{Version: "0.0.2-test", At: nowHub.Add(time.Second)}, 0o600)
+	if err := RunHelper(context.Background(), engHub, HelperOptions{
+		TargetID:      targetID,
+		NewImage:      fx.imageRepo + "@" + fx.digest,
+		FromVer:       "0.0.1-test",
+		ToVer:         "0.0.2-test",
+		DataDir:       hubData,
+		IsHub:         true,
+		ListenAddr:    ":59999",
+		HealthTimeout: 3 * time.Second,
+		PollInterval:  10 * time.Millisecond,
+		Now:           func() time.Time { return nowHub },
+		Sleep:         func(time.Duration) {},
+	}); err != nil {
+		t.Fatalf("hub helper should confirm via healthy mark fallback: %v", err)
+	}
 }

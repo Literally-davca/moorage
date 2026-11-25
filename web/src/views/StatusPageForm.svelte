@@ -8,7 +8,7 @@
     type StackSummary,
     type StatusPageInput,
   } from '../lib/api';
-  import { isAdmin } from '../lib/state.svelte';
+  import { isAdmin, stackLabel } from '../lib/state.svelte';
   import { kindName } from '../lib/checks';
   import Icon from '../lib/Icon.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
@@ -158,12 +158,15 @@
   const pickedStacks = $derived(form.items.filter((it) => it.stack).map((it) => `${it.hostId}/${it.stack}`));
   const checkItems = $derived(checks.map((c) => ({ value: String(c.id), label: c.name, meta: kindName[c.kind] })));
   const stackItems = $derived(
-    stackChoices.map((sc) => ({
-      value: sc.key,
-      label: sc.stack,
-      meta: `on ${sc.hostName}${sc.checkCount ? ` · ${sc.checkCount} ${sc.checkCount === 1 ? 'check' : 'checks'}` : ''}`,
-      disabled: sc.checkCount === 0 ? 'Add a check to this stack first' : undefined,
-    })),
+    stackChoices.map((sc) => {
+      const disp = stackLabel(sc.hostId, sc.stack);
+      return {
+        value: sc.key,
+        label: disp,
+        meta: `${disp !== sc.stack ? `${sc.stack} · ` : ''}on ${sc.hostName}${sc.checkCount ? ` · ${sc.checkCount} ${sc.checkCount === 1 ? 'check' : 'checks'}` : ''}`,
+        disabled: sc.checkCount === 0 ? 'Add a check to this stack first' : undefined,
+      };
+    }),
   );
   function setChecks(next: string[]) {
     const want = new Set(next.map(Number));

@@ -134,6 +134,7 @@ var auditActions = map[string]string{
 	"POST /api/invite/inspect":          auditSkip, // reads the link, changes nothing
 	"POST /api/invite/start":            auditSkip, // pending only; finish records the change
 	"POST /api/invite/finish":           auditByHandler,
+	"PUT /api/account/preferences":      "account.preferences",
 	"PUT /api/account/password":         "account.password",
 	"POST /api/account/totp/start":      auditSkip, // pending only; PUT /api/account/totp records it
 	"PUT /api/account/totp":             "account.totp",
@@ -146,6 +147,8 @@ var auditActions = map[string]string{
 	"DELETE /api/users/{id}":            "user.delete",
 	"POST /api/users/{id}/reset":        "user.reset",
 	"DELETE /api/users/{id}/sessions":   "user.sessions_revoke",
+	"POST /api/tokens":                  "token.create",
+	"DELETE /api/tokens/{id}":           "token.delete",
 }
 
 // Actions written outside the middleware.
@@ -317,7 +320,8 @@ func (s *Server) audit(ctx context.Context, e store.AuditEntry) {
 
 type auditEntryDTO struct {
 	store.AuditEntry
-	HostName string `json:"hostName,omitempty"`
+	HostName         string `json:"hostName,omitempty"`
+	StackDisplayName string `json:"stackDisplayName,omitempty"`
 }
 
 func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
@@ -364,7 +368,11 @@ func (s *Server) listAudit(w http.ResponseWriter, r *http.Request) {
 	names := s.hostNames(r.Context())
 	out := make([]auditEntryDTO, 0, len(rows))
 	for _, e := range rows {
-		out = append(out, auditEntryDTO{AuditEntry: e, HostName: names[e.HostID]})
+		dto := auditEntryDTO{AuditEntry: e, HostName: names[e.HostID]}
+		if e.Stack != "" {
+			dto.StackDisplayName = s.StackDisplayName(r.Context(), e.HostID, e.Stack)
+		}
+		out = append(out, dto)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"entries": out, "more": more})
 }

@@ -23,13 +23,16 @@ func (s *Server) Deps() *deps.Service { return s.deps }
 // depNode is a stack in the graph with its status for the UI.
 type depNode struct {
 	store.StackRef
-	HostName string `json:"hostName,omitempty"`
-	Status   string `json:"status,omitempty"`   // container status: up | down | degraded | … ("" unknown)
-	Running  int    `json:"running,omitempty"`  // running container count
-	Total    int    `json:"total,omitempty"`    // total container count
-	Checks   string `json:"checks,omitempty"`   // worst check status of the stack, "" without checks
-	InCycle  bool   `json:"inCycle,omitempty"`  // part of a dependency loop (ignored for grouping)
-	External bool   `json:"external,omitempty"` // on another host than the one viewed
+	HostName       string `json:"hostName,omitempty"`
+	DisplayName    string `json:"displayName,omitempty"`
+	CoolifyProject string `json:"coolifyProject,omitempty"`
+	CoolifyUUID    string `json:"coolifyUuid,omitempty"`
+	Status         string `json:"status,omitempty"`   // container status: up | down | degraded | … ("" unknown)
+	Running        int    `json:"running,omitempty"`  // running container count
+	Total          int    `json:"total,omitempty"`    // total container count
+	Checks         string `json:"checks,omitempty"`   // worst check status of the stack, "" without checks
+	InCycle        bool   `json:"inCycle,omitempty"`  // part of a dependency loop (ignored for grouping)
+	External       bool   `json:"external,omitempty"` // on another host than the one viewed
 }
 
 // depHost describes a host/device in the dependency graph.
@@ -178,10 +181,16 @@ func (s *Server) allDeps(w http.ResponseWriter, r *http.Request) {
 			for name := range stacks {
 				ref := store.StackRef{HostID: hid, Stack: name}
 				sm := status[name]
-				out = append(out, depNode{
+				dn := depNode{
 					StackRef: ref, HostName: names[hid], Status: sm.status, Running: sm.running, Total: sm.total,
 					Checks: checks[ref.Key()], InCycle: g.InCycle(ref),
-				})
+				}
+				if cr := s.CoolifyMetaOf(ctx, hid, name); cr != nil {
+					dn.DisplayName = cr.Name
+					dn.CoolifyProject = cr.Project
+					dn.CoolifyUUID = cr.UUID
+				}
+				out = append(out, dn)
 			}
 			mu.Unlock()
 		}(hid, stacks)
@@ -305,10 +314,16 @@ func (s *Server) depNodes(ctx context.Context, hostID string, edges []store.Stac
 		for name := range stacks {
 			ref := store.StackRef{HostID: hid, Stack: name}
 			sm := status[name]
-			out = append(out, depNode{
+			dn := depNode{
 				StackRef: ref, HostName: names[hid], Status: sm.status, Running: sm.running, Total: sm.total,
 				Checks: checks[ref.Key()], InCycle: g.InCycle(ref), External: hid != hostID,
-			})
+			}
+			if cr := s.CoolifyMetaOf(ctx, hid, name); cr != nil {
+				dn.DisplayName = cr.Name
+				dn.CoolifyProject = cr.Project
+				dn.CoolifyUUID = cr.UUID
+			}
+			out = append(out, dn)
 		}
 	}
 	sortNodes(out)

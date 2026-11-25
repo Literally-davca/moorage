@@ -3,6 +3,7 @@
   import { api, type SharedVar } from '../lib/api';
   import { app } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
 
   let vars = $state<SharedVar[] | null>(null);
   let error = $state('');
@@ -107,15 +108,15 @@
         <input class="field mono" type={secret ? 'password' : 'text'} bind:value={value} placeholder={secret ? '********' : 'Europe/Prague'} spellcheck="false" autocomplete="off" />
       </label>
 
-      <label class="field-wrap">
+      <div class="field-wrap">
         <span>Scope</span>
-        <select class="field" bind:value={hostId}>
-          <option value="">Global (all hosts)</option>
-          {#each app.hosts as h (h.id)}
-            <option value={h.id}>{h.name}</option>
-          {/each}
-        </select>
-      </label>
+        <Select
+          label="Shared variable scope"
+          value={hostId}
+          items={[{ value: '', label: 'Global (all hosts)' }, ...app.hosts.map((h) => ({ value: h.id, label: h.name }))]}
+          onchange={(v) => (hostId = v)}
+        />
+      </div>
 
       <label class="check-row" style="align-self:end;height:34px">
         <input type="checkbox" bind:checked={secret} />

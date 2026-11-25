@@ -43,7 +43,10 @@ Vestavěné (`builtin`) funkce a integrace mimo univerzální jádro, zapínatel
 | **Prometheus & Grafana metrics (`prometheus-grafana`)** | Export metrik na `/metrics` a hotový Grafana dashboard. | implementováno | uživatel + agent |
 | **Automatické povyšování tagů verzí** | Volitelné přepsání tagu v `compose.yaml` (patch/minor) v časovém okně s git commitem. | nápad | agent + uživatel |
 | **MCP server pro AI agenty** | Volitelné HTTP/SSE MCP rozhraní nad API tokeny pro vzdálenou správu, vytváření a zastavování stacků agenty (pro lokální agenty stačí CLI/soubory). | nápad | uživatel + agent |
-| **API tokeny a CLI `moorage`** | Automatizace (CI nasadí stack, skript zjistí stav) bez UI; scope tokenů (`read`/`deploy`). | nápad | agent |
+| **API tokeny a CLI `moorage` + TUI `moorage cli`** | Automatizace (CI nasadí stack, skript zjistí stav) přes Unix socket / token a interaktivní TUI layout; headless režim bez web portu. | zařazeno do `M16B` (`PLAN.md`) | uživatel + agent |
+| **Shell completions a multi-profil CLI (`~/.config/moorage/config.json`)** | Automatické doplňování pro bash/zsh/fish a přepínání více vzdálených hubů bez opakování `--url` a `--token`. | nápad (po M16B) | agent |
+| **Windows Named Pipe pro lokální CLI** | Lokální CLI připojení bez TCP portu i na Windows hostech (v M16B lokálně přes Unix socket na Linuxu/macOS, na Windows přes `--url` + token). | nápad (po M16B) | agent |
+| **Vlastní klávesové mapování a motivy pro TUI** | Přizpůsobení zkratek a barevného schématu v `moorage cli` mimo výchozí paletu „klidný přístav“. | nápad (po M16B) | agent |
 | **GitOps sync (pull z Git repozitáře)** | Napojení stacku na GitHub/Gitea/Forgejo větev s automatickým nasazením po commitu nebo webhooku. | nápad | agent |
 | **Privátní registry přihlášení** | Správa přihlašovacích údajů pro soukromé registry (GHCR, Docker Hub, vlastní registry) pro pull i kontrolu aktualizací. | nápad | agent |
 | **Sdílené proměnné mezi stacky** | Centrální proměnné na úrovni hosta/hubu sdílené mezi více stacky (Coolify styl). | nápad | agent |

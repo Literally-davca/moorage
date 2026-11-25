@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type Check } from '../lib/api';
-  import { isAdmin } from '../lib/state.svelte';
+  import { isAdmin, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Strip from '../lib/Strip.svelte';
   import Confirm from '../lib/Confirm.svelte';
@@ -90,10 +90,10 @@
               </a>
             {/if}
             <span class="meta">
-              {kindName[check.kind]} · <span class="mono">{check.kind === 'log' ? check.settings.pattern : check.target}</span>
+              {kindName[check.kind]} · <span class="mono">{check.kind === 'log' ? check.settings.pattern : (check.kind === 'stack' ? (check.targetDisplayName || stackLabel(check.hostId, check.target)) : check.target)}</span>
               {#if check.kind === 'log' && check.target}<span>in <span class="mono">{check.target}</span></span>{/if}
             </span>
-            {#if stackHref}<a class="meta" href={stackHref}>Stack {check.stack}{check.hostName ? ` on ${check.hostName}` : ''}</a>{/if}
+            {#if stackHref}<a class="meta" href={stackHref}>Stack {stackLabel(check.hostId, check.stack, check.targetDisplayName)}{check.hostName ? ` on ${check.hostName}` : ''}</a>{/if}
           </div>
         </div>
         {#if isAdmin()}

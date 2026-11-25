@@ -6,6 +6,7 @@
   import Confirm from '../lib/Confirm.svelte';
   import SystemUpdates from '../lib/SystemUpdates.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
+  import Select from '../lib/Select.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
 
   let { onChanged }: { onChanged: () => void } = $props();
@@ -547,15 +548,19 @@ volumes:
 
       <div class="wd-grid">
         <div>
-          <label class="lbl" for="wd-chan">Notification channel</label>
+          <span class="lbl">Notification channel</span>
           {#if channels.length === 0}
             <p class="meta">No enabled notification channels yet. <a href="#/notifications">Add one</a> first.</p>
           {:else}
-            <select id="wd-chan" class="field" bind:value={wdChannelId} onchange={() => (wdDirty = true)}>
-              {#each channels as ch (ch.id)}
-                <option value={ch.id}>{ch.name} ({ch.kind})</option>
-              {/each}
-            </select>
+            <Select
+              label="Watchdog notification channel"
+              value={String(wdChannelId)}
+              items={channels.map((ch) => ({ value: String(ch.id), label: `${ch.name} (${ch.kind})` }))}
+              onchange={(v) => {
+                wdChannelId = Number(v);
+                wdDirty = true;
+              }}
+            />
           {/if}
           <p class="meta">
             This channel's credentials are copied to the watching agents so they can send when the hub is down. Other channels stay on the hub.

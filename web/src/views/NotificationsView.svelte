@@ -3,6 +3,7 @@
   import { api, type Channel, type ChannelConfig, type ChannelKind } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
+  import Select from '../lib/Select.svelte';
 
   type Draft = { id?: number; name: string; kind: ChannelKind; config: ChannelConfig; enabled: boolean };
 
@@ -304,11 +305,18 @@
               <input id="port" class="field mono" type="number" min="1" max="65535" bind:value={draft.config.port} required />
             </div>
             <div>
-              <label class="label" for="sec">Encryption</label>
-              <select id="sec" class="field" bind:value={draft.config.security}>
-                <option value="starttls">STARTTLS (587)</option>
-                <option value="tls">TLS (465)</option>
-              </select>
+              <span class="label">Encryption</span>
+              <Select
+                label="SMTP encryption"
+                value={draft.config.security ?? 'starttls'}
+                items={[
+                  { value: 'starttls', label: 'STARTTLS (587)' },
+                  { value: 'tls', label: 'TLS (465)' },
+                ]}
+                onchange={(v) => {
+                  if (draft) draft.config.security = v;
+                }}
+              />
             </div>
           </div>
           <div class="two">

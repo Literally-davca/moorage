@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, type Check, type SisterLinks, type StackSummary } from './api';
-  import { app, isAdmin, link, setHost } from './state.svelte';
+  import { app, isAdmin, link, setHost, stackLabel } from './state.svelte';
   import Icon, { type IconName } from './Icon.svelte';
 
   let { open = $bindable(false) }: { open: boolean } = $props();
@@ -94,11 +94,12 @@
   const allItems = $derived.by<PaletteItem[]>(() => {
     const items: PaletteItem[] = [];
     for (const { hostId, hostName, stack } of allStacks) {
+      const disp = stackLabel(hostId, stack.name, stack.displayName);
       items.push({
         id: `st:${hostId}/${stack.name}`,
         group: 'Stack',
-        title: stack.displayName || stack.name,
-        sub: [hostName, stack.coolifyProject, `${stack.running}/${stack.total} running`, stack.displayName ? stack.name : ''].filter(Boolean).join(' · '),
+        title: disp,
+        sub: [hostName, stack.coolifyProject, `${stack.running}/${stack.total} running`, disp !== stack.name ? stack.name : ''].filter(Boolean).join(' · '),
         icon: 'server',
         dot: stack.status,
         run: () => {
@@ -110,7 +111,7 @@
           id: `url:${hostId}/${stack.name}:${u}`,
           group: 'Service',
           title: u.replace(/^https?:\/\//, '').replace(/\/+$/, ''),
-          sub: `${stack.name} (${hostName})`,
+          sub: `${disp} (${hostName})`,
           icon: 'external',
           dot: stack.status,
           run: () => {

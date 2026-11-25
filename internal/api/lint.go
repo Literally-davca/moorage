@@ -112,6 +112,30 @@ func (s *Server) lintFix(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
+	if req.Fix.Kind == "pin-tag" && strings.TrimSpace(req.Fix.TargetTag) == "" {
+		img := lint.ServiceImage(req.Compose, req.Fix.Service)
+		if img == "" {
+			writeErr(w, http.StatusUnprocessableEntity, "Could not read service image from compose.yaml.")
+			return
+		}
+		regHost, _, _ := engine.ParseImageRef(img)
+		var creds engine.RegistryCreds
+		regs, _ := s.effectiveRegistries(r.Context())
+		for _, rg := range regs {
+			if strings.EqualFold(rg.Server, regHost) || (regHost == "registry-1.docker.io" && rg.Server == "docker.io") {
+				creds = engine.RegistryCreds{Username: rg.Username, Password: rg.Password, ServerAddress: rg.Server}
+				break
+			}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		tag, err := engine.LatestStableTagFromRegistry(ctx, img, creds, nil)
+		if err != nil {
+			writeErr(w, http.StatusUnprocessableEntity, fmt.Sprintf("Could not find a stable version tag for %s (%v); edit the image: line manually.", img, err))
+			return
+		}
+		req.Fix.TargetTag = tag
+	}
 	res, err := lint.Apply(req.Compose, req.Env, req.Fix)
 	if err != nil {
 		writeErr(w, http.StatusUnprocessableEntity, err.Error())

@@ -3,6 +3,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -61,6 +63,7 @@ type Server struct {
 	proxy      *sso.Proxy
 	log        *slog.Logger
 	version    string
+	bootID     string
 
 	termSem chan struct{}
 	termCfg TerminalLimits
@@ -101,6 +104,7 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 		proxy:   sso.NewProxy(cfg.Proxy),
 		log:     log,
 		version: version,
+		bootID:  newBootID(),
 		termSem: make(chan struct{}, 4),
 		termCfg: TerminalLimits{
 			MaxConcurrent:  4,
@@ -222,6 +226,19 @@ func (s *Server) StatusService() *status.Service {
 }
 
 type ctxKey struct{}
+type localCLIKey struct{}
+
+// SocketHandler returns an HTTP handler for the local Unix domain socket (0600).
+// Every request arriving on the local socket is authenticated as admin "cli:local".
+func (s *Server) SocketHandler() http.Handler {
+	h := s.Handler()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(csrfHeader) == "" {
+			r.Header.Set(csrfHeader, "1")
+		}
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), localCLIKey{}, true)))
+	})
+}
 
 // Handler returns the root handler.
 func (s *Server) Handler() http.Handler {
@@ -276,8 +293,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/templates", s.user(s.listTemplates))
 	mux.Handle("GET /api/templates/{source}/{id}", s.user(s.getTemplate))
 	mux.Handle("GET /api/sister-links", s.user(s.sisterLinks))
+	mux.Handle("GET /api/coolify/names", s.user(s.coolifyNames))
 	mux.Handle("GET /api/settings/shared-vars", s.user(s.listSharedVars))
 	mux.Handle("GET /api/account", s.user(s.getAccount))
+	mux.Handle("PUT /api/account/preferences", s.user(s.setAccountPreferences))
 	mux.Handle("PUT /api/account/password", s.user(s.changePassword))
 	mux.Handle("POST /api/account/totp/start", s.user(s.totpStart))
 	mux.Handle("PUT /api/account/totp", s.user(s.totpFinish))
@@ -351,6 +370,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/templates/sources/{id}", s.admin(s.deleteTemplateSource))
 	mux.Handle("POST /api/templates/sources/{id}/refresh", s.admin(s.refreshTemplateSource))
 	mux.Handle("GET /api/users", s.admin(s.listUsers))
+	mux.Handle("GET /api/tokens", s.admin(s.listAPITokens))
+	mux.Handle("POST /api/tokens", s.admin(s.createAPIToken))
+	mux.Handle("DELETE /api/tokens/{id}", s.admin(s.deleteAPIToken))
 	mux.Handle("GET /api/addons", s.admin(s.listAddons))
 	mux.Handle("POST /api/addons/install", s.admin(s.installAddon))
 	mux.Handle("POST /api/addons/custom", s.admin(s.createCustomAddon))
@@ -473,7 +495,9 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get(csrfHeader) != "1" {
+		isLocalCLI, _ := r.Context().Value(localCLIKey{}).(bool)
+		hasBearer := strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Authorization"))), "bearer ")
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !isLocalCLI && !hasBearer && r.Header.Get(csrfHeader) != "1" {
 			writeErr(w, http.StatusForbidden, "Missing request header.")
 			return
 		}
@@ -486,6 +510,34 @@ func (s *Server) admin(h http.HandlerFunc) http.Handler { return s.requireRole(h
 
 func (s *Server) requireRole(h http.HandlerFunc, admin bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isLocalCLI, _ := r.Context().Value(localCLIKey{}).(bool); isLocalCLI {
+			u := auth.User{ID: 0, Username: "cli:local", Role: "admin", Source: "local", DisplayName: "Local CLI"}
+			if st := auditStateOf(r); st != nil {
+				st.actor = u.Username
+				st.req = r
+			}
+			ctx := context.WithValue(r.Context(), ctxKey{}, u)
+			h(w, r.WithContext(ctx))
+			return
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Authorization"))), "bearer ") {
+			u, scopes, ok := s.authenticateBearer(r)
+			if !ok {
+				writeErr(w, http.StatusUnauthorized, "Invalid or expired API token.")
+				return
+			}
+			if (admin && u.Role != "admin") || !tokenAllowsRequest(scopes, r, admin) {
+				writeErr(w, http.StatusForbidden, "API token lacks permission for this action.")
+				return
+			}
+			if st := auditStateOf(r); st != nil {
+				st.actor = u.Username
+				st.req = r
+			}
+			ctx := context.WithValue(r.Context(), ctxKey{}, u)
+			h(w, r.WithContext(ctx))
+			return
+		}
 		tok, err := s.sessionToken(w, r)
 		if err != nil {
 			_, msg := externalRefusal(err)
@@ -527,13 +579,20 @@ type sessionResp struct {
 	SetupRequired bool       `json:"setupRequired"`
 	User          *auth.User `json:"user"`
 	Version       string     `json:"version"`
+	BootID        string     `json:"bootId"`
 	Login         loginInfo  `json:"login"`
 	// ProxyError is why a user named by the trusted proxy was refused.
 	ProxyError string `json:"proxyError,omitempty"`
 }
 
+func newBootID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	resp := sessionResp{SetupRequired: s.auth.SetupRequired(), Version: s.version, Login: s.loginInfo()}
+	resp := sessionResp{SetupRequired: s.auth.SetupRequired(), Version: s.version, BootID: s.bootID, Login: s.loginInfo()}
 	tok, err := s.sessionToken(w, r)
 	if err != nil {
 		_, resp.ProxyError = externalRefusal(err)
@@ -920,6 +979,7 @@ func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
 	var helperProjects map[string]bool
 	if coolifyOn {
 		lblMeta, deploying = labelCoolifyMeta(ctrs)
+		s.recordCoolifyLabels(hostID, lblMeta)
 		helperProjects = map[string]bool{}
 		for _, c := range ctrs {
 			if c.Project != "" && isCoolifyHelperContainer(c) {
@@ -1030,6 +1090,7 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		if cm, isCM := h.(host.ContainerManager); isCM {
 			if ctrs, cerr := cm.Containers(ctx); cerr == nil {
 				lblMeta, deploying = labelCoolifyMeta(ctrs)
+				s.recordCoolifyLabels(hostID, lblMeta)
 			}
 		}
 		s.enrichCoolifySummary(ctx, hostID, &st.StackSummary, lblMeta, deploying)

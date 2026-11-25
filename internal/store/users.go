@@ -39,7 +39,7 @@ func (s *Store) UserByID(ctx context.Context, id int64) (User, error) {
 }
 
 const userCols = `SELECT id, username, password_hash, role, totp_secret, totp_last_counter, active,
-	auth_source, disabled, created_by, last_login_at, display_name, email, created_at FROM users`
+	auth_source, disabled, created_by, last_login_at, display_name, email, preferences_json, created_at FROM users`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -48,7 +48,7 @@ func scanUser(row rowScanner) (User, error) {
 	var active, disabled int
 	var lastLogin, created int64
 	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TOTPSecret, &u.TOTPLastCounter, &active,
-		&u.AuthSource, &disabled, &u.CreatedBy, &lastLogin, &u.DisplayName, &u.Email, &created)
+		&u.AuthSource, &disabled, &u.CreatedBy, &lastLogin, &u.DisplayName, &u.Email, &u.PreferencesJSON, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return u, ErrNotFound
 	}
@@ -70,7 +70,7 @@ func unixOrZero(v int64) time.Time {
 // reset link (zero when there is none).
 func (s *Store) ListUsers(ctx context.Context) ([]UserListEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT u.id, u.username, u.password_hash, u.role, u.totp_secret, u.totp_last_counter,
-		u.active, u.auth_source, u.disabled, u.created_by, u.last_login_at, u.display_name, u.email, u.created_at,
+		u.active, u.auth_source, u.disabled, u.created_by, u.last_login_at, u.display_name, u.email, u.preferences_json, u.created_at,
 		COALESCE((SELECT MAX(t.expires_at) FROM user_tokens t WHERE t.user_id = u.id AND t.expires_at > ?), 0),
 		COALESCE((SELECT t.kind FROM user_tokens t WHERE t.user_id = u.id AND t.expires_at > ? ORDER BY t.expires_at DESC LIMIT 1), '')
 		FROM users u ORDER BY u.id`, time.Now().Unix(), time.Now().Unix())
@@ -84,7 +84,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]UserListEntry, error) {
 		var active, disabled int
 		var lastLogin, created, linkExp int64
 		if err := rows.Scan(&e.ID, &e.Username, &e.PasswordHash, &e.Role, &e.TOTPSecret, &e.TOTPLastCounter, &active,
-			&e.AuthSource, &disabled, &e.CreatedBy, &lastLogin, &e.DisplayName, &e.Email, &created, &linkExp, &e.LinkKind); err != nil {
+			&e.AuthSource, &disabled, &e.CreatedBy, &lastLogin, &e.DisplayName, &e.Email, &e.PreferencesJSON, &created, &linkExp, &e.LinkKind); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		e.Active, e.Disabled = active == 1, disabled == 1
@@ -138,6 +138,12 @@ func (s *Store) UseTOTPCounter(ctx context.Context, id, counter int64) (bool, er
 // SetLastLogin records a successful sign-in.
 func (s *Store) SetLastLogin(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET last_login_at = ? WHERE id = ?`, time.Now().Unix(), id)
+	return err
+}
+
+// SetUserPreferences stores the serialized per-user UX preferences JSON.
+func (s *Store) SetUserPreferences(ctx context.Context, id int64, prefsJSON string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET preferences_json = ? WHERE id = ?`, prefsJSON, id)
 	return err
 }
 
