@@ -36,7 +36,9 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) <= 1 {
-		runServer("all-in-one")
+		if err := runServer("all-in-one"); err != nil {
+			os.Exit(1)
+		}
 		return
 	}
 	switch os.Args[1] {
@@ -72,20 +74,21 @@ func main() {
 	}
 }
 
-func runServer(mode string) {
+func runServer(mode string) error {
 	setMemoryLimit()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})).With("mode", mode)
 	reexec, err := run(mode, log)
 	if err != nil {
 		log.Error("moorage stopped", "err", err)
-		os.Exit(1)
+		return err
 	}
 	if reexec != nil {
 		if err := reexec(); err != nil {
 			log.Error("moorage re-exec failed", "err", err)
-			os.Exit(1)
+			return err
 		}
 	}
+	return nil
 }
 
 func runSelfUpdateHelper(args []string) error {

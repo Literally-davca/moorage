@@ -508,7 +508,15 @@ func Apply(compose, env string, f Fix) (Result, error) {
 			return res, ErrNoFix
 		}
 		pinned := replaceImageTag(img.val.Value, strings.TrimSpace(f.TargetTag))
-		t.replace(ln, st, end, quoteYAML(pinned))
+		repl := pinned
+		if img.val.Style == yaml.DoubleQuotedStyle {
+			repl = `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(pinned) + `"`
+		} else if img.val.Style == yaml.SingleQuotedStyle {
+			repl = "'" + strings.ReplaceAll(pinned, "'", "''") + "'"
+		} else if strings.ContainsAny(pinned, " \t#{}[],&*!|>'\"%@`\\") {
+			repl = quoteYAML(pinned)
+		}
+		t.replace(ln, st, end, repl)
 	default:
 		return res, ErrNoFix
 	}
