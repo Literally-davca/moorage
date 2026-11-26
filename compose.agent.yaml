@@ -1,0 +1,72 @@
+# Example deployment of a Moorage agent on another Docker host. The hub runs compose.yaml.
+# On the hub, Hosts → Add a host generates this file with the hub address and a join token.
+#
+# Variables that have a default are set to it here; the rest are commented out.
+services:
+  moorage-agent:
+    image: ghcr.io/literally-davca/moorage:latest # use the same version as the hub
+    command: agent
+    restart: unless-stopped
+    # Hub watchdog peer port: publish only when 2 or more agents watch the hub.
+    # ports:
+    #   - "5082:5082"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - moorage-agent:/data
+      # The stacks folder must have the SAME path inside and outside the container,
+      # because compose resolves relative paths (./data, env_file) on the host.
+      - /opt/stacks:/opt/stacks
+    environment:
+      # ---- Pairing -----------------------------------------------------------------------
+      # host:port of the hub's agent port (MOORAGE_AGENT_LISTEN on the hub), reached directly, not through an HTTPS proxy.
+      MOORAGE_HUB: hub.example.com:5081
+      # One-time token from the hub (valid 24 h), needed for the first start only.
+      MOORAGE_JOIN_TOKEN: paste-the-token-from-the-hub
+
+      # ---- Basics -------------------------------------------------------------------------
+      # The agent's key and certificate, history of stack versions and snapshots.
+      MOORAGE_DATA_DIR: /data
+      # One folder per stack with compose.yaml (same path inside and outside the container).
+      MOORAGE_STACKS_DIR: /opt/stacks
+      # More folders with fully managed stacks, separated by ":" (each mounted at the same path).
+      # MOORAGE_EXTRA_STACKS_DIRS: /srv/stacks:/home/me/stacks
+      # Owner (user and group ID) of files Moorage writes in the stacks folder. Set both or neither.
+      # MOORAGE_PUID: "1000"
+      # MOORAGE_PGID: "1000"
+      # Primary IP address or host name of this host, used for links to services.
+      # MOORAGE_HOST_IP: 192.168.1.11
+      # Domain prefilled in templates on this host.
+      # MOORAGE_BASE_DOMAIN: example.com
+
+      # ---- Host security locks (only here, never from the web) ---------------------------
+      # true | false. Refuse every change on this host (the agent enforces it). Wins over every lock below.
+      MOORAGE_READ_ONLY: "false"
+      # true | false. Admins can open a shell in containers of managed stacks.
+      MOORAGE_TERMINAL: "false"
+      # true | false. Admins can open a shell on the host itself (in a short-lived helper container).
+      MOORAGE_HOST_TERMINAL: "false"
+      # true | false. Scheduled tasks can run commands in containers (MOORAGE_TERMINAL allows it too).
+      MOORAGE_EXEC: "false"
+      # true | false. Control compose projects and containers outside the stacks folders.
+      MOORAGE_MANAGE_EXTERNAL: "false"
+
+      # ---- Checks and hub watchdog -------------------------------------------------------
+      # true | false. Run HTTP/TCP/ping/DNS checks for the hub from this host's network.
+      MOORAGE_PROBES: "true"
+      # Address of the watchdog peer listener (mutual TLS), or "off".
+      MOORAGE_WATCHDOG_LISTEN: ":5082"
+      # host:port other watching agents dial to reach this agent. Needed when 2 or more agents watch the hub.
+      # MOORAGE_WATCHDOG_ADDR: 192.168.1.11:5082
+
+      # ---- Moorage updates ---------------------------------------------------------------
+      # true | false. Allow updating this agent from the hub's UI.
+      MOORAGE_SELF_UPDATE: "true"
+
+      # ---- Logging -----------------------------------------------------------------------
+      # debug | info | warn | error
+      MOORAGE_LOG_LEVEL: info
+      # text | json (json for Loki/Promtail, Vector…)
+      MOORAGE_LOG_FORMAT: text
+
+volumes:
+  moorage-agent:

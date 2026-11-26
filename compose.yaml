@@ -1,11 +1,19 @@
-# Example deployment of Moorage on one host (all-in-one mode).
+# Example deployment of Moorage on one host (all-in-one mode: hub + this host's Docker + web UI).
+# For every other Docker host use compose.agent.yaml (Hosts → Add a host generates it with a token).
+#
+# Variables that have a default are set to it here; the rest are commented out.
+# Commented-out variables marked "set in the UI" have a default too, but setting them here
+# locks the field in Settings (Moorage then always uses the value from this file).
 services:
   moorage:
     image: ghcr.io/literally-davca/moorage:latest # or build locally: docker build -t moorage:dev .
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5080:5080" # put a reverse proxy with HTTPS in front, then set MOORAGE_SECURE_COOKIES=true
-      # - "5081:5081"         # agent port: publish only if other hosts run `moorage agent` (direct TLS, no proxy)
+      - "127.0.0.1:5080:5080" # put a reverse proxy with HTTPS in front of it
+      # Agent port: publish only if other hosts run `moorage agent` (direct TLS, no HTTPS proxy).
+      # - "5081:5081"
+      # Public status pages on their own port (MOORAGE_STATUS_LISTEN).
+      # - "5085:5085"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - moorage-data:/data
@@ -13,10 +21,160 @@ services:
       # because compose resolves relative paths (./data, env_file) on the host.
       - /opt/stacks:/opt/stacks
     environment:
+      # ---- Basics -------------------------------------------------------------------------
+      # HTTP address of the web UI and API. "off" runs without a web UI (CLI over MOORAGE_SOCKET only).
+      MOORAGE_LISTEN: ":5080"
+      # true | false. false turns the web UI off even when MOORAGE_LISTEN is set.
+      MOORAGE_WEB_UI: "true"
+      # Database, history of stack versions, keys, backups and templates.
+      MOORAGE_DATA_DIR: /data
+      # One folder per stack with compose.yaml (same path inside and outside the container).
       MOORAGE_STACKS_DIR: /opt/stacks
-      # MOORAGE_SECURE_COOKIES: "true"
-      # MOORAGE_PUID: "1000"   # owner of files Moorage writes in the stacks folder
+      # More folders with fully managed stacks, separated by ":" (each mounted at the same path).
+      # MOORAGE_EXTRA_STACKS_DIRS: /srv/stacks:/home/me/stacks
+      # Local stack templates, one subfolder each.
+      MOORAGE_TEMPLATES_DIR: /data/templates
+      # Unix socket for the local CLI and TUI (file path, or "off").
+      MOORAGE_SOCKET: /data/moorage.sock
+      # Owner (user and group ID) of files Moorage writes in the stacks folder. Set both or neither.
+      # MOORAGE_PUID: "1000"
       # MOORAGE_PGID: "1000"
+
+      # ---- Address and cookies -----------------------------------------------------------
+      # The address people open Moorage at. Used for links in alerts, passkeys, SSO and terminal checks.
+      # Set in the UI (Settings → General) when not set here.
+      # MOORAGE_PUBLIC_URL: https://moorage.example.com
+      # true | false. Default: on automatically when the public URL uses https. Set in the UI.
+      # MOORAGE_SECURE_COOKIES: "true"
+      # Primary IP address or host name of this host, used for links to services.
+      # MOORAGE_HOST_IP: 192.168.1.10
+      # Domain prefilled in templates on this host.
+      # MOORAGE_BASE_DOMAIN: example.com
+
+      # ---- Hub and agents ----------------------------------------------------------------
+      # TLS port agents connect to (address, or "off" to refuse pairing).
+      MOORAGE_AGENT_LISTEN: ":5081"
+      # host:port agents dial to reach the hub (prefills MOORAGE_HUB in the generated agent compose).
+      # Set in the UI when not set here.
+      # MOORAGE_AGENT_PUBLIC_ADDR: hub.example.com:5081
+
+      # ---- Status pages ------------------------------------------------------------------
+      # Separate address that serves only the public status pages, never the admin UI.
+      # MOORAGE_STATUS_LISTEN: ":5085"
+      # Public address of that listener, used in links to status pages. Set in the UI when not set here.
+      # MOORAGE_STATUS_PUBLIC_URL: https://status.example.com
+
+      # ---- Host security locks (only here, never from the web) ---------------------------
+      # true | false. Refuse every change on this host. Wins over every lock below.
+      MOORAGE_READ_ONLY: "false"
+      # true | false. Admins can open a shell in containers of managed stacks.
+      MOORAGE_TERMINAL: "false"
+      # true | false. Admins can open a shell on the host itself (in a short-lived helper container).
+      MOORAGE_HOST_TERMINAL: "false"
+      # true | false. Scheduled tasks can run commands in containers (MOORAGE_TERMINAL allows it too).
+      MOORAGE_EXEC: "false"
+      # true | false. Control compose projects and containers outside the stacks folders.
+      MOORAGE_MANAGE_EXTERNAL: "false"
+      # true | false. Read-only public demo with sample data: no Docker, every change refused.
+      MOORAGE_DEMO: "false"
+
+      # ---- Sign-in with SSO (OIDC) -------------------------------------------------------
+      # Issuer URL of the identity provider (https; http only for localhost).
+      # MOORAGE_OIDC_ISSUER: https://auth.example.com/application/o/moorage/
+      # MOORAGE_OIDC_CLIENT_ID: moorage
+      # Client secret, or a file holding it (not both). Empty = public client with PKCE.
+      # MOORAGE_OIDC_CLIENT_SECRET: change-me
+      # MOORAGE_OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_secret
+      # Space-separated scopes ("openid" is always added).
+      MOORAGE_OIDC_SCOPES: "openid profile email groups"
+      # Claim with the user's groups, or a dotted path for nested claims (realm_access.roles).
+      MOORAGE_OIDC_GROUPS_CLAIM: groups
+      # Comma-separated groups that get the admin or the viewer role.
+      # MOORAGE_OIDC_ADMIN_GROUPS: moorage-admins
+      # MOORAGE_OIDC_VIEWER_GROUPS: moorage-viewers
+      # none | viewer. Role for users in no listed group (none refuses the sign-in).
+      MOORAGE_OIDC_DEFAULT_ROLE: none
+      # Text of the sign-in button.
+      MOORAGE_OIDC_LABEL: "Sign in with SSO"
+      # true | false. false hides the password form (still at /#/login?local=1).
+      MOORAGE_OIDC_LOCAL_LOGIN: "true"
+
+      # ---- Sign-in from a reverse proxy (forward-auth) -----------------------------------
+      # IP addresses or CIDR ranges of the proxy, separated by commas. Empty = off.
+      # MOORAGE_TRUSTED_PROXIES: 172.18.0.0/16
+      # Header with the user name (required with MOORAGE_TRUSTED_PROXIES) and the optional groups header.
+      # MOORAGE_PROXY_USER_HEADER: Remote-User
+      # MOORAGE_PROXY_GROUPS_HEADER: Remote-Groups
+      # Comma-separated groups that get the admin or the viewer role.
+      # MOORAGE_PROXY_ADMIN_GROUPS: moorage-admins
+      # MOORAGE_PROXY_VIEWER_GROUPS: moorage-viewers
+      # none | viewer. Role for users in no listed group (none refuses the sign-in).
+      MOORAGE_PROXY_DEFAULT_ROLE: none
+
+      # ---- Moorage updates ---------------------------------------------------------------
+      # true | false. Allow updating Moorage itself from the UI on this host.
+      MOORAGE_SELF_UPDATE: "true"
+      # Where to look for releases (forks, mirrors).
+      MOORAGE_UPDATE_URL: https://api.github.com/repos/Literally-davca/moorage/releases
+      # stable | pre (pre also offers pre-releases). Default: stable. Set in the UI.
+      # MOORAGE_UPDATE_CHANNEL: stable
+
+      # ---- Logging -----------------------------------------------------------------------
+      # debug | info | warn | error
+      MOORAGE_LOG_LEVEL: info
+      # text | json (json for Loki/Promtail, Vector…)
+      MOORAGE_LOG_FORMAT: text
+
+      # ---- Prometheus metrics ------------------------------------------------------------
+      # Bearer token that turns on GET /metrics, at least 16 characters, no spaces.
+      # MOORAGE_METRICS_TOKEN: a-long-random-token
+
+      # ---- Shared variables for new stacks -----------------------------------------------
+      # Prefilled TZ and ACME_EMAIL in the .env of new stacks.
+      # MOORAGE_DEFAULT_TZ: Europe/Prague
+      # MOORAGE_ACME_EMAIL: admin@example.com
+
+      # ---- Remote backup of Moorage (otherwise set in the UI) ----------------------------
+      # Password that encrypts the backup.
+      # MOORAGE_BACKUP_PASSWORD: change-me
+      # Daily time HH:MM. Default: 04:00. Set in the UI.
+      # MOORAGE_BACKUP_SCHEDULE: "04:00"
+      # How many backups to keep. Default: 7. Set in the UI.
+      # MOORAGE_BACKUP_RETENTION: "7"
+      # S3 target: setting the endpoint and the bucket turns the S3 backup on.
+      # MOORAGE_BACKUP_S3_ENDPOINT: https://s3.example.com
+      # MOORAGE_BACKUP_S3_BUCKET: backups
+      # Default: auto. Set in the UI.
+      # MOORAGE_BACKUP_S3_REGION: auto
+      # MOORAGE_BACKUP_S3_ACCESS_KEY: access-key
+      # MOORAGE_BACKUP_S3_SECRET_KEY: secret-key
+      # Folder in the bucket. Default: moorage/. Set in the UI.
+      # MOORAGE_BACKUP_S3_PREFIX: moorage/
+      # true | false. Allow an endpoint on a private network address.
+      # MOORAGE_BACKUP_S3_ALLOW_PRIVATE: "true"
+      # WebDAV target: setting the URL turns the WebDAV backup on.
+      # MOORAGE_BACKUP_WEBDAV_URL: https://dav.example.com/backups
+      # MOORAGE_BACKUP_WEBDAV_USER: moorage
+      # MOORAGE_BACKUP_WEBDAV_PASSWORD: change-me
+      # true | false. Allow a URL on a private network address.
+      # MOORAGE_BACKUP_WEBDAV_ALLOW_PRIVATE: "true"
+
+      # ---- Connections (otherwise set in Settings → Connections) -------------------------
+      # Image registries as JSON: [{"server": "...", "username": "...", "password": "..."}]
+      # MOORAGE_REGISTRIES: '[{"server":"ghcr.io","username":"me","password":"token"}]'
+      # Coolify API: start, stop and redeploy Coolify stacks through Coolify.
+      # MOORAGE_COOLIFY_URL: https://coolify.example.com
+      # MOORAGE_COOLIFY_TOKEN: api-token
+      # true | false. Allow a Coolify URL on a private network address.
+      # MOORAGE_COOLIFY_ALLOW_PRIVATE: "true"
+      # Grafana: link from Moorage and push the Moorage dashboard into this folder.
+      # MOORAGE_GRAFANA_URL: https://grafana.example.com
+      # MOORAGE_GRAFANA_TOKEN: service-account-token
+      # MOORAGE_GRAFANA_FOLDER_UID: moorage
+      # true | false. Allow a Grafana URL on a private network address.
+      # MOORAGE_GRAFANA_ALLOW_PRIVATE: "true"
+      # Beszel address, shown as a link to the sister panel.
+      # MOORAGE_BESZEL_URL: https://beszel.example.com
 
 volumes:
   moorage-data:

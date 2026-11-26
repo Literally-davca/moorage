@@ -41,7 +41,7 @@ Plan and decisions: [PLAN.md](PLAN.md) · ideas: [ROADMAP.md](ROADMAP.md) · UI 
 
 ## Run with Docker
 
-Use the example [compose.yaml](compose.yaml) (image `ghcr.io/literally-davca/moorage`, multi-arch: amd64, arm64, arm/v7):
+Use the example [compose.yaml](compose.yaml) (image `ghcr.io/literally-davca/moorage`, multi-arch: amd64, arm64, arm/v7). It lists every variable with its default and possible values; [compose.agent.yaml](compose.agent.yaml) does the same for an agent on another host:
 
 ```sh
 docker compose up -d
@@ -70,7 +70,7 @@ Open http://localhost:5080, enter the setup token, create the admin and scan the
 ### Add a host
 
 1. On the hub, open **Hosts → Add a host**, give it a name and create a join token.
-2. Copy the generated `compose.yaml` to the new host and start it. The agent pairs once (token is single-use, valid 24 h) and keeps its own key in its data volume.
+2. Copy the generated `compose.yaml` to the new host and start it (all agent variables are in [compose.agent.yaml](compose.agent.yaml)). The agent pairs once (token is single-use, valid 24 h) and keeps its own key in its data volume.
 3. The hub's agent port (`5081`) must be reachable from the host directly, not through an HTTPS proxy.
 
 ### Hub watchdog
@@ -252,6 +252,8 @@ Detailed guides for built-in integrations and features live in `docs/`:
 
 ## Configuration
 
+Every variable with its default and possible values is also in [compose.yaml](compose.yaml) (hub / all-in-one) and [compose.agent.yaml](compose.agent.yaml) (agent). Variables marked *UI* can also be set in Settings; setting them in the environment locks the field there. Host security locks can only be set in the environment.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `MOORAGE_LISTEN` | `:5080` in Docker; unset on bare binary | HTTP listen address (`off` / unset without `MOORAGE_WEB_UI=true` runs headless CLI-only mode) |
@@ -260,20 +262,29 @@ Detailed guides for built-in integrations and features live in `docs/`:
 | `MOORAGE_URL` / `MOORAGE_TOKEN` | – | CLI defaults for remote hub HTTP(S) URL and Bearer API token (`mrg_...`) |
 | `MOORAGE_DATA_DIR` | `/data` | SQLite database (accounts, sessions) and `history.git` (stack versions) |
 | `MOORAGE_STACKS_DIR` | `/opt/stacks` | one folder per stack with `compose.yaml` |
-| `MOORAGE_SECURE_COOKIES` | `false` | set `true` behind HTTPS |
+| `MOORAGE_EXTRA_STACKS_DIRS` | – | more folders with fully managed stacks, separated by `:` (mounted at the same path) |
+| `MOORAGE_SECURE_COOKIES` | on when the public URL uses `https` | `true` / `false`; *UI* |
 | `MOORAGE_PUID` / `MOORAGE_PGID` | unset | owner of files written to the stacks folder |
 | `DOCKER_HOST` | local socket | Docker daemon to manage |
-| `MOORAGE_PUBLIC_URL` | – | e.g. `https://moorage.example.com`, used for links in alerts and status page feeds |
+| `MOORAGE_PUBLIC_URL` | – | e.g. `https://moorage.example.com`, used for links in alerts and status page feeds, passkeys, SSO and terminal checks; *UI* |
+| `MOORAGE_HOST_IP` | – | primary IP or host name of this host, used for links to services; *UI* |
+| `MOORAGE_BASE_DOMAIN` | – | domain prefilled in templates on this host; *UI* |
 | `MOORAGE_STATUS_LISTEN` | – | hub: optional separate HTTP listen address serving only public status pages (e.g. `:5085`) |
+| `MOORAGE_STATUS_PUBLIC_URL` | – | hub: public address of that listener, used in links to status pages; *UI* |
 | `MOORAGE_AGENT_LISTEN` | `:5081` | hub: TLS port agents connect to; `off` disables pairing |
+| `MOORAGE_AGENT_PUBLIC_ADDR` | – | hub: `host:port` agents dial, prefills `MOORAGE_HUB` in the generated agent compose; *UI* |
 | `MOORAGE_HUB` | – | agent: `host:port` of the hub's agent port |
 | `MOORAGE_JOIN_TOKEN` | – | agent: one-time token from the hub, first start only |
-| `MOORAGE_READ_ONLY` | `false` | refuse every change on this host (enforced by the agent itself) |
+| `MOORAGE_READ_ONLY` | `false` | host lock: refuse every change on this host (enforced by the agent itself); wins over the other locks |
+| `MOORAGE_HOST_TERMINAL` | `false` | host lock: admins can open a shell on the host itself (in a short-lived helper container) |
+| `MOORAGE_EXEC` | `false` | host lock: scheduled tasks can run commands in containers (`MOORAGE_TERMINAL=true` allows it too) |
+| `MOORAGE_MANAGE_EXTERNAL` | `false` | host lock: control compose projects and containers outside the stacks folders |
+| `MOORAGE_DEMO` | `false` | hub / all-in-one: read-only public demo with sample data, no Docker, every change refused |
 | `MOORAGE_METRICS_TOKEN` | unset | hub / all-in-one: bearer token that enables `GET /metrics` (Prometheus format); at least 16 characters |
 | `MOORAGE_PROBES` | `true` | agent: run HTTP/TCP/ping/DNS checks for the hub from this agent's network (checks from multiple locations); also on read-only agents |
-| `MOORAGE_TEMPLATES_DIR` | `<data dir>/templates` | hub / all-in-one: local folder with stack templates (one subfolder each); not created by Moorage |
-| `MOORAGE_TERMINAL` | `false` | agent / all-in-one: allow admins to open an interactive container shell (`sh`, `bash`, `ash`) on this host; ignored when `MOORAGE_READ_ONLY=true` |
-| `MOORAGE_WATCHDOG_LISTEN` | – | agent: peer mTLS listen address for the hub watchdog (e.g. `:5082`), needed when 2+ agents watch the hub |
+| `MOORAGE_TEMPLATES_DIR` | `<data dir>/templates` | hub / all-in-one: local folder with stack templates (one subfolder each); created at start |
+| `MOORAGE_TERMINAL` | `false` | host lock, agent / all-in-one: allow admins to open an interactive container shell (`sh`, `bash`, `ash`) on this host; ignored when `MOORAGE_READ_ONLY=true` |
+| `MOORAGE_WATCHDOG_LISTEN` | `:5082` | agent: peer mTLS listen address for the hub watchdog (`off` disables), used when 2+ agents watch the hub |
 | `MOORAGE_OIDC_ISSUER` | – | OIDC issuer URL (https; http only for localhost) |
 | `MOORAGE_OIDC_CLIENT_ID` | – | OIDC client id |
 | `MOORAGE_OIDC_CLIENT_SECRET` / `_FILE` | – | client secret, or a file holding it; empty = public client with PKCE |
@@ -288,8 +299,19 @@ Detailed guides for built-in integrations and features live in `docs/`:
 | `MOORAGE_PROXY_ADMIN_GROUPS` / `_VIEWER_GROUPS` / `_DEFAULT_ROLE` | – / – / `none` | forward-auth role mapping |
 | `MOORAGE_SELF_UPDATE` | `true` | every node: allow updates of Moorage itself from the UI |
 | `MOORAGE_UPDATE_URL` | GitHub releases API of this repo | hub: where to look for releases (forks, mirrors) |
-| `MOORAGE_UPDATE_CHANNEL` | `stable` | hub: `stable` or `pre` (include pre-releases) |
+| `MOORAGE_UPDATE_CHANNEL` | `stable` | hub: `stable` or `pre` (include pre-releases); *UI* |
 | `MOORAGE_WATCHDOG_ADDR` | – | agent: `host:port` other watching agents dial to reach this agent's watchdog listener |
+| `MOORAGE_LOG_LEVEL` / `MOORAGE_LOG_FORMAT` | `info` / `text` | `debug`, `info`, `warn`, `error` / `text`, `json`, see [docs/logging.md](docs/logging.md) |
+| `MOORAGE_DEFAULT_TZ` / `MOORAGE_ACME_EMAIL` | – | hub: shared `TZ` and `ACME_EMAIL` prefilled in the `.env` of new stacks |
+| `MOORAGE_BACKUP_PASSWORD` | – | hub: password that encrypts the remote backup of Moorage; *UI* |
+| `MOORAGE_BACKUP_SCHEDULE` / `_RETENTION` | `04:00` / `7` | daily time `HH:MM` / number of backups kept; *UI* |
+| `MOORAGE_BACKUP_S3_ENDPOINT` / `_BUCKET` / `_REGION` / `_ACCESS_KEY` / `_SECRET_KEY` / `_PREFIX` | – / – / `auto` / – / – / `moorage/` | S3 target, endpoint + bucket turn it on; *UI* |
+| `MOORAGE_BACKUP_WEBDAV_URL` / `_USER` / `_PASSWORD` | – | WebDAV target, the URL turns it on; *UI* |
+| `MOORAGE_BACKUP_S3_ALLOW_PRIVATE` / `MOORAGE_BACKUP_WEBDAV_ALLOW_PRIVATE` | `false` | allow a target on a private network address |
+| `MOORAGE_REGISTRIES` | – | image registries as JSON: `[{"server":"ghcr.io","username":"me","password":"token"}]`; *UI* |
+| `MOORAGE_COOLIFY_URL` / `_TOKEN` / `_ALLOW_PRIVATE` | – / – / `false` | Coolify API, see [docs/coolify.md](docs/coolify.md); *UI* |
+| `MOORAGE_GRAFANA_URL` / `_TOKEN` / `_FOLDER_UID` / `_ALLOW_PRIVATE` | – / – / – / `false` | Grafana link and dashboard push; *UI* |
+| `MOORAGE_BESZEL_URL` | – | link to Beszel; *UI* |
 | `GOMEMLIMIT` | `48MiB` | soft memory limit of the Go runtime; the default keeps the garbage from start-up from piling up (more only means more frequent collections) |
 
 ## Security notes
