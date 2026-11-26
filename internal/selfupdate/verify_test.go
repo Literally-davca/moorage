@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"testing"
 
 	"moorage/internal/host"
@@ -174,7 +175,7 @@ func TestVerifySignaturesAndChecksums(t *testing.T) {
 	if err != nil {
 		t.Fatalf("good stream failed: %v", err)
 	}
-	if st, serr := os.Stat(tmpGood); serr != nil || st.Mode().Perm() != 0o755 {
+	if st, serr := os.Stat(tmpGood); serr != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o755) {
 		t.Fatalf("expected 0755 staged file, got stat=%v mode=%v", serr, st.Mode().Perm())
 	}
 

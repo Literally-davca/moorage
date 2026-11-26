@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,7 +67,7 @@ func TestBootCheckRollsBackCrashLoopingBinary(t *testing.T) {
 	if b := mustRead(t, exe); string(b) != "old-0.0.1" {
 		t.Fatalf("exe not restored: %q", b)
 	}
-	if fi, _ := os.Stat(exe); fi.Mode().Perm() != 0o750 {
+	if fi, _ := os.Stat(exe); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o750 {
 		t.Fatalf("restored exe mode = %v, want 0750", fi.Mode().Perm())
 	}
 	if _, err := os.Stat(prev); !errors.Is(err, os.ErrNotExist) {
@@ -79,7 +80,7 @@ func TestBootCheckRollsBackCrashLoopingBinary(t *testing.T) {
 	if !ok || !strings.Contains(note.Reason, "failed to start 3 times") || note.ToVersion != "0.0.2-test" {
 		t.Fatalf("unexpected rollback note %+v", note)
 	}
-	if fi, _ := os.Stat(filepath.Join(data, rollbackNoteFile)); fi.Mode().Perm() != 0o644 {
+	if fi, _ := os.Stat(filepath.Join(data, rollbackNoteFile)); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 		t.Fatalf("rollback note mode = %v, want 0644", fi.Mode().Perm())
 	}
 	// The process stopped by the rollback recognises it and exits non-zero.
@@ -165,7 +166,7 @@ func TestStageAndSwapKeepsFileMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if fi.Mode().Perm() != 0o750 {
+		if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o750 {
 			t.Fatalf("%s mode = %v, want 0750", p, fi.Mode().Perm())
 		}
 	}
@@ -219,7 +220,7 @@ func TestContainerPrevRestartPolicyDisabledAndRestored(t *testing.T) {
 	if !ok || rec.PrevRestartPolicy == nil || rec.PrevRestartPolicy.Name != container.RestartPolicyUnlessStopped {
 		t.Fatalf("prev record lacks original policy: %+v", rec)
 	}
-	if fi, _ := os.Stat(filepath.Join(dataDir, prevMetaFile)); fi.Mode().Perm() != 0o644 {
+	if fi, _ := os.Stat(filepath.Join(dataDir, prevMetaFile)); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 		t.Fatalf("prev record mode = %v, want 0644", fi.Mode().Perm())
 	}
 

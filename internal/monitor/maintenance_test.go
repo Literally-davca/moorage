@@ -339,7 +339,8 @@ func TestMaintenanceSurvivesRestart(t *testing.T) {
 
 	// restart: a new monitor on the same database
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Close the database before TempDir cleanup: Windows can't delete an open file.
+	t.Cleanup(func() { cancel(); _ = st.Close() })
 	m2 := New(st, nil, log, "")
 	if err := m2.Start(runCtx); err != nil {
 		t.Fatal(err)

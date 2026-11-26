@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -21,7 +22,11 @@ import (
 // the version history are used), so the create path is the production one.
 func newTemplateEnv(t *testing.T) *auditEnv {
 	t.Helper()
-	t.Setenv("DOCKER_HOST", "unix://"+filepath.Join(t.TempDir(), "no-docker.sock"))
+	dockerHost := "unix://" + filepath.Join(t.TempDir(), "no-docker.sock")
+	if runtime.GOOS == "windows" { // a unix:// URL can't hold a C:\ path
+		dockerHost = "npipe:////./pipe/moorage-test-no-docker"
+	}
+	t.Setenv("DOCKER_HOST", dockerHost)
 	db, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

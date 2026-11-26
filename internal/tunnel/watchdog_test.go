@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -281,7 +282,7 @@ func TestWatchdogConfigFilePermissionsAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("watchdog.json not created: %v", err)
 	}
-	if perm := st.Mode().Perm(); perm != 0o600 {
+	if perm := st.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Fatalf("watchdog.json mode = %04o, want 0600", perm)
 	}
 	// Turning participation off must delete the file (and its copied channel secret).

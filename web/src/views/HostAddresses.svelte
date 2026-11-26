@@ -4,6 +4,7 @@
   // to it. Auto-detected interfaces (native / host-network mode) can be picked as default.
   import { untrack } from 'svelte';
   import Icon from '../lib/Icon.svelte';
+  import Select from '../lib/Select.svelte';
   import { addressKinds, hostnet, kindLabel, netModeNote, type AddressKind, type HostAddress, type NetMode } from '../lib/hostnet';
 
   let { hostId, hostName, onClose, onSaved }: { hostId: string; hostName: string; onClose: () => void; onSaved?: () => void } = $props();
@@ -125,11 +126,15 @@
             onchange={() => setDefault(a)}
           />
           <input class="field lbl-in" placeholder="Name (e.g. LAN)" maxlength="40" aria-label="Address name" bind:value={a.label} oninput={touch} />
-          <select class="field kind" aria-label="Address type" bind:value={a.kind} onchange={touch}>
-            {#each addressKinds as k (k.k)}
-              <option value={k.k}>{k.label}</option>
-            {/each}
-          </select>
+          <div class="kind">
+            <Select
+              label="Address type"
+              compact
+              bind:value={a.kind}
+              items={addressKinds.map((k) => ({ value: k.k, label: k.label }))}
+              onchange={touch}
+            />
+          </div>
           <input class="field mono addr" placeholder="192.168.1.10 or nas.lan" aria-label="IP address or host name" bind:value={a.address} oninput={touch} />
           <button type="button" class="btn btn-ghost btn-icon" title="Remove address" aria-label="Remove address" onclick={() => removeRow(a)}>
             <Icon name="trash" />

@@ -207,7 +207,8 @@ func (e *Engine) ValidateCompose(ctx context.Context, name, compose, env string)
 }
 
 var (
-	validatingPrefix = regexp.MustCompile(`^validating [^:]+: `)
+	// An optional drive letter keeps Windows paths (C:\...) from ending the match early.
+	validatingPrefix = regexp.MustCompile(`^validating (?:[A-Za-z]:)?[^:]+: `)
 	falseSchema      = regexp.MustCompile(`^(\S+) false schema$`)
 	additionalProp   = regexp.MustCompile(`^(\S+) additional properties? '([^']+)' not allowed$`)
 )

@@ -222,7 +222,7 @@ func (f *Fetcher) get(ctx context.Context, c *http.Client, u *url.URL, budget *i
 		return nil, errors.New("file is larger than 1 MiB")
 	}
 	*budget -= int64(len(b))
-	return b, nil
+	return bytes.ReplaceAll(b, []byte{'\r', '\n'}, []byte{'\n'}), nil // CRLF from Windows-made repos
 }
 
 func friendlyFetchError(err error) error {

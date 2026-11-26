@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -145,7 +146,8 @@ func readFile(fsys fs.FS, name string) ([]byte, bool, error) {
 	if len(b) > MaxFileBytes {
 		return nil, false, fmt.Errorf("%s is larger than 1 MiB", baseName(name))
 	}
-	return b, true, nil
+	// Folders edited or checked out on Windows have CRLF endings; templates render with LF.
+	return bytes.ReplaceAll(b, []byte{'\r', '\n'}, []byte{'\n'}), true, nil
 }
 
 func baseName(p string) string {

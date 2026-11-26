@@ -686,7 +686,7 @@ func cleanErr(err error) string {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timed out"
-	case strings.Contains(msg, "connection refused"):
+	case strings.Contains(msg, "connection refused"), strings.Contains(msg, "actively refused"): // Linux / Windows wording
 		return "connection refused"
 	case strings.Contains(msg, "no such host"):
 		return "the name doesn't resolve"
