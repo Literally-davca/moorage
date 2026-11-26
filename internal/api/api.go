@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"moorage/internal/auth"
@@ -24,9 +25,12 @@ import (
 	"moorage/internal/engine"
 	"moorage/internal/host"
 	"moorage/internal/imagefind"
+	"moorage/internal/incident"
+	"moorage/internal/lint"
 	"moorage/internal/metrics"
 	"moorage/internal/monitor"
 	"moorage/internal/selfupdate"
+	"moorage/internal/snapshot"
 	"moorage/internal/sso"
 	"moorage/internal/status"
 	"moorage/internal/store"
@@ -52,6 +56,7 @@ type Server struct {
 	hub        *tunnel.Hub // nil when the agent port is off
 	mon        *monitor.Monitor
 	upd        *updater.Updater
+	rollbackV  *incident.RollbackVerify // M18A: rollback & verify
 	status     *status.Service
 	metrics    *metrics.Collector
 	deps       *deps.Service
@@ -83,6 +88,11 @@ type Server struct {
 	coolify *coolifyHub
 
 	autoRestart *autoRestarter
+
+	// snapshot publishes static status page copies (status-snapshot add-on, M18D);
+	// it runs only after StartStatusSnapshot, never in demo mode.
+	snapshot        *snapshot.Publisher
+	snapshotRunning atomic.Bool
 }
 
 // TerminalLimits allows overriding terminal timeouts and concurrency limits in tests.
@@ -116,8 +126,19 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 			RevokeCheckInt: 30 * time.Second,
 		},
 	}
+	if mon != nil {
+		s.rollbackV = mon.RollbackVerify()
+		mon.LikelyCause = s.likelyCause
+	}
+	s.snapshot = s.newSnapshotPublisher()
 	if mon != nil && s.upd != nil {
 		mon.OnStackDown = s.upd.HandleStackCheckDown
+	}
+	if s.upd != nil {
+		s.upd.BeforeUpdate = func(ctx context.Context, hostID, stack string) error {
+			_, _, err := s.SnapshotBeforeUpdate(ctx, hostID, stack)
+			return err
+		}
 	}
 	if s.upd != nil {
 		s.upd.Strategy = func(ctx context.Context, hostID, stack string) string {
@@ -253,6 +274,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup/start", s.setupStart)
 	mux.HandleFunc("POST /api/setup/finish", s.setupFinish)
 	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/login/passkey/options", s.passkeyLoginOptions)
+	mux.HandleFunc("POST /api/login/passkey", s.passkeyLogin)
 	mux.HandleFunc("POST /api/logout", s.revokes(s.logout))
 	mux.HandleFunc("POST /api/invite/inspect", s.inviteInspect)
 	mux.HandleFunc("POST /api/invite/start", s.inviteStart)
@@ -281,7 +304,22 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/image-lookup", s.admin(s.imageLookup))
 	mux.Handle("GET /api/checks", s.user(s.listChecks))
 	mux.Handle("GET /api/checks/{id}", s.user(s.getCheck))
+	mux.Handle("GET /api/checks/{id}/incidents/{incidentId}/timeline", s.user(s.getIncidentTimeline))
+	mux.Handle("GET /api/checks/{id}/incidents/{incidentId}/rollback-options", s.user(s.getRollbackOptions))
+	mux.Handle("GET /api/checks/{id}/incidents/{incidentId}/rollback-state", s.user(s.getIncidentRollbackState))
+	mux.Handle("POST /api/checks/{id}/incidents/{incidentId}/rollback", s.admin(s.postIncidentRollback))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/health", s.user(s.stackHealth))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/problems", s.user(s.getStackProblems))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/snapshots", s.user(s.listSnapshots))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/snapshots/plan", s.admin(s.snapshotPlan))
+	mux.Handle("POST /api/hosts/{host}/stacks/{name}/snapshots", s.admin(s.createSnapshot))
+	mux.Handle("PUT /api/hosts/{host}/stacks/{name}/snapshots/settings", s.admin(s.putSnapshotSettings))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/snapshots/{id}/preview", s.admin(s.snapshotPreview))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/snapshots/{id}/download", s.admin(s.downloadSnapshot))
+	mux.Handle("POST /api/hosts/{host}/stacks/{name}/snapshots/{id}/restore", s.admin(s.restoreSnapshot))
+	mux.Handle("PUT /api/hosts/{host}/stacks/{name}/snapshots/{id}/pin", s.admin(s.pinSnapshot))
+	mux.Handle("DELETE /api/hosts/{host}/stacks/{name}/snapshots/{id}", s.admin(s.deleteSnapshot))
+	mux.Handle("PUT /api/hosts/{host}/stacks/{name}/problems/ignored", s.admin(s.putProblemIgnored))
 	mux.Handle("GET /api/status-pages", s.user(s.listStatusPages))
 	mux.Handle("GET /api/status-pages/{id}", s.user(s.getStatusPage))
 	mux.Handle("GET /api/status-pages/{id}/preview", s.user(s.previewStatusPage))
@@ -305,6 +343,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/account/password", s.user(s.revokes(s.changePassword)))
 	mux.Handle("POST /api/account/totp/start", s.user(s.totpStart))
 	mux.Handle("PUT /api/account/totp", s.user(s.revokes(s.totpFinish)))
+	mux.Handle("POST /api/account/passkeys/start", s.user(s.passkeyRegisterStart))
+	mux.Handle("POST /api/account/passkeys", s.user(s.passkeyRegisterFinish))
+	mux.Handle("PUT /api/account/passkeys/{id}", s.user(s.passkeyUpdate))
+	mux.Handle("DELETE /api/account/passkeys/{id}", s.user(s.passkeyDelete))
 	mux.Handle("DELETE /api/account/sessions", s.user(s.revokes(s.revokeOtherSessions)))
 	mux.Handle("DELETE /api/account/sessions/{id}", s.user(s.revokes(s.revokeOwnSession)))
 
@@ -410,6 +452,19 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /api/addons/scheduler/tasks/{id}", s.admin(s.deleteSchedulerTask))
 	mux.Handle("POST /api/addons/scheduler/tasks/{id}/run", s.admin(s.runSchedulerTaskNow))
 	mux.Handle("GET /api/addons/socket-proxy/scan", s.admin(s.scanSocketProxy))
+	mux.Handle("GET /api/addons/status-snapshot/config", s.admin(s.getStatusSnapshot))
+	mux.Handle("GET /api/addons/assistant/settings", s.admin(s.getAssistantSettings))
+	mux.Handle("PUT /api/addons/assistant/settings", s.admin(s.putAssistantSettings))
+	mux.Handle("GET /api/assistant/status", s.user(s.assistantStatus))
+	mux.Handle("GET /api/self-apply/notices", s.admin(s.selfApplyNotices))
+	mux.Handle("POST /api/hosts/{host}/self-apply/ack", s.admin(s.ackSelfApply))
+	mux.Handle("GET /api/hosts/{host}/self-apply/log", s.admin(s.selfApplyLog))
+	mux.Handle("POST /api/assistant/chat", s.user(s.assistantChat))
+	mux.Handle("POST /api/assistant/actions/{id}/apply", s.admin(s.assistantApply))
+	mux.Handle("POST /api/assistant/actions/{id}/reject", s.admin(s.assistantReject))
+	mux.Handle("PUT /api/addons/status-snapshot/config", s.admin(s.putStatusSnapshot))
+	mux.Handle("POST /api/addons/status-snapshot/test", s.admin(s.testStatusSnapshot))
+	mux.Handle("POST /api/addons/status-snapshot/publish", s.admin(s.publishStatusSnapshot))
 	mux.Handle("GET /api/addons/webhooks", s.admin(s.listRegistryWebhooks))
 	mux.Handle("POST /api/addons/webhooks", s.admin(s.createRegistryWebhook))
 	mux.Handle("PUT /api/addons/webhooks/{id}", s.admin(s.updateRegistryWebhook))
@@ -437,6 +492,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/settings/backup/export", s.admin(s.exportBackup))
 	mux.Handle("POST /api/settings/backup/import/preview", s.admin(s.importBackupPreview))
 	mux.Handle("POST /api/settings/backup/import/apply", s.admin(s.importBackupApply))
+	mux.Handle("POST /api/import/portainer/preview", s.admin(s.portainerPreview))
+	mux.Handle("POST /api/import/portainer/apply", s.admin(s.portainerApply))
+	mux.Handle("POST /api/import/monitors/preview", s.admin(s.monitorImportPreview))
+	mux.Handle("POST /api/import/monitors/apply", s.admin(s.monitorImportApply))
 	mux.Handle("GET /api/hosts/{host}/deleted-stacks", s.admin(s.listDeletedStacks))
 	mux.Handle("POST /api/hosts/{host}/deleted-stacks/{name}/restore", s.admin(s.restoreDeletedStack))
 	mux.Handle("GET /api/hosts/{host}/prune/preview", s.admin(s.prunePreview))
@@ -461,12 +520,18 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/", spa(web.Dist()))
 
 	s.routes = mux.patterns
-	adminHandler := s.secure(s.withAudit(mux))
+	adminHandler := s.secure(s.withAudit(s.accessLog(mux)))
 	// /metrics sits outside the session and CSRF layers: Prometheus authenticates with
 	// a bearer token. It comes after the custom-domain check, so a status page domain
 	// never serves it (and the status listener has its own handler without it).
 	metricsHandler := s.metrics.HandlerFunc(func() string { return s.effectiveMetricsToken(context.Background()) })
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read-only demo (MOORAGE_DEMO): every change is refused here, before any handler,
+		// for the API, the CLI socket, MCP and webhooks alike.
+		if s.cfg.Demo && isMutating(r.Method) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": demoRefusal, "demo": true})
+			return
+		}
 		if s.status.ServeCustomDomain(w, r) {
 			return
 		}
@@ -525,6 +590,15 @@ func (s *Server) admin(h http.HandlerFunc) http.Handler { return s.requireRole(h
 
 func (s *Server) requireRole(h http.HandlerFunc, admin bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.Demo {
+			// Everyone is the demo visitor: an admin who can look at everything and change
+			// nothing (writes never get this far, see Handler).
+			u := demoUser()
+			ctx := context.WithValue(r.Context(), ctxKey{}, u)
+			ctx = context.WithValue(ctx, authRefKey{}, authRef{kind: "local", username: u.Username})
+			h(w, r.WithContext(ctx))
+			return
+		}
 		if isLocalCLI, _ := r.Context().Value(localCLIKey{}).(bool); isLocalCLI {
 			u := auth.User{ID: 0, Username: "cli:local", Role: "admin", Source: "local", DisplayName: "Local CLI"}
 			if st := auditStateOf(r); st != nil {
@@ -601,6 +675,17 @@ type sessionResp struct {
 	Login         loginInfo  `json:"login"`
 	// ProxyError is why a user named by the trusted proxy was refused.
 	ProxyError string `json:"proxyError,omitempty"`
+	// Demo is set in the read-only demo mode (MOORAGE_DEMO): the UI shows a banner.
+	Demo bool `json:"demo,omitempty"`
+}
+
+// demoRefusal answers every change in the demo mode.
+const demoRefusal = "This is a read-only demo, so changes are turned off. Install Moorage to try it for real."
+
+// demoUser is the visitor of the demo mode.
+func demoUser() auth.User {
+	p := auth.PresetPreferences("advanced")
+	return auth.User{ID: 0, Username: "demo", Role: "admin", Source: "local", DisplayName: "Demo visitor", Preferences: &p}
 }
 
 func newBootID() string {
@@ -610,7 +695,13 @@ func newBootID() string {
 }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
-	resp := sessionResp{SetupRequired: s.auth.SetupRequired(), Version: s.version, BootID: s.bootID, Login: s.loginInfo()}
+	resp := sessionResp{SetupRequired: s.auth.SetupRequired(), Version: s.version, BootID: s.bootID, Login: s.loginInfo(r.Context())}
+	if s.cfg.Demo {
+		u := demoUser()
+		resp.SetupRequired, resp.User, resp.Demo = false, &u, true
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
 	tok, err := s.sessionToken(w, r)
 	if err != nil {
 		_, resp.ProxyError = externalRefusal(err)
@@ -651,22 +742,37 @@ func (s *Server) setupFinish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Username, Password, Code string }
+	var req struct {
+		Username, Password, Code string
+		// Passkey replaces Code: the second factor from POST /api/login/passkey/options.
+		Passkey *auth.PasskeyAssertion
+	}
 	if !readJSON(w, r, &req) {
 		return
 	}
 	name := strings.TrimSpace(req.Username)
-	tok, u, err := s.auth.Login(r.Context(), clientOf(r), name, req.Password, req.Code)
+	var (
+		tok    string
+		u      auth.User
+		err    error
+		method string
+	)
+	if req.Passkey != nil {
+		method = "passkey"
+		tok, u, err = s.auth.LoginWithPasskey(r.Context(), clientOf(r), name, req.Password, *req.Passkey)
+	} else {
+		tok, u, err = s.auth.Login(r.Context(), clientOf(r), name, req.Password, req.Code)
+	}
 	if err != nil {
 		// Only a real wrong-credentials answer is a failed sign-in. Rate-limited and
 		// malformed attempts never reached the check (and the limiter bounds the rows).
 		if errors.Is(err, auth.ErrInvalidCredentials) {
-			s.audit(r.Context(), store.AuditEntry{Actor: triedName(name), IP: clientIP(r), Action: auditLoginFailed, Outcome: store.AuditFailed})
+			s.audit(r.Context(), store.AuditEntry{Actor: triedName(name), IP: clientIP(r), Action: auditLoginFailed, Target: method, Outcome: store.AuditFailed})
 		}
 		s.authErr(w, err)
 		return
 	}
-	s.audit(r.Context(), store.AuditEntry{Actor: u.Username, IP: clientIP(r), Action: auditLogin})
+	s.audit(r.Context(), store.AuditEntry{Actor: u.Username, IP: clientIP(r), Action: auditLogin, Target: method})
 	s.setCookie(w, r, tok)
 	writeJSON(w, http.StatusOK, u)
 }
@@ -731,6 +837,8 @@ func (s *Server) authErr(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusNotFound, "User not found.")
 	case errors.Is(err, auth.ErrSessionNotFound):
 		writeErr(w, http.StatusNotFound, "Session not found.")
+	case errors.Is(err, auth.ErrPasskeyNotFound):
+		writeErr(w, http.StatusNotFound, "Passkey not found.")
 	case errors.Is(err, auth.ErrNoSession):
 		writeErr(w, http.StatusUnauthorized, "Your session expired. Sign in again.")
 	case errors.Is(err, auth.ErrRateLimited):
@@ -740,7 +848,9 @@ func (s *Server) authErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, auth.ErrSetupClosed):
 		writeErr(w, http.StatusConflict, sentence(err))
 	default:
-		s.log.Error("auth", "err", err)
+		if !reportErr(w, err) {
+			s.log.Error("auth", "err", err)
+		}
 		writeErr(w, http.StatusInternalServerError, "Something went wrong. Check the Moorage log.")
 	}
 }
@@ -760,10 +870,15 @@ func (s *Server) hostOf(w http.ResponseWriter, r *http.Request, write bool) (hos
 // resolveHost is hostOf without writing the response, for the terminal WebSocket,
 // which reports refusals as frames after the upgrade.
 func (s *Server) resolveHost(r *http.Request, write bool) (host.Host, int, string) {
+	return s.resolveHostID(r.Context(), r.PathValue("host"), write)
+}
+
+// resolveHostID is resolveHost for a host id that isn't in the path (imports).
+func (s *Server) resolveHostID(ctx context.Context, id string, write bool) (host.Host, int, string) {
 	if s.reg == nil {
 		return nil, http.StatusNotFound, "Host not found."
 	}
-	h, e, err := s.reg.Get(r.Context(), r.PathValue("host"))
+	h, e, err := s.reg.Get(ctx, id)
 	switch {
 	case errors.Is(err, host.ErrUnknownHost):
 		return nil, http.StatusNotFound, "Host not found."
@@ -1251,7 +1366,12 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 	}
 	name, user := strings.TrimSpace(req.Name), currentUser(r).Username
 	req.Env = s.expandSharedSecrets(r.Context(), r.PathValue("host"), req.Env)
-	var err error
+	gres, err := s.materializeStack(r.Context(), r.PathValue("host"), h, name, req.Compose, req.Env)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "Can't generate values: "+err.Error())
+		return
+	}
+	req.Compose, req.Env = gres.Compose, gres.Env
 	if nc, isNoted := h.(host.NotedCreator); isNoted && note != "" {
 		err = nc.CreateNoted(r.Context(), name, req.Compose, req.Env, user, note)
 	} else {
@@ -1268,7 +1388,7 @@ func (s *Server) createStack(w http.ResponseWriter, r *http.Request) {
 	}
 	s.stackEvent(r, name, "create", detail)
 	setAuditStack(r, name)
-	writeJSON(w, http.StatusCreated, map[string]string{"name": name})
+	writeJSON(w, http.StatusCreated, map[string]any{"name": name, "generated": gres.Generated, "generatedNote": generatedSummary(gres.Generated)})
 }
 
 func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
@@ -1282,13 +1402,25 @@ func (s *Server) updateStack(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	req.Env = s.expandSharedSecrets(r.Context(), r.PathValue("host"), req.Env)
-	if err := h.Save(r.Context(), name, req.Compose, req.Env, currentUser(r).Username, false); err != nil {
+	gres := lint.GenResult{Compose: req.Compose, Env: req.Env}
+	if st, err := h.GetStack(r.Context(), name); err != nil || !st.Self {
+		// Moorage's own stack is applied through Apply & restart and never generates.
+		if gres, err = s.materializeStack(r.Context(), r.PathValue("host"), h, name, req.Compose, req.Env); err != nil {
+			writeErr(w, http.StatusBadRequest, "Can't generate values: "+err.Error())
+			return
+		}
+	}
+	if err := h.Save(r.Context(), name, gres.Compose, gres.Env, currentUser(r).Username, false); err != nil {
 		s.engErr(w, err)
 		return
 	}
 	s.log.Info("stack saved", "host", r.PathValue("host"), "stack", name, "user", currentUser(r).Username)
 	s.stackEvent(r, name, "edit", "")
-	w.WriteHeader(http.StatusNoContent)
+	if len(gres.Generated) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"generated": gres.Generated, "generatedNote": generatedSummary(gres.Generated), "compose": gres.Compose, "env": gres.Env})
 }
 
 // selfApply saves the stack Moorage runs from and hands `compose up` to a helper
@@ -1308,6 +1440,10 @@ func (s *Server) selfApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	if why := selfApplyBlocked(r, name, req.Compose, req.Env); why != "" {
+		writeErr(w, http.StatusUnprocessableEntity, why)
+		return
+	}
 	if err := sa.SelfApply(r.Context(), name, req.Compose, req.Env, currentUser(r).Username); err != nil {
 		if host.IsUnsupported(err) {
 			writeErr(w, http.StatusNotImplemented, "Update the agent to apply changes to the stack it runs from.")
@@ -1344,6 +1480,11 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	name, action, user := r.PathValue("name"), r.PathValue("action"), currentUser(r).Username
 	action = s.deployAction(r.Context(), r.PathValue("host"), name, action, r.URL.Query().Get("strategy"))
 	if actionEvent[action] == "deploy" || actionEvent[action] == "update" {
+		// keywords left by an edit outside Moorage are materialized (own version) first
+		if err := s.materializeSaved(r.Context(), r.PathValue("host"), h, name, user); err != nil {
+			writeErr(w, http.StatusUnprocessableEntity, "Can't deploy: "+err.Error())
+			return
+		}
 		if b := s.deployBlocked(r.Context(), r.PathValue("host"), h, name); b != nil {
 			writeErr(w, http.StatusUnprocessableEntity, "Can't deploy: "+b.Message)
 			return
@@ -1450,12 +1591,24 @@ func (s *Server) convert(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) engErr(w http.ResponseWriter, err error) {
-	code, msg := s.errStatus(err)
+	code, msg := s.errStatusQuiet(err)
+	if code >= 500 && !reportErr(w, err) {
+		s.log.Error("engine", "err", err)
+	}
 	writeErr(w, code, msg)
 }
 
 // errStatus maps an engine or host error to an HTTP status and a user-facing message.
 func (s *Server) errStatus(err error) (int, string) {
+	code, msg := s.errStatusQuiet(err)
+	if code >= 500 {
+		s.log.Error("engine", "err", err)
+	}
+	return code, msg
+}
+
+// errStatusQuiet maps an engine error to a status without logging it.
+func (s *Server) errStatusQuiet(err error) (int, string) {
 	var ve engine.ValidationError
 	switch {
 	case errors.As(err, &ve):
@@ -1481,7 +1634,6 @@ func (s *Server) errStatus(err error) (int, string) {
 	case errors.Is(err, engine.ErrManualEdit):
 		return http.StatusUnprocessableEntity, err.Error()
 	default:
-		s.log.Error("engine", "err", err)
 		return http.StatusBadGateway, "Docker returned an error: " + err.Error()
 	}
 }

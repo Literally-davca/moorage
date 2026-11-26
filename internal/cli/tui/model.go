@@ -57,11 +57,11 @@ type ConfirmAction struct {
 
 // ActionCmd tells the event loop what async API work to run after HandleKey.
 type ActionCmd struct {
-	Quit           bool
-	Refresh        bool
-	LoadStack      bool
-	RunOp          *ConfirmAction
-	ToggleCheckID  int64
+	Quit          bool
+	Refresh       bool
+	LoadStack     bool
+	RunOp         *ConfirmAction
+	ToggleCheckID int64
 }
 
 type Model struct {

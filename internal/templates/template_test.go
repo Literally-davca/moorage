@@ -46,7 +46,7 @@ func TestParseMeta(t *testing.T) {
 	}
 	bad := map[string]string{
 		"bad pattern":     strings.Replace(goodMeta, `"[0-9]{1,5}"`, `"[0-9"`, 1),
-		"unknown kind":    strings.Replace(goodMeta, "generate: password", "generate: base64", 1),
+		"unknown kind":    strings.Replace(goodMeta, "generate: password", "generate: bogus", 1),
 		"missing id":      strings.Replace(goodMeta, "id: app\n", "", 1),
 		"bad id":          strings.Replace(goodMeta, "id: app", "id: ../App", 1),
 		"missing name":    strings.Replace(goodMeta, "name: App\n", "", 1),
@@ -63,7 +63,7 @@ func TestParseMeta(t *testing.T) {
 			t.Errorf("%s: accepted", name)
 		}
 	}
-	_, err = ParseMeta([]byte(strings.Replace(goodMeta, "generate: password", "generate: base64", 1)))
+	_, err = ParseMeta([]byte(strings.Replace(goodMeta, "generate: password", "generate: bogus", 1)))
 	if err == nil || !strings.Contains(err.Error(), "base64") || !strings.Contains(err.Error(), "PASS") {
 		t.Errorf("unknown kind message: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestGenerate(t *testing.T) {
 	if !regexp.MustCompile(`[A-Z]`).MatchString(all) || !regexp.MustCompile(`[a-z]`).MatchString(all) || !regexp.MustCompile(`[0-9]`).MatchString(all) {
 		t.Fatal("password alphabet not used")
 	}
-	if _, err := Generate("base64"); err == nil {
+	if _, err := Generate("nope"); err == nil {
 		t.Fatal("unknown kind accepted")
 	}
 }
@@ -351,5 +351,17 @@ func TestNote(t *testing.T) {
 		if got := Note(e); got != want {
 			t.Errorf("got %q want %q", got, want)
 		}
+	}
+}
+
+// M18E: template.yaml generate: accepts the shared generator's kinds with parameters.
+func TestGenerateSharedKinds(t *testing.T) {
+	for _, k := range []string{"base64", "base64key", "password, 48", "hex, 32", "user"} {
+		if v, err := Generate(k); err != nil || v == "" {
+			t.Errorf("%s: %q %v", k, v, err)
+		}
+	}
+	if _, err := Generate("port, 80"); err == nil {
+		t.Error("ports can't be generated in templates")
 	}
 }

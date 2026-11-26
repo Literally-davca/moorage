@@ -8,6 +8,7 @@
     type ComposeViewMode,
     type EnvViewMode,
     type ExperienceMode,
+    type PasskeyInfo,
     type Role,
     type SessionInfo,
     type TOTPEnrolment,
@@ -17,6 +18,8 @@
   import Icon from '../lib/Icon.svelte';
   import PushToggle from '../lib/PushToggle.svelte';
   import Select from '../lib/Select.svelte';
+  import Confirm from '../lib/Confirm.svelte';
+  import { createPasskey, passkeysSupported } from '../lib/webauthn';
 
   let acc = $state<Account | null>(null);
   let error = $state('');
@@ -125,6 +128,19 @@
 
   let sessError = $state('');
 
+  // Passkeys: a second factor next to the authenticator app, optionally passwordless.
+  let pkName = $state('');
+  let pkPassword = $state('');
+  let pkCode = $state('');
+  let pkPasswordless = $state(false);
+  let pkBusy = $state(false);
+  let pkMsg = $state('');
+  let pkError = $state('');
+  let pkRemove = $state<PasskeyInfo | null>(null);
+  let pkConfirm = $state(false);
+  // Passkeys are bound to the public URL; the browser refuses them at any other address.
+  const pkHere = $derived(!!acc?.passkey?.available && window.location.origin === acc?.passkey?.origin && passkeysSupported());
+
   // API tokens (admins)
   let tokens = $state<APIToken[]>([]);
   let tokName = $state('');
@@ -209,6 +225,50 @@
       newCode = '';
     } finally {
       tBusy = false;
+    }
+  }
+
+  async function addPasskey(e: SubmitEvent) {
+    e.preventDefault();
+    pkMsg = pkError = '';
+    pkBusy = true;
+    try {
+      const c = await api.passkeyRegisterStart(pkPassword, pkCode);
+      pkPassword = pkCode = '';
+      const response = await createPasskey(c.options);
+      const p = await api.passkeyRegisterFinish(c.ceremony, pkName.trim(), pkPasswordless, response);
+      pkName = '';
+      pkPasswordless = false;
+      pkMsg = `Passkey “${p.name}” added.`;
+      await load();
+    } catch (err) {
+      pkError = (err as Error).message;
+      pkCode = '';
+    } finally {
+      pkBusy = false;
+    }
+  }
+
+  async function setPasswordless(p: PasskeyInfo, on: boolean) {
+    pkMsg = pkError = '';
+    try {
+      await api.updatePasskey(p.id, p.name, on);
+    } catch (err) {
+      pkError = (err as Error).message;
+    }
+    await load();
+  }
+
+  async function removePasskey() {
+    const p = pkRemove;
+    if (!p) return;
+    pkMsg = pkError = '';
+    try {
+      await api.deletePasskey(p.id);
+      pkMsg = `Passkey “${p.name}” removed.`;
+      await load();
+    } catch (err) {
+      pkError = (err as Error).message;
     }
   }
 
@@ -500,7 +560,92 @@
         </form>
       {/if}
     </section>
+
+    <section class="card card-pad grid1" aria-label="Passkeys">
+      <p class="section-title">Passkeys</p>
+      <p class="meta">
+        Use a passkey (a security key, your phone or a password manager) instead of the code from your authenticator app. Your
+        authenticator app keeps working, so losing a passkey never locks you out.
+      </p>
+      {#if acc.passkeys.length > 0}
+        <ul class="list">
+          {#each acc.passkeys as p (p.id)}
+            {@const elsewhere = !!acc.passkey.rpId && p.rpId !== acc.passkey.rpId}
+            <li class="item">
+              <div class="item-main">
+                <p class="name">
+                  {p.name}
+                  {#if p.synced}<span class="badge pk-badge">Synced</span>{/if}
+                  {#if p.passwordless}<span class="badge up pk-badge">Passwordless</span>{/if}
+                  {#if elsewhere}<span class="badge down pk-badge">For {p.rpId}</span>{/if}
+                </p>
+                <p class="meta">
+                  Added {fmt(p.createdAt)}{#if p.lastUsedAt} · last used {fmt(p.lastUsedAt)}{:else} · never used{/if}
+                </p>
+                {#if elsewhere}
+                  <p class="meta">Registered for {p.rpId}, so it doesn't work at the current public URL. Remove it and add it again.</p>
+                {/if}
+                {#if p.canPasswordless}
+                  <label class="chk-line">
+                    <input type="checkbox" checked={p.passwordless} onchange={(e) => setPasswordless(p, e.currentTarget.checked)} />
+                    <span>Sign in with this passkey alone, without a password</span>
+                  </label>
+                {:else}
+                  <p class="meta">This passkey didn't ask for a PIN or biometrics, so it works only as a second factor.</p>
+                {/if}
+              </div>
+              <div class="item-actions">
+                <button type="button" class="btn btn-ghost" onclick={() => { pkRemove = p; pkConfirm = true; }}>
+                  <Icon name="trash" /> Remove
+                </button>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if !acc.passkey.available}
+        <p class="meta">{acc.passkey.reason}</p>
+      {:else if !passkeysSupported()}
+        <p class="meta">This browser can't use passkeys here. Passkeys need HTTPS and a recent browser.</p>
+      {:else if !pkHere}
+        <p class="meta">Passkeys work only at <a href={acc.passkey.origin}>{acc.passkey.origin}</a>. Open Moorage there to add one.</p>
+      {:else}
+        <form class="form" method="post" onsubmit={addPasskey}>
+          <input type="text" name="username" class="sr-only" autocomplete="username" value={acc.user.username} readonly tabindex="-1" aria-hidden="true" />
+          <div>
+            <label class="label" for="pkn">Name</label>
+            <input id="pkn" class="field" bind:value={pkName} maxlength="64" placeholder="e.g. YubiKey or work laptop" />
+          </div>
+          <div class="two">
+            <div>
+              <label class="label" for="pkp">Password</label>
+              <input id="pkp" name="current-password" class="field" type="password" bind:value={pkPassword} autocomplete="current-password" required />
+            </div>
+            <div>
+              <label class="label" for="pkc">Code from your authenticator app</label>
+              <input id="pkc" name="otp" class="field mono" bind:value={pkCode} inputmode="numeric" autocomplete="one-time-code" maxlength="7" required />
+            </div>
+          </div>
+          <label class="chk-line">
+            <input type="checkbox" bind:checked={pkPasswordless} />
+            <span>Also allow signing in with this passkey alone, without a password (needs a PIN or biometrics)</span>
+          </label>
+          <div class="row"><button class="btn" aria-busy={pkBusy} disabled={pkBusy}><Icon name="key" /> Add a passkey</button></div>
+        </form>
+      {/if}
+      {#if pkError}<p class="error-text" role="alert">{pkError}</p>{/if}
+      {#if pkMsg}<p class="meta" role="status">{pkMsg}</p>{/if}
+    </section>
   {/if}
+
+  <Confirm
+    bind:open={pkConfirm}
+    title="Remove passkey {pkRemove?.name ?? ''}?"
+    body="You can still sign in with your password and the code from your authenticator app."
+    confirmLabel="Remove passkey"
+    danger
+    onConfirm={removePasskey}
+  />
 
   {#if acc}
     <section class="card card-pad grid1" aria-label="Sessions">
@@ -775,6 +920,9 @@
   .chk-wrap {
     display: grid;
     align-content: start;
+  }
+  .pk-badge {
+    margin-left: 6px;
   }
   .chk-line {
     display: flex;

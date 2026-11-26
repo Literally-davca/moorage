@@ -1,5 +1,7 @@
 <script lang="ts">
   import { dismiss } from '../lib/dismiss';
+  import ProblemsCard from './ProblemsCard.svelte';
+  import SnapshotsPanel from './SnapshotsPanel.svelte';
   import {
     api,
     formatBytes,
@@ -61,7 +63,7 @@
   // A link to the timeline (#/h/<host>/stacks/<name>/history?at=…) opens the History tab.
   const routeTab = $derived(app.route.page === 'stack' ? app.route.tab : undefined);
   const routeAt = $derived(app.route.page === 'stack' ? app.route.at : undefined);
-  let tab = $state<'overview' | 'compose' | 'logs' | 'deps' | 'history'>(
+  let tab = $state<'overview' | 'compose' | 'logs' | 'deps' | 'history' | 'snapshots'>(
     app.route.page === 'stack' && app.route.tab === 'history' ? 'history' : 'overview',
   );
   $effect(() => {
@@ -85,6 +87,15 @@
   let saving = $state(false);
   let saveError = $state('');
   let saveOk = $state(false);
+  // Problems card (M18F): problem count per container name for the row badges
+  let problemCounts = $state<Record<string, number>>({});
+  // M18E: what the last save generated into .env (names and kinds, no secrets)
+  let generatedNote = $state(untrackNote());
+  function untrackNote() {
+    const n = app.generatedNote;
+    app.generatedNote = '';
+    return n;
+  }
   let validation = $state('');
   let issues = $state<LintIssue[]>([]);
   // Literal environment values move to .env on save; keys .env has with another value wait
@@ -532,7 +543,12 @@
         draftEnv = moved.env;
       }
       envConflicts = null;
-      await api.save(name, draftCompose, draftEnv);
+      const saved = await api.save(name, draftCompose, draftEnv);
+      generatedNote = saved?.generatedNote ?? '';
+      if (saved?.generatedNote) {
+        draftCompose = saved.compose;
+        draftEnv = saved.env;
+      }
       savedCompose = draftCompose;
       savedEnv = draftEnv;
       saveOk = true;
@@ -826,6 +842,9 @@
         {/if}
         <button class="tab" role="tab" aria-selected={tab === 'logs'} onclick={() => (tab = 'logs')}>Logs</button>
         <button class="tab" role="tab" aria-selected={tab === 'deps'} onclick={() => (tab = 'deps')}>Dependencies</button>
+        {#if stack.managed && !stack.self}
+          <button class="tab" role="tab" aria-selected={tab === 'snapshots'} onclick={() => (tab = 'snapshots')}>Snapshots</button>
+        {/if}
         {#if stack.managed || isCoolify}
           <button class="tab" role="tab" aria-selected={tab === 'history'} onclick={() => (tab = 'history')}>History</button>
         {/if}
@@ -873,6 +892,9 @@
     {/if}
 
     {#if tab === 'overview'}
+      {#if stack.containers.length > 0}
+        <ProblemsCard {name} compose={savedCompose} env={savedEnv} editable={editable && !stack.self} onTab={(t) => (tab = t)} onSaved={() => load()} onCount={(c) => (problemCounts = c)} />
+      {/if}
       <section class="card">
         {#if stack.containers.length === 0}
           <div class="empty">
@@ -897,7 +919,7 @@
                 {@const st = stats[c.id]}
                 <tr>
                   <td>
-                    <div class="cname">{c.service || c.name}</div>
+                    <div class="cname">{c.service || c.name}{#if problemCounts[c.name]}<span class="badge down pbadge">{problemCounts[c.name]} {problemCounts[c.name] === 1 ? 'problem' : 'problems'}</span>{/if}</div>
                     <div class="meta mono img" title={c.image}>{c.image}</div>
                     {#if c.urls?.length}
                       <div class="curls" class:muted={c.state !== 'running'}>
@@ -1134,6 +1156,7 @@
             {#if editable}
               <div class="save">
                 {#if saveOk}<span class="ok"><Icon name="check" /> Saved</span>{/if}
+                {#if generatedNote}<span class="meta gen-note" title="Values are in .env"><Icon name="info" /> {generatedNote}</span>{/if}
                 {#if dirty}<button class="btn btn-ghost" onclick={() => { draftCompose = savedCompose; draftEnv = savedEnv; }}>Discard</button>{/if}
                 <button class="btn {dirty ? 'btn-primary' : ''}" onclick={() => save()} disabled={!dirty || saving || !!validation} aria-busy={saving}>Save</button>
               </div>
@@ -1169,6 +1192,8 @@
         <EnvEditor bind:value={draftEnv} compose={draftCompose} readonly={!editable} />
         {#if dirty}<p class="meta">Save, then Deploy to apply the changes.</p>{/if}
       </section>
+    {:else if tab === 'snapshots'}
+      <SnapshotsPanel {name} {editable} onChanged={() => load()} />
     {:else if tab === 'deps'}
       <StackDeps name={stack.name} />
     {:else if tab === 'history'}
@@ -1707,5 +1732,9 @@
     .img {
       max-width: 140px;
     }
+  }
+  .pbadge {
+    margin-left: 6px;
+    font-size: 11px;
   }
 </style>

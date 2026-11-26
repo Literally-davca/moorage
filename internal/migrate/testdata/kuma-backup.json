@@ -1,0 +1,32 @@
+{
+  "version": "1.23.16",
+  "notificationList": [
+    {"id": 1, "name": "Discord alerts", "active": true, "userId": 1, "isDefault": true,
+     "config": "{\"name\":\"Discord alerts\",\"type\":\"discord\",\"isDefault\":true,\"discordWebhookUrl\":\"https://discord.com/api/webhooks/123/secret-token\"}"},
+    {"id": 2, "name": "Phone", "active": 1, "userId": 1, "isDefault": false,
+     "config": "{\"name\":\"Phone\",\"type\":\"ntfy\",\"ntfyserverurl\":\"https://ntfy.example.com/\",\"ntfytopic\":\"homelab\",\"ntfyaccesstoken\":\"tk_abc\"}"},
+    {"id": 3, "name": "Teams", "active": true, "userId": 1, "isDefault": false,
+     "config": "{\"name\":\"Teams\",\"type\":\"teams\",\"webhookUrl\":\"https://example.webhook.office.com/x\"}"},
+    {"id": 4, "name": "Mail", "active": false, "userId": 1, "isDefault": false,
+     "config": "{\"type\":\"smtp\",\"smtpHost\":\"mail.example.com\",\"smtpPort\":465,\"smtpSecure\":true,\"smtpUsername\":\"kuma\",\"smtpPassword\":\"pw\",\"smtpFrom\":\"kuma@example.com\",\"smtpTo\":\"ops@example.com\",\"smtpCC\":\"boss@example.com\"}"}
+  ],
+  "monitorList": [
+    {"id": 1, "name": "Website", "type": "http", "url": "https://example.com", "method": "GET", "interval": 60, "timeout": 48,
+     "maxretries": 2, "active": true, "accepted_statuscodes": ["200-299", "301"], "ignoreTls": false, "upsideDown": false,
+     "headers": null, "body": null, "basic_auth_user": null, "authMethod": null, "notificationIDList": {"1": true, "2": true, "3": true}},
+    {"id": 2, "name": "API health", "type": "keyword", "url": "https://api.example.com/health", "method": "GET", "interval": 30,
+     "timeout": 24, "maxretries": 0, "active": 1, "keyword": "ok", "invertKeyword": false, "accepted_statuscodes": ["200-299"], "notificationIDList": {}},
+    {"id": 3, "name": "Postgres", "type": "port", "hostname": "db.lan", "port": 5432, "interval": 120, "maxretries": 1, "active": false},
+    {"id": 4, "name": "Router", "type": "ping", "hostname": "192.168.1.1", "interval": 10, "maxretries": 30, "active": true},
+    {"id": 5, "name": "DNS", "type": "dns", "hostname": "example.com", "dns_resolve_type": "AAAA", "dns_resolve_server": "1.1.1.1", "interval": 300, "active": true},
+    {"id": 6, "name": "Containers", "type": "group", "interval": 60, "active": true},
+    {"id": 7, "name": "Nginx container", "type": "docker", "docker_container": "nginx", "interval": 60, "active": true, "parent": 6},
+    {"id": 8, "name": "Backup job", "type": "push", "interval": 3600, "active": true},
+    {"id": 9, "name": "Admin panel", "type": "http", "url": "https://admin.example.com", "method": "GET", "interval": 60,
+     "basic_auth_user": "admin", "active": true},
+    {"id": 10, "name": "Status JSON", "type": "json-query", "url": "https://example.com/status.json", "method": "GET",
+     "jsonPath": "data.status", "expectedValue": "up", "interval": 60, "active": true},
+    {"id": 11, "name": "Website", "type": "http", "url": "https://www.example.com", "method": "HEAD", "interval": 60, "active": true},
+    {"id": 12, "name": "Postgres DB", "type": "postgres", "interval": 60, "active": true}
+  ]
+}

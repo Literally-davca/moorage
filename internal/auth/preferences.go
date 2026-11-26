@@ -7,10 +7,10 @@ import (
 
 // UserPreferences stores per-user UX mode, editor defaults, and manual add-on overrides.
 type UserPreferences struct {
-	Mode            string          `json:"mode,omitempty"`            // "" | "beginner" | "advanced" | "custom"
+	Mode            string          `json:"mode,omitempty"` // "" | "beginner" | "advanced" | "custom"
 	OnboardingDone  bool            `json:"onboardingDone"`
-	ComposeView     string          `json:"composeView,omitempty"`     // "form" | "yaml-comments" | "yaml-clean"
-	EnvView         string          `json:"envView,omitempty"`         // "vars" | "raw"
+	ComposeView     string          `json:"composeView,omitempty"` // "form" | "yaml-comments" | "yaml-clean"
+	EnvView         string          `json:"envView,omitempty"`     // "vars" | "raw"
 	LinterShowTips  bool            `json:"linterShowTips"`
 	NewStackDefault string          `json:"newStackDefault,omitempty"` // "templates" | "blank"
 	GuidesMode      string          `json:"guidesMode,omitempty"`      // "extended" | "compact"

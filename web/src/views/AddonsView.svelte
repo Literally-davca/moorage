@@ -15,6 +15,8 @@
   import EnvEditor from '../lib/EnvEditor.svelte';
   import PromGenPanel from './PromGenPanel.svelte';
   import BuiltinAddonPanel from './BuiltinAddonPanel.svelte';
+  import StatusSnapshotPanel from './StatusSnapshotPanel.svelte';
+  import AssistantSettingsPanel from './AssistantSettingsPanel.svelte';
 
   let addons = $state<AddonInfo[] | null>(null);
   let catalog = $state<AddonCatalogEntry[] | null>(null);
@@ -88,6 +90,22 @@
       steps: [
         'Enable Registry Webhooks and click Configure to generate a webhook receiver URL & HMAC secret.',
         'Add the URL to GHCR, Docker Hub, or Gitea webhooks to check or apply image updates automatically on push.',
+      ],
+    },
+    assistant: {
+      title: 'AI Assistant Guide',
+      steps: [
+        'Enable the add-on, click Configure and choose a provider: an API key for Anthropic, OpenAI or Gemini, or a local Ollama / OpenAI-compatible endpoint.',
+        'Choose per kind of change whether the assistant only advises, proposes a change you apply, or does it on its own.',
+        'Open the panel with Ctrl+J or the wand icon in the top bar. The chat lives only in your browser tab.',
+      ],
+    },
+    'status-snapshot': {
+      title: 'Static Status Page Snapshot Guide',
+      steps: [
+        'Create the bucket, WebDAV folder or GitHub Pages repository yourself – Moorage only writes files into it.',
+        'Enable the add-on, click Configure, fill in the target and use Test write access.',
+        'Point a domain (or the bucket website URL) at the snapshot; it stays online when this server is down and says so when it gets out of date.',
       ],
     },
     'mcp-server': {
@@ -679,7 +697,7 @@
                   <button type="button" class="btn btn-sm" onclick={() => (openPanel = openPanel === a.id ? null : a.id)}>
                     <Icon name="code" /> {openPanel === a.id ? 'Hide generators' : 'Generators'}
                   </button>
-                {:else if (a.id === 'stack-scheduler' || a.id === 'socket-proxy-check' || a.id === 'registry-webhooks' || a.id === 'mcp-server') && a.enabled}
+                {:else if (a.id === 'stack-scheduler' || a.id === 'socket-proxy-check' || a.id === 'registry-webhooks' || a.id === 'mcp-server' || a.id === 'status-snapshot' || a.id === 'assistant') && a.enabled}
                   <button type="button" class="btn btn-sm" onclick={() => (openPanel = openPanel === a.id ? null : a.id)}>
                     <Icon name="settings" /> {openPanel === a.id ? 'Hide' : 'Configure'}
                   </button>
@@ -737,6 +755,10 @@
             {/if}
             {#if openPanel === a.id && a.id === 'prometheus-grafana' && a.enabled}
               <PromGenPanel />
+            {:else if openPanel === a.id && a.id === 'assistant' && a.enabled}
+              <AssistantSettingsPanel />
+            {:else if openPanel === a.id && a.id === 'status-snapshot' && a.enabled}
+              <StatusSnapshotPanel />
             {:else if openPanel === a.id && (a.id === 'stack-scheduler' || a.id === 'socket-proxy-check' || a.id === 'registry-webhooks' || a.id === 'mcp-server') && a.enabled}
               <BuiltinAddonPanel addonId={a.id} />
             {/if}

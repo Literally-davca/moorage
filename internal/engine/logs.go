@@ -225,9 +225,9 @@ func (h logMergeHeap) Less(i, j int) bool {
 	}
 	return logTimeLess(h[i].line.Time, h[j].line.Time)
 }
-func (h logMergeHeap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
-func (h *logMergeHeap) Push(x any)         { *h = append(*h, x.(logHeapItem)) }
-func (h *logMergeHeap) Pop() any           { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
+func (h logMergeHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+func (h *logMergeHeap) Push(x any)   { *h = append(*h, x.(logHeapItem)) }
+func (h *logMergeHeap) Pop() any     { old := *h; n := len(old); x := old[n-1]; *h = old[:n-1]; return x }
 
 // watchPoll is how often WatchLogs looks for new, restarted or exited containers.
 var watchPoll = 5 * time.Second

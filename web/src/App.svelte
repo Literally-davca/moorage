@@ -16,6 +16,7 @@
       const s = await api.session();
       app.version = s.version;
       app.bootId = s.bootId ?? '';
+      app.demo = !!s.demo;
       app.user = s.user;
       if (s.user) void loadCoolifyNames();
       if (s.login) login = s.login;

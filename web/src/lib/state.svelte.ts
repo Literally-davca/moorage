@@ -11,7 +11,8 @@ export type SettingsTab =
   | 'audit'
   | 'users'
   | 'templates'
-  | 'addons';
+  | 'addons'
+  | 'import';
 export type MonitoringTab = 'checks' | 'status-pages' | 'maintenance';
 
 export type Route =
@@ -49,6 +50,7 @@ function parse(hash: string): { route: Route; host?: string } {
   if (path === 'settings/users' || path === 'users') return { route: { page: 'settings', tab: 'users' } };
   if (path === 'settings/templates' || path === 'template-sources') return { route: { page: 'settings', tab: 'templates' } };
   if (path === 'settings/addons') return { route: { page: 'settings', tab: 'addons' } };
+  if (path === 'settings/import' || path === 'import') return { route: { page: 'settings', tab: 'import' } };
   if (path === 'monitoring' || path === 'monitoring/checks' || path === 'checks') return { route: { page: 'monitoring', tab: 'checks' } };
   if (path === 'monitoring/status-pages' || path === 'status-pages') return { route: { page: 'monitoring', tab: 'status-pages' } };
   if (path === 'monitoring/maintenance' || path === 'maintenance') return { route: { page: 'monitoring', tab: 'maintenance' } };
@@ -122,6 +124,10 @@ export const app = $state<{
   nav: NavSummary | null;
   /** Cached Coolify UUID -> displayName metadata keyed by `${hostId}:${uuid}`. */
   coolifyNames: Record<string, CoolifyNameMeta>;
+  /** Read-only demo mode (MOORAGE_DEMO): every change is refused, a banner says so. */
+  demo: boolean;
+  /** "Generated: …" note of the last stack created with @generate keywords (M18E). */
+  generatedNote: string;
 }>({
   user: null,
   route: first.route,
@@ -133,6 +139,8 @@ export const app = $state<{
   restarting: null,
   nav: null,
   coolifyNames: {},
+  demo: false,
+  generatedNote: '',
 });
 
 export const DEFAULT_PREFS: UserPreferences = {

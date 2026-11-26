@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type Op, type RenderedTemplate, type TemplateDetail } from '../lib/api';
-  import { canEdit, currentHost, link } from '../lib/state.svelte';
+  import { app, canEdit, currentHost, link } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import CodeEditor from '../lib/CodeEditor.svelte';
   import OpPanel from './OpPanel.svelte';
@@ -109,7 +109,8 @@
     creating = true;
     createError = '';
     try {
-      await api.create(name, rendered.compose, rendered.env, { source, id });
+      const created = await api.create(name, rendered.compose, rendered.env, { source, id });
+      app.generatedNote = created?.generatedNote ?? '';
     } catch (err) {
       createError = (err as Error).message;
       creating = false;

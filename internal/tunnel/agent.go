@@ -216,7 +216,8 @@ func (a *Agent) session(ctx context.Context, tlsCfg *tls.Config) error {
 		<-sctx.Done()
 		sess.Close()
 	}()
-	err = srv.Serve(sess)
+	// Bounded writes keep a followed log stream from holding up control replies (M18D).
+	err = srv.Serve(boundedListener{sess})
 	if sess.IsClosed() {
 		return errors.New("connection closed")
 	}

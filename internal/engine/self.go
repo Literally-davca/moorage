@@ -253,6 +253,44 @@ type SelfApplyResult struct {
 	OK         bool      `json:"ok"`
 	RolledBack bool      `json:"rolledBack"`
 	Message    string    `json:"message"`
+	// M18H: why it was rolled back, the addresses the helper checked, the log file and
+	// whether an admin dismissed the banner.
+	Reason       string   `json:"reason,omitempty"`
+	Checked      []string `json:"checked,omitempty"`
+	Log          string   `json:"log,omitempty"`
+	Acknowledged bool     `json:"acknowledged,omitempty"`
+}
+
+// SelfApplyLogFile keeps the helper's output of the last Apply & restart.
+const SelfApplyLogFile = "self-stack-apply.log"
+
+// AckSelfResult hides the rollback banner (the note stays on the stack page).
+func (e *Engine) AckSelfResult() error {
+	r := e.SelfResult()
+	if r == nil {
+		return ErrNotFound
+	}
+	r.Acknowledged = true
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(e.selfNotePath(), b, 0o644)
+}
+
+// SelfApplyLog returns the helper's log of the last Apply & restart.
+func (e *Engine) SelfApplyLog() (string, error) {
+	b, err := os.ReadFile(filepath.Join(e.cfg.DataDir, SelfApplyLogFile))
+	if err != nil {
+		return "", ErrNotFound
+	}
+	return string(b), nil
+}
+
+// RecordSelfRollback writes the restored files as a new history version, so the history
+// and the Logbook match what runs after a rollback.
+func (e *Engine) RecordSelfRollback(stack, reason string) {
+	e.record(stack, "moorage", KindRestore, "", func([]string) string { return "Rolled back: " + reason })
 }
 
 // SelfResult reads the helper's note about the last Apply & restart (nil when none).

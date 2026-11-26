@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -24,10 +25,12 @@ import (
 	"moorage/internal/auth"
 	clicmd "moorage/internal/cli/cmd"
 	"moorage/internal/config"
+	"moorage/internal/demo"
 	"moorage/internal/engine"
 	"moorage/internal/host"
 	"moorage/internal/monitor"
 	"moorage/internal/selfupdate"
+	"moorage/internal/stacksnap"
 	"moorage/internal/store"
 	"moorage/internal/tunnel"
 )
@@ -60,6 +63,12 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "snapshot-helper":
+		if err := stacksnap.RunHelper(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "snapshot-helper: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	case "host-shell-helper":
 		if err := runHostShellHelper(os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "host-shell-helper: %v\n", err)
@@ -76,7 +85,11 @@ func main() {
 
 func runServer(mode string) error {
 	setMemoryLimit()
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})).With("mode", mode)
+	base, logWarns := config.NewLogger(os.Stderr)
+	log := base.With("mode", mode)
+	for _, w := range logWarns {
+		log.Warn(w)
+	}
 	reexec, err := run(mode, log)
 	if err != nil {
 		log.Error("moorage stopped", "err", err)
@@ -112,7 +125,8 @@ func runSelfStackHelper(args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	log := slog.New(slog.NewTextHandler(os.Stderr, nil)).With("mode", "self-stack-helper")
+	base, _ := config.NewLogger(os.Stderr)
+	log := base.With("mode", "self-stack-helper")
 	cfg := config.Config{DataDir: opt.DataDir, StacksDir: filepath.Dir(opt.StackDir)}
 	eng, err := engine.New(ctx, cfg, log)
 	if err != nil {
@@ -122,6 +136,7 @@ func runSelfStackHelper(args []string) error {
 	up := func(c context.Context, out io.Writer) error {
 		return eng.ComposeUpDir(c, opt.Project, opt.StackDir, out)
 	}
+	opt.RecordRollback = func(reason string) { eng.RecordSelfRollback(opt.Project, reason) }
 	return selfupdate.RunStackApplyHelper(ctx, selfupdate.MobyEngine{API: eng.RawClient()}, up, opt)
 }
 
@@ -138,10 +153,14 @@ func wireSelfStack(ctx context.Context, eng *engine.Engine, cfg config.Config, i
 		return selfupdate.LaunchStackApplyHelper(c, me, insp, selfupdate.StackApplyLaunch{
 			Self: s, StacksDir: cfg.StacksDir, DataDir: cfg.DataDir, IsHub: isHub,
 			ListenAddr: cfg.Listen, Version: version, DockerHost: os.Getenv("DOCKER_HOST"),
+			HostNetwork: helperHostNetwork(c, eng),
 		})
 	}
 	eng.SetSelf(s)
 	log.Info("Moorage runs from a stack here", "stack", s.Project, "service", s.Service)
+	if r := eng.SelfResult(); r != nil && r.RolledBack && !r.Acknowledged {
+		log.Warn("the last Apply & restart was rolled back", "stack", s.Project, "at", r.At, "reason", r.Reason, "log", r.Log)
+	}
 }
 
 func runSelfUpdateWatch(args []string) error {
@@ -196,6 +215,9 @@ func run(mode string, log *slog.Logger) (func() error, error) {
 	defer stop()
 
 	var reexec func() error
+	if cfg.Demo && mode == "agent" {
+		return nil, errors.New("MOORAGE_DEMO runs as hub or all-in-one only, not as an agent")
+	}
 	if mode == "agent" {
 		reexec, err = runAgent(ctx, cfg, log)
 	} else {
@@ -222,6 +244,7 @@ func runAgent(parentCtx context.Context, cfg config.Config, log *slog.Logger) (f
 	}
 	defer eng.Close()
 	eng.SyncAllHistory()
+	eng.RecoverSnapshots(ctx) // M18F: resume containers a crashed snapshot left paused
 	wireSelfStack(ctx, eng, cfg, false, log)
 	if cfg.ReadOnly && cfg.Terminal {
 		log.Warn("MOORAGE_TERMINAL is ignored because MOORAGE_READ_ONLY is enabled")
@@ -304,7 +327,11 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	var local host.Host
 	var selfEng selfupdate.ContainerEngine
 	localName := ""
-	if mode == "all-in-one" {
+	if cfg.Demo {
+		// Read-only demo (M18C): sample data on a fake host, no Docker socket at all.
+		local, localName = demo.NewHost(), demo.HostName
+		log.Warn("MOORAGE_DEMO is on: read-only demo with sample data, every change is refused")
+	} else if mode == "all-in-one" {
 		if cfg.ReadOnly && cfg.Terminal {
 			log.Warn("MOORAGE_TERMINAL is ignored because MOORAGE_READ_ONLY is enabled")
 		}
@@ -314,6 +341,7 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 		}
 		defer eng.Close()
 		eng.SyncAllHistory()
+		eng.RecoverSnapshots(ctx) // M18F: resume containers a crashed snapshot left paused
 		wireSelfStack(ctx, eng, cfg, true, log)
 		selfEng = selfupdate.MobyEngine{API: eng.RawClient()}
 		local = host.Local{E: eng, ReadOnly: cfg.ReadOnly, AllowTTY: cfg.Terminal && !cfg.ReadOnly}
@@ -329,6 +357,13 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 
 	monitor.UserAgent = "Moorage/" + version + " uptime check"
 	mon := monitor.New(db, reg, log, cfg.PublicURL)
+	if cfg.Demo {
+		if seeded, err := demo.Seed(ctx, db, host.LocalID); err != nil {
+			return nil, fmt.Errorf("demo data: %w", err)
+		} else if seeded {
+			log.Info("demo data created")
+		}
+	}
 
 	nodeUpd := &selfupdate.NodeUpdater{
 		DataDir:        cfg.DataDir,
@@ -358,7 +393,7 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	apiSrv := api.New(cfg, authSvc, db, reg, hub, mon, log, version)
 	sysUpd := selfupdate.NewService(cfg, version, mode == "all-in-one", db, reg, mon, hub, nodeUpd, func(c context.Context, e store.AuditEntry) {
 		if err := db.Audit(c, e); err != nil && log != nil {
-			log.Warn("audit self-update", "err", err)
+			log.Error("audit self-update", "err", err)
 		}
 	}, log)
 	apiSrv.SetSelfUpdate(sysUpd)
@@ -389,6 +424,8 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	depSvc := apiSrv.Deps()
 	mon.SetDeps(depSvc)
 	mon.OnStackEvent(apiSrv.StackEventHook)
+	// Static status page snapshots (M18D) publish soon after a check changes state.
+	mon.OnStatusChange(func(int64) { apiSrv.KickStatusSnapshot() })
 	if err := mon.Start(ctx); err != nil {
 		return nil, fmt.Errorf("checks: %w", err)
 	}
@@ -398,6 +435,9 @@ func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog
 	apiSrv.StartAutoRestart(ctx)
 	apiSrv.StartCoolify(ctx)
 	apiSrv.StartScheduler(ctx)
+	if !cfg.Demo { // the demo never publishes anything anywhere
+		apiSrv.StartStatusSnapshot(ctx)
+	}
 	apiSrv.SetHubContext(ctx)
 	apiSrv.SyncRegistries(ctx)
 	apiSrv.StartCleanupLoop(ctx)
@@ -512,4 +552,23 @@ func optionalHubDockerClient() (*client.Client, bool) {
 		return nil, false
 	}
 	return cli, true
+}
+
+// helperHostNetwork reports whether the Apply & restart helper can run in the host's
+// network and see what users see (M18H): Linux Docker, not Docker Desktop and not
+// rootless engines, where the host doesn't reach container IPs.
+func helperHostNetwork(ctx context.Context, eng *engine.Engine) bool {
+	info, err := eng.RawClient().Info(ctx, client.InfoOptions{})
+	if err != nil {
+		return false
+	}
+	if !strings.EqualFold(info.Info.OSType, "linux") || strings.Contains(info.Info.OperatingSystem, "Docker Desktop") {
+		return false
+	}
+	for _, o := range info.Info.SecurityOptions {
+		if strings.Contains(o, "rootless") {
+			return false
+		}
+	}
+	return true
 }

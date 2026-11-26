@@ -73,6 +73,11 @@ type Config struct {
 	HostIP          string // MOORAGE_HOST_IP, primary IP or host name of this host (service links)
 	BaseDomain      string // MOORAGE_BASE_DOMAIN, prefilled domain for templates on this host
 
+	// Demo is MOORAGE_DEMO: a read-only public demo with sample data (M18C). No Docker
+	// socket is opened, every change through the API is refused, agents can't pair and
+	// the UI shows a banner. Hub / all-in-one only.
+	Demo bool
+
 	// Env reads every MOORAGE_* variable of the process (for "Set via environment" in
 	// Settings). Values of secret variables are never sent to the browser.
 	Env map[string]string
@@ -80,7 +85,7 @@ type Config struct {
 
 // LockedVars are the host security locks that Settings shows but can never change.
 var LockedVars = []string{"MOORAGE_READ_ONLY", "MOORAGE_MANAGE_EXTERNAL", "MOORAGE_EXTRA_STACKS_DIRS", "MOORAGE_TERMINAL",
-	"MOORAGE_HOST_TERMINAL", "MOORAGE_EXEC", "MOORAGE_TRUSTED_PROXIES", "MOORAGE_LISTEN", "MOORAGE_WEB_UI"}
+	"MOORAGE_HOST_TERMINAL", "MOORAGE_EXEC", "MOORAGE_TRUSTED_PROXIES", "MOORAGE_LISTEN", "MOORAGE_WEB_UI", "MOORAGE_DEMO"}
 
 // RoleMapping turns external groups into a Moorage role: admin groups win over viewer
 // groups, then the default role ("none" refuses the sign-in, or "viewer").
@@ -216,6 +221,13 @@ func FromEnv() (Config, error) {
 	}
 	if c.Exec, err = boolEnv("MOORAGE_EXEC"); err != nil {
 		return c, err
+	}
+	if c.Demo, err = boolEnv("MOORAGE_DEMO"); err != nil {
+		return c, err
+	}
+	if c.Demo {
+		// The demo is read-only, pairs no agents and never updates itself.
+		c.ReadOnly, c.Terminal, c.SelfUpdate, c.AgentListen = true, false, false, ""
 	}
 	if c.ReadOnly {
 		// read-only wins over every lock that would allow a change

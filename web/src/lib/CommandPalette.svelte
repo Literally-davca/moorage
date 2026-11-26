@@ -86,6 +86,7 @@
           { id: 'pg:users', group: 'Page' as const, title: 'Settings · Users', sub: 'Accounts and SSO', icon: 'users' as const, run: () => { location.hash = '#/settings/users'; } },
           { id: 'pg:tsrc', group: 'Page' as const, title: 'Settings · Template sources', sub: 'Remote template indexes', icon: 'template' as const, run: () => { location.hash = '#/settings/templates'; } },
           { id: 'pg:addons', group: 'Page' as const, title: 'Settings · Add-ons', sub: 'Optional integrations', icon: 'plug' as const, run: () => { location.hash = '#/settings/addons'; } },
+          { id: 'pg:import', group: 'Page' as const, title: 'Settings · Import', sub: 'Portainer, Dockge, Uptime Kuma, Gatus', icon: 'swap' as const, run: () => { location.hash = '#/settings/import'; } },
         ]
       : []),
     { id: 'pg:acc', group: 'Page', title: 'Account', sub: 'Password, TOTP and sessions', icon: 'userCircle', run: () => { location.hash = '#/account'; } },

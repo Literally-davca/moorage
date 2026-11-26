@@ -55,11 +55,15 @@ type Settings struct {
 	Resolver       string `json:"resolver,omitempty"`      // dns: server IP, empty = system resolver
 	Expect         string `json:"expect,omitempty"`        // dns: an answer must contain this
 	AllowLinkLocal bool   `json:"allowLinkLocal,omitempty"`
-	Pattern        string `json:"pattern,omitempty"`       // log: substring or regex
-	Regex          bool   `json:"regex,omitempty"`         // log: treat Pattern as a regex
-	CaseSensitive  bool   `json:"caseSensitive,omitempty"` // log: match case
-	Threshold      int    `json:"threshold,omitempty"`     // log: matches in Window to alert (default 1)
-	Window         int    `json:"window,omitempty"`        // log: sliding window in seconds (default 300)
+	// MaxLatencyMS turns a slow answer into a failure (http, tcp, ping, dns; 0 = off). With
+	// several locations each location applies it to its own answer, so an agent outside the
+	// home network can report that the service is slow from there.
+	MaxLatencyMS  int    `json:"maxLatencyMs,omitempty"`
+	Pattern       string `json:"pattern,omitempty"`       // log: substring or regex
+	Regex         bool   `json:"regex,omitempty"`         // log: treat Pattern as a regex
+	CaseSensitive bool   `json:"caseSensitive,omitempty"` // log: match case
+	Threshold     int    `json:"threshold,omitempty"`     // log: matches in Window to alert (default 1)
+	Window        int    `json:"window,omitempty"`        // log: sliding window in seconds (default 300)
 	// URLs are the addresses of a multi-URL HTTP check (2+; one URL lives in Target only).
 	URLs []string `json:"urls,omitempty"`
 	// Stacks are the stacks of a multi-stack check (2+; one stack lives in Target only).
@@ -153,7 +157,24 @@ func Probe(ctx context.Context, c store.Check, reg *host.Registry) Outcome {
 	if ctx.Err() != nil && !out.OK && !out.Paused {
 		out.Msg = fmt.Sprintf("no answer within %s", timeout)
 	}
+	if RemoteKinds[c.Kind] {
+		out.OK, out.Msg = LatencyLimit(st.MaxLatencyMS, out.OK, int(out.Latency.Milliseconds()), out.Msg)
+	}
 	return out
+}
+
+// LatencyLimit fails a successful answer that took longer than limitMS (0 = no limit).
+// It is applied where the answer is measured and again on the hub for answers of older
+// agents that don't know the setting; a failed answer stays as it is.
+func LatencyLimit(limitMS int, ok bool, latencyMS int, msg string) (bool, string) {
+	if limitMS <= 0 || !ok || latencyMS <= limitMS {
+		return ok, msg
+	}
+	slow := fmt.Sprintf("slow: answered in %d ms, the limit is %d ms", latencyMS, limitMS)
+	if msg != "" {
+		slow += " (" + msg + ")"
+	}
+	return false, slow
 }
 
 func fail(format string, a ...any) Outcome { return Outcome{Msg: fmt.Sprintf(format, a...)} }

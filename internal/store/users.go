@@ -67,12 +67,13 @@ func unixOrZero(v int64) time.Time {
 }
 
 // ListUsers returns every account, oldest first, with the expiry of a pending invite or
-// reset link (zero when there is none).
+// reset link (zero when there is none) and the number of passkeys.
 func (s *Store) ListUsers(ctx context.Context) ([]UserListEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT u.id, u.username, u.password_hash, u.role, u.totp_secret, u.totp_last_counter,
 		u.active, u.auth_source, u.disabled, u.created_by, u.last_login_at, u.display_name, u.email, u.preferences_json, u.created_at,
 		COALESCE((SELECT MAX(t.expires_at) FROM user_tokens t WHERE t.user_id = u.id AND t.expires_at > ?), 0),
-		COALESCE((SELECT t.kind FROM user_tokens t WHERE t.user_id = u.id AND t.expires_at > ? ORDER BY t.expires_at DESC LIMIT 1), '')
+		COALESCE((SELECT t.kind FROM user_tokens t WHERE t.user_id = u.id AND t.expires_at > ? ORDER BY t.expires_at DESC LIMIT 1), ''),
+		(SELECT COUNT(*) FROM webauthn_credentials w WHERE w.user_id = u.id)
 		FROM users u ORDER BY u.id`, time.Now().Unix(), time.Now().Unix())
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
@@ -84,7 +85,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]UserListEntry, error) {
 		var active, disabled int
 		var lastLogin, created, linkExp int64
 		if err := rows.Scan(&e.ID, &e.Username, &e.PasswordHash, &e.Role, &e.TOTPSecret, &e.TOTPLastCounter, &active,
-			&e.AuthSource, &disabled, &e.CreatedBy, &lastLogin, &e.DisplayName, &e.Email, &e.PreferencesJSON, &created, &linkExp, &e.LinkKind); err != nil {
+			&e.AuthSource, &disabled, &e.CreatedBy, &lastLogin, &e.DisplayName, &e.Email, &e.PreferencesJSON, &created, &linkExp, &e.LinkKind, &e.Passkeys); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		e.Active, e.Disabled = active == 1, disabled == 1
@@ -99,6 +100,7 @@ type UserListEntry struct {
 	User
 	LinkKind    string // "invite", "reset" or ""
 	LinkExpires time.Time
+	Passkeys    int // registered WebAuthn credentials
 }
 
 // CreateInvitedUser adds a local user that can't sign in until the invite is finished.
@@ -315,8 +317,8 @@ func (s *Store) SetTokenPending(ctx context.Context, hash, passwordHash, totpSec
 
 // ConsumeUserToken finishes a link in one transaction: the pending password and TOTP
 // secret replace the old ones, the user becomes active, every link of the user is
-// dropped (one use only) and every session of the user ends (a reset signs out
-// whoever had the old password).
+// dropped (one use only), every session of the user ends (a reset signs out
+// whoever had the old password) and every passkey of the user is removed.
 func (s *Store) ConsumeUserToken(ctx context.Context, hash string, counter int64) (User, error) {
 	var u User
 	err := s.tx(ctx, func(tx *sql.Tx) error {
@@ -338,6 +340,8 @@ func (s *Store) ConsumeUserToken(ctx context.Context, hash string, counter int64
 				[]any{pw, secret, counter, userID}},
 			{`DELETE FROM user_tokens WHERE user_id = ?`, []any{userID}},
 			{`DELETE FROM sessions WHERE user_id = ?`, []any{userID}},
+			// A reset is the way back in after a lost or stolen device: the passkeys go too.
+			{`DELETE FROM webauthn_credentials WHERE user_id = ?`, []any{userID}},
 		}
 		for _, st := range stmts {
 			if _, err := tx.ExecContext(ctx, st.q, st.args...); err != nil {

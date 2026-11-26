@@ -103,13 +103,13 @@ type coolifyConnDTO struct {
 }
 
 type sisterPanelsDTO struct {
-	GrafanaURL          string            `json:"grafanaUrl"`
-	GrafanaTokenSet     bool              `json:"grafanaTokenSet"`
-	GrafanaFolderUID    string            `json:"grafanaFolderUid,omitempty"`
-	GrafanaAllowPrivate bool              `json:"grafanaAllowPrivate"`
-	BeszelURL           string            `json:"beszelUrl"`
-	Links               []sisterLink      `json:"links"`
-	FromEnv             map[string]bool   `json:"fromEnv"`
+	GrafanaURL          string          `json:"grafanaUrl"`
+	GrafanaTokenSet     bool            `json:"grafanaTokenSet"`
+	GrafanaFolderUID    string          `json:"grafanaFolderUid,omitempty"`
+	GrafanaAllowPrivate bool            `json:"grafanaAllowPrivate"`
+	BeszelURL           string          `json:"beszelUrl"`
+	Links               []sisterLink    `json:"links"`
+	FromEnv             map[string]bool `json:"fromEnv"`
 }
 
 type connectionsResp struct {

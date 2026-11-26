@@ -330,6 +330,88 @@ func (s *Store) Incidents(ctx context.Context, checkID int64, n int) ([]Incident
 	return out, rows.Err()
 }
 
+// IncidentByID returns an incident by ID.
+func (s *Store) IncidentByID(ctx context.Context, id int64) (Incident, error) {
+	var in Incident
+	var started, ended int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, check_id, started_at, COALESCE(ended_at, 0), cause, context, caused_by
+		 FROM incidents WHERE id = ?`, id).
+		Scan(&in.ID, &in.CheckID, &started, &ended, &in.Cause, &in.Context, &in.CausedBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Incident{}, ErrNotFound
+	}
+	if err != nil {
+		return Incident{}, err
+	}
+	in.StartedAt = time.Unix(started, 0)
+	if ended > 0 {
+		in.EndedAt = time.Unix(ended, 0)
+	}
+	return in, nil
+}
+
+// CheckResultsInWindow returns check results for a check in a time window.
+func (s *Store) CheckResultsInWindow(ctx context.Context, checkID int64, since, until time.Time) ([]Result, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT check_id, ts, status, latency_ms, msg FROM check_results
+		 WHERE check_id = ? AND ts >= ? AND ts <= ? ORDER BY ts DESC`,
+		checkID, since.UnixMilli(), until.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Result
+	for rows.Next() {
+		var r Result
+		var ts int64
+		if err := rows.Scan(&r.CheckID, &ts, &r.Status, &r.LatencyMS, &r.Msg); err != nil {
+			return nil, err
+		}
+		r.TS = time.UnixMilli(ts)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// IncidentLocationResult is one per-location probe outcome for incident timeline.
+type IncidentLocationResult struct {
+	CheckID  int64
+	TS       time.Time
+	Location string
+	OK       *bool // nil = didn't vote
+	Latency  int
+	Msg      string
+}
+
+// LocationResultsInWindow returns per-location results for a check in a time window.
+func (s *Store) LocationResultsInWindow(ctx context.Context, checkID int64, since, until time.Time) ([]IncidentLocationResult, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT check_id, ts, location, ok, latency_ms, msg FROM check_location_results
+		 WHERE check_id = ? AND ts >= ? AND ts <= ? ORDER BY ts DESC`,
+		checkID, since.UnixMilli(), until.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IncidentLocationResult
+	for rows.Next() {
+		var r IncidentLocationResult
+		var ts int64
+		var ok sql.NullInt64
+		if err := rows.Scan(&r.CheckID, &ts, &r.Location, &ok, &r.Latency, &r.Msg); err != nil {
+			return nil, err
+		}
+		r.TS = time.UnixMilli(ts)
+		if ok.Valid {
+			v := ok.Int64 == 1
+			r.OK = &v
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ---- channels --------------------------------------------------------------
 
 func scanChannel(r scanner) (Channel, error) {

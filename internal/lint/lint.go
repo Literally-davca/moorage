@@ -48,12 +48,13 @@ type Issue struct {
 
 // Fix is a quick fix the UI can apply with POST .../lint/fix.
 type Fix struct {
-	Kind      string   `json:"kind"` // bind-localhost, add-restart, remove-version, extract-secret, remove-unused, move-env, add-mem-limit, add-healthcheck, pin-tag, add-env-var
+	Kind      string   `json:"kind"` // use-free-port, add-env-generate, bind-localhost, add-restart, remove-version, extract-secret, remove-unused, move-env, add-mem-limit, add-healthcheck, pin-tag, add-env-var
 	Label     string   `json:"label"`
 	Service   string   `json:"service,omitempty"`
 	Line      int      `json:"line,omitempty"`
 	Keys      []string `json:"keys,omitempty"`      // remove-unused, add-env-var
 	TargetTag string   `json:"targetTag,omitempty"` // pin-tag
+	Value     string   `json:"value,omitempty"`     // set-mem-limit (M18F Problems)
 }
 
 // PortUse is a host port a running container (outside the linted stack) publishes.
@@ -76,6 +77,8 @@ type Options struct {
 	// AllowLatest skips the latest-tag tip (the add-ons stack follows :latest on purpose
 	// and updates automatically).
 	AllowLatest bool
+	// Recipes say what popular images need (M18E); nil uses the bundled catalog.
+	Recipes []Recipe
 }
 
 // Blocking reports whether issues stop a save (deploy=false) or a deploy (deploy=true).
@@ -113,7 +116,13 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 	if err != nil {
 		return append(out, Issue{Severity: Error, Code: "yaml", Message: "compose.yaml: " + cleanYAMLErr(err)})
 	}
-	proj, err := load(ctx, o.Name, compose, vars)
+	generateIssues(doc, compose, env, add)
+	recipes := o.Recipes
+	if recipes == nil {
+		recipes = defaultRecipes
+	}
+	recipeIssues(doc, recipes, add)
+	proj, err := load(ctx, o.Name, lintCompose(compose), vars)
 	if err != nil {
 		add(Issue{Severity: Error, Code: "schema", Message: FriendlyComposeError(err.Error())})
 	}
@@ -172,7 +181,7 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 	}
 	var missing []string
 	for k := range refs.Required {
-		if strings.TrimSpace(vars[k]) == "" {
+		if strings.TrimSpace(vars[k]) == "" && !generatedKey(k) {
 			missing = append(missing, k)
 		}
 	}
@@ -208,8 +217,24 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 	for _, name := range names {
 		s := proj.Services[name]
 		ln := line(name)
+		// M18H: ports: with a network mode that has no port mappings
+		portsApply := true
+		if nm := s.NetworkMode; len(s.Ports) > 0 {
+			switch {
+			case nm == "host":
+				portsApply = false
+				add(Issue{Severity: Warning, Code: "ports-ignored", Service: name, Line: ln,
+					Message: fmt.Sprintf("ports: of %s has no effect with network_mode: host: the service listens directly on the host's ports.", name),
+					Fix:     &Fix{Kind: "remove-ports", Label: "Remove ports:", Service: name, Line: ln}})
+			case nm == "none" || strings.HasPrefix(nm, "container:") || strings.HasPrefix(nm, "service:"):
+				portsApply = false
+				add(Issue{Severity: DeployError, Code: "ports-conflict-network", Service: name, Line: ln,
+					Message: fmt.Sprintf("%s publishes ports: but uses network_mode: %s – Docker refuses to start it. Publish the ports on the service whose network it shares.", name, nm),
+					Fix:     &Fix{Kind: "remove-ports", Label: "Remove ports:", Service: name, Line: ln}})
+			}
+		}
 		for _, p := range s.Ports {
-			if p.Published == "" {
+			if p.Published == "" || !portsApply {
 				continue
 			}
 			lo, hi := portRange(p.Published)
@@ -229,8 +254,12 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 								Message: fmt.Sprintf("Host port %d/%s is reserved by %s (stopped): both can't run at the same time.", port, k.proto, r.Owner)})
 							continue
 						}
-						add(Issue{Severity: DeployError, Code: "port-taken", Service: name, Line: ln,
-							Message: fmt.Sprintf("Host port %d/%s is already used by %s.", port, k.proto, r.Owner)})
+						is := Issue{Severity: DeployError, Code: "port-taken", Service: name, Line: ln,
+							Message: fmt.Sprintf("Host port %d/%s is already used by %s.", port, k.proto, r.Owner)}
+						if lo == hi && p.HostIP == "" {
+							is.Fix = &Fix{Kind: "use-free-port", Label: "Use a free port", Service: name, Line: ln, Keys: []string{strconv.Itoa(port)}}
+						}
+						add(is)
 					}
 				}
 			}

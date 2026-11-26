@@ -152,7 +152,9 @@ func (m *Monitor) probeAt(ctx context.Context, c store.Check, loc string, wait t
 	}
 	res, err := rm.Probe(ctx, req, wait)
 	if err == nil {
-		return voted(r, res.OK, res.LatencyMS, res.Msg)
+		// An agent older than the latency limit ignores it: apply it here too.
+		ok, msg := LatencyLimit(ParseSettings(c.Settings).MaxLatencyMS, res.OK, res.LatencyMS, res.Msg)
+		return voted(r, ok, res.LatencyMS, msg)
 	}
 	var ve engine.ValidationError
 	switch {

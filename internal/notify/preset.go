@@ -164,6 +164,8 @@ func BuildView(c Config, m Message) View {
 		for _, ck := range m.Checks {
 			add(firstNonEmpty(ck.Name, "Check"), ck.summary(), false)
 		}
+		add("Changed before", strings.Join(m.Changes, "\n"), false)
+		add("Likely cause", m.LikelyCause, false)
 	}
 	if p.Timestamps {
 		if !m.Since.IsZero() {

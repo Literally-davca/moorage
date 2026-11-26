@@ -34,6 +34,8 @@ const labels: Record<string, string> = {
   'host.remove': 'Removed host',
   'check.create': 'Added check',
   'check.save': 'Saved check',
+  'incident.rollback_verify': 'Started Rollback & Verify',
+  'incident.rollback_verify.result': 'Rollback & Verify finished',
   'check.delete': 'Deleted check',
   'channel.create': 'Added notification channel',
   'channel.save': 'Saved notification channel',
@@ -74,7 +76,29 @@ const labels: Record<string, string> = {
   'user.sessions_revoke': 'Signed user out everywhere',
   'account.password': 'Changed own password',
   'account.totp': 'Re-enrolled two-factor',
+  'account.passkey_add': 'Added a passkey',
+  'account.passkey_save': 'Changed a passkey',
+  'account.passkey_remove': 'Removed a passkey',
   'account.session_revoke': 'Signed out own session',
+  'import.portainer': 'Imported stacks from Portainer',
+  'addon.assistant_settings': 'Changed AI assistant settings',
+  'assistant.reject': 'Rejected an assistant proposal',
+  'assistant.apply': 'Applied an assistant proposal',
+  'assistant.stack_action': 'Assistant ran a stack action',
+  'assistant.compose': 'Assistant changed compose.yaml',
+  'assistant.create': 'Assistant created a stack',
+  'stack.self_apply_ack': 'Dismissed an Apply & restart rollback notice',
+  'stack.problem_ignore': 'Ignored or restored a container problem',
+  'stack.snapshot_create': 'Took a snapshot',
+  'stack.snapshot_settings': 'Changed snapshot settings',
+  'stack.snapshot_download': 'Downloaded a snapshot',
+  'stack.snapshot_restore': 'Restored a snapshot',
+  'stack.snapshot_pin': 'Pinned or unpinned a snapshot',
+  'stack.snapshot_delete': 'Deleted a snapshot',
+  'status_snapshot.config': 'Changed status page snapshot settings',
+  'status_snapshot.test': 'Tested status page snapshot target',
+  'status_snapshot.publish': 'Published status page snapshot',
+  'import.monitors': 'Imported checks and channels',
 };
 
 export function auditLabel(action: string): string {
@@ -99,6 +123,7 @@ export const auditGroups: { prefix: string; name: string }[] = [
   { prefix: 'auth.', name: 'Sign-in' },
   { prefix: 'user.', name: 'Users' },
   { prefix: 'account.', name: 'Own account' },
+  { prefix: 'import.', name: 'Imports' },
 ];
 
 const when = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });

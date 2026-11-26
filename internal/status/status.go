@@ -129,6 +129,9 @@ type Service struct {
 
 	// OnRebuild is an optional hook called whenever build() runs (used by tests to count DB builds).
 	OnRebuild func(pageID int64)
+	// OnInvalidate is called after every edit that changes public pages (pages, checks,
+	// maintenance windows); set once before use. Static snapshots publish soon after.
+	OnInvalidate func()
 
 	fonts map[string]fontAsset
 
@@ -196,6 +199,9 @@ func (s *Service) Invalidate() {
 	clear(s.cache)
 	s.index = nil
 	s.mu.Unlock()
+	if s.OnInvalidate != nil {
+		s.OnInvalidate()
+	}
 }
 
 // SetPublicURL updates the hub public URL live and clears cached feed/page links.
@@ -970,10 +976,7 @@ func (s *Service) serveHTML(w http.ResponseWriter, r *http.Request, p store.Stat
 		feedPath = "/feed.xml"
 	}
 	var buf bytes.Buffer
-	if err := pageTmpl.Execute(&buf, struct {
-		Page     PublicPage
-		FeedHref string
-	}{Page: data, FeedHref: feedPath}); err != nil {
+	if err := pageTmpl.Execute(&buf, pageView{Page: data, FeedHref: feedPath}); err != nil {
 		WriteNotFound(w)
 		return
 	}
@@ -1256,12 +1259,23 @@ var pageTmpl = template.Must(template.New("status").Funcs(template.FuncMap{
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="refresh" content="60">
   <title>{{.Page.Title}}</title>
+  {{- if .Snapshot}}
+  <link rel="icon" type="image/svg+xml" href="{{.Snapshot.Favicon}}">
+  <style>{{.Snapshot.CSS}}</style>
+  {{- else}}
   <link rel="icon" type="image/svg+xml" href="/status-assets/favicon.svg">
   <link rel="stylesheet" href="/status-assets/status.css">
   <link rel="alternate" type="application/rss+xml" title="{{.Page.Title}} RSS" href="{{.FeedHref}}">
+  {{- end}}
 </head>
-<body>
+<body{{if .Snapshot}} data-updated="{{rfc3339 .Page.UpdatedAt}}" data-stale-after="{{.Snapshot.StaleAfterSeconds}}"{{end}}>
   <main class="wrap">
+    {{- if .Snapshot}}
+    <div id="stale" class="card stale" role="status" hidden>
+      <strong>Data may be out of date.</strong>
+      <span class="meta">This copy of the status page was last updated <time datetime="{{rfc3339 .Page.UpdatedAt}}">{{.Page.UpdatedText}}</time>. The live page may be unreachable right now.</span>
+    </div>
+    {{- end}}
     <header class="card head">
       <div class="title-row">
         <div>
@@ -1386,10 +1400,16 @@ var pageTmpl = template.Must(template.New("status").Funcs(template.FuncMap{
 
     <footer class="foot meta">
       <span>Updated <time datetime="{{rfc3339 .Page.UpdatedAt}}">{{.Page.UpdatedText}}</time></span>
+      {{- if not .Snapshot}}
       <a href="{{.FeedHref}}">RSS feed</a>
+      {{- end}}
     </footer>
   </main>
+  {{- if .Snapshot}}
+  <script>{{.Snapshot.JS}}</script>
+  {{- else}}
   <script src="/status-assets/status.js" defer></script>
+  {{- end}}
 </body>
 </html>
 `))
@@ -1742,6 +1762,16 @@ html, body {
 
 .empty {
   margin: 0;
+}
+
+.stale {
+  padding: 12px 16px;
+  display: grid;
+  gap: 2px;
+  box-shadow: var(--lift), inset 3px 0 0 var(--signal);
+}
+.stale[hidden] {
+  display: none;
 }
 
 .foot {

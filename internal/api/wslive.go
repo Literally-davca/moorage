@@ -189,7 +189,7 @@ func (s *Server) revalidateLive(ctx context.Context) int {
 			continue
 		}
 		n++
-		s.log.Info("closing live connection", "kind", c.kind, "user", c.auth.username, "id", id)
+		s.log.Debug("closing live connection", "kind", c.kind, "user", c.auth.username, "id", id)
 		go c.end()
 	}
 	return n

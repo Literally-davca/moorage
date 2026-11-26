@@ -469,7 +469,7 @@ func (e *Engine) record(stack, author, kind, restored string, message func([]str
 	}
 	v, err := e.hist.commit(stack, files, author, kind, restored, message)
 	if err != nil {
-		e.log.Warn("history: commit", "stack", stack, "err", err)
+		e.log.Error("history: commit", "stack", stack, "err", err)
 		return nil
 	}
 	return v

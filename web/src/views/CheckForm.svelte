@@ -222,6 +222,9 @@
     }
     delete c.settings.urls;
     delete c.settings.stacks;
+    const limit = Math.round(Number(c.settings.maxLatencyMs) || 0);
+    if (limit > 0 && remoteKinds.includes(c.kind)) c.settings.maxLatencyMs = limit;
+    else delete c.settings.maxLatencyMs;
     if (c.kind === 'http') {
       const list = [...new Set(urls.map((u) => u.trim()).filter(Boolean))];
       c.target = list[0] ?? '';
@@ -573,6 +576,16 @@
                 <label class="checkbox top"><input type="checkbox" bind:checked={form.settings.ignoreTls} /><span>Accept invalid TLS certificates (self-signed)</span></label>
               </div>
             {/if}
+            <div class="two">
+              <div>
+                <label class="label" for="maxlat">Slow above (ms) <span class="opt">optional</span></label>
+                <input id="maxlat" class="field mono" type="number" min="1" max={form.timeout * 1000 - 1} step="1" bind:value={form.settings.maxLatencyMs} placeholder="e.g. 1500" />
+              </div>
+              <p class="hint">
+                A slower answer counts as a failure. With several locations each one applies the limit to its own answer, so an agent outside your
+                network can alert when the service is slow from there.
+              </p>
+            </div>
             <label class="checkbox">
               <input type="checkbox" bind:checked={form.settings.allowLinkLocal} />
               <span>Allow link-local addresses (169.254.x.x, fe80::). Off by default because cloud metadata services live there.</span>

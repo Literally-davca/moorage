@@ -1,0 +1,38 @@
+# What popular images need (M18E). Data only: nothing here is evaluated or run.
+# env values are generator kinds (see docs/generated-values.md) or "=value" for a fixed default.
+recipes:
+  - image: postgres
+    env:
+      POSTGRES_PASSWORD: password
+    note: "The container refuses to start without POSTGRES_PASSWORD."
+  - image: "*/postgres"
+    env:
+      POSTGRES_PASSWORD: password
+  - image: mariadb
+    env:
+      MARIADB_ROOT_PASSWORD: password
+  - image: mysql
+    env:
+      MYSQL_ROOT_PASSWORD: password
+  - image: mongo
+    env:
+      MONGO_INITDB_ROOT_USERNAME: user
+      MONGO_INITDB_ROOT_PASSWORD: password
+  - image: "lscr.io/linuxserver/*"
+    env:
+      PUID: "=1000"
+      PGID: "=1000"
+      TZ: "=Etc/UTC"
+    note: "LinuxServer images run as PUID/PGID; set them to the owner of your volumes."
+  - image: "linuxserver/*"
+    env:
+      PUID: "=1000"
+      PGID: "=1000"
+      TZ: "=Etc/UTC"
+  - image: minio/minio
+    env:
+      MINIO_ROOT_USER: user
+      MINIO_ROOT_PASSWORD: password
+  - image: "ghcr.io/goauthentik/server"
+    env:
+      AUTHENTIK_SECRET_KEY: "password, 60"

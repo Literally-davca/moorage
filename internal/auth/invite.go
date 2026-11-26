@@ -27,6 +27,7 @@ func linkKey(ip string) string { return "ip:" + ip }
 
 func (s *Service) openLink(ctx context.Context, ip, token string) (store.UserToken, store.User, error) {
 	if s.limiter.blocked(linkKey(ip)) {
+		s.log.Warn("sign-in rate limited", "ip", ip, "method", "link")
 		return store.UserToken{}, store.User{}, ErrRateLimited
 	}
 	t, err := s.db.UserTokenByHash(ctx, hashToken(token))
@@ -41,6 +42,7 @@ func (s *Service) openLink(ctx context.Context, ip, token string) (store.UserTok
 		return t, store.User{}, err
 	}
 	s.limiter.fail(linkKey(ip))
+	s.log.Warn("sign-in failed", "ip", ip, "method", "link", "reason", "unknown or expired link")
 	return t, store.User{}, ErrBadLink
 }
 

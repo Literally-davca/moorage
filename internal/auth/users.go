@@ -34,6 +34,7 @@ type UserInfo struct {
 	Role        string     `json:"role"`
 	Status      string     `json:"status"` // "active", "invited" or "disabled"
 	TOTP        bool       `json:"totp"`
+	Passkeys    int        `json:"passkeys"`
 	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
 	CreatedBy   string     `json:"createdBy"`
 	CreatedAt   time.Time  `json:"createdAt"`
@@ -65,7 +66,7 @@ func userInfo(r store.UserListEntry) UserInfo {
 	i := UserInfo{
 		ID: r.ID, Username: r.Username, DisplayName: r.DisplayName, Email: r.Email, Source: r.AuthSource,
 		Role: r.Role, Status: userStatus(r.User), TOTP: r.TOTPSecret != "" && r.Active, CreatedBy: r.CreatedBy,
-		CreatedAt: r.CreatedAt, LinkKind: r.LinkKind,
+		CreatedAt: r.CreatedAt, LinkKind: r.LinkKind, Passkeys: r.Passkeys,
 	}
 	if !r.LastLoginAt.IsZero() {
 		t := r.LastLoginAt
@@ -206,7 +207,7 @@ func (s *Service) change(ctx context.Context, id int64, c store.UserChange) (sto
 
 // IssueReset gives a local user a new link. For an invited user it is a fresh invite
 // (the old link stops working); for an active user a reset link, which replaces the
-// password and TOTP only when it is finished. Their sessions end at that point, not now,
+// password and TOTP (and removes the passkeys) only when it is finished. Their sessions end at that point, not now,
 // so a reset issued by mistake changes nothing.
 func (s *Service) IssueReset(ctx context.Context, admin User, id int64) (UserInfo, Link, error) {
 	u, err := s.target(ctx, admin, id)

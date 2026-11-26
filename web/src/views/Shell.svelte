@@ -21,9 +21,55 @@
   import AccountView from './AccountView.svelte';
   import ModeOnboarding from './ModeOnboarding.svelte';
   import CommandPalette from '../lib/CommandPalette.svelte';
+  import AssistantPanel from '../lib/AssistantPanel.svelte';
 
   let { onSignedOut }: { onSignedOut: () => void } = $props();
   let paletteOpen = $state(false);
+  // M18H: rolled-back Apply & restart runs no admin dismissed yet
+  let selfNotices = $state<{ hostId: string; hostName: string; stack: string; at: string; message: string; reason?: string }[]>([]);
+  let selfLog = $state<string | null>(null);
+  async function loadSelfNotices() {
+    if (app.user?.role !== 'admin') return;
+    try {
+      selfNotices = await api.selfApplyNotices();
+    } catch {
+      selfNotices = [];
+    }
+  }
+  loadSelfNotices();
+  async function ackSelf(n: { hostId: string }) {
+    try {
+      await api.ackSelfApply(n.hostId);
+      selfNotices = selfNotices.filter((x) => x !== n);
+    } catch {
+      /* keep the banner */
+    }
+  }
+  async function showSelfLog(n: { hostId: string }) {
+    try {
+      selfLog = (await api.selfApplyLog(n.hostId)).log;
+    } catch (e) {
+      selfLog = (e as Error).message;
+    }
+  }
+  // AI assistant (M18G): shown only when the add-on is on and configured
+  let assistantOn = $state(false);
+  let assistantOpen = $state(false);
+  async function loadAssistant() {
+    try {
+      const st = await api.assistantStatus();
+      assistantOn = st.enabled && st.configured;
+    } catch {
+      assistantOn = false;
+    }
+  }
+  loadAssistant();
+  function assistantKey(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j' && assistantOn) {
+      e.preventDefault();
+      assistantOpen = !assistantOpen;
+    }
+  }
 
   let stacks = $state<StackSummary[] | null>(null);
   let listError = $state('');
@@ -571,6 +617,11 @@
           <span class="tab"><Icon name={p.icon} /> {p.label}{#if p.badge}<span class="cnt">{p.badge.n}</span>{/if}</span>
         {/each}
       </div>
+      {#if assistantOn}
+        <button type="button" class="tab pal-btn" onclick={() => (assistantOpen = !assistantOpen)} title="Assistant (Ctrl+J)" aria-label="Assistant" aria-expanded={assistantOpen}>
+          <Icon name="wand" />
+        </button>
+      {/if}
       <button type="button" class="tab pal-btn" onclick={() => (paletteOpen = true)} title="Quick search (Ctrl+K)" aria-label="Quick search">
         <Icon name="search" /> <kbd class="kbd-hint">Ctrl K</kbd>
       </button>
@@ -581,16 +632,41 @@
         </button>
         {#if userMenu}
           <div class="menu card end" role="menu" use:menuKeys>
-            <a role="menuitem" href="#/account" onclick={() => (userMenu = false)}><Icon name="userCircle" /> Account</a>
+            {#if !app.demo}<a role="menuitem" href="#/account" onclick={() => (userMenu = false)}><Icon name="userCircle" /> Account</a>{/if}
             <button role="menuitem" onclick={() => { toggleTheme(); userMenu = false; }}>
               <Icon name={app.theme === 'dark' ? 'sun' : 'moon'} /> {app.theme === 'dark' ? 'Light theme' : 'Dark theme'}
             </button>
-            <hr />
-            <button role="menuitem" onclick={signOut}><Icon name="logout" /> Sign out</button>
+            {#if !app.demo}
+              <hr />
+              <button role="menuitem" onclick={signOut}><Icon name="logout" /> Sign out</button>
+            {/if}
           </div>
         {/if}
       </div>
     </header>
+    {#each selfNotices as n (n.hostId + n.stack)}
+      <div class="card self-banner" role="alert">
+        <Icon name="rollback" />
+        <span><strong>Apply &amp; restart was rolled back</strong> on {n.hostName} ({new Date(n.at).toLocaleString()}) – {n.reason || n.message}. The previous configuration is running again.</span>
+        <span class="self-acts">
+          <button type="button" class="btn btn-sm" onclick={() => showSelfLog(n)}>Show log</button>
+          <a class="btn btn-sm" href={`#/h/${encodeURIComponent(n.hostId)}/stacks/${encodeURIComponent(n.stack)}`}>Open stack</a>
+          <button type="button" class="btn btn-sm btn-primary" onclick={() => ackSelf(n)}>Acknowledge</button>
+        </span>
+      </div>
+    {/each}
+    {#if selfLog !== null}
+      <div class="card self-log" role="dialog" aria-label="Apply & restart log">
+        <pre class="mono">{selfLog}</pre>
+        <button type="button" class="btn btn-sm" onclick={() => (selfLog = null)}>Close</button>
+      </div>
+    {/if}
+    {#if app.demo}
+      <div class="card demo-banner" role="status">
+        <Icon name="eye" />
+        <span><strong>Read-only demo.</strong> Look around freely: the stacks, logs and checks are sample data, and every change is turned off.</span>
+      </div>
+    {/if}
     {#if adminRole && availUpdateVer && dismissedUpdateVer !== availUpdateVer}
       <div class="card upd-banner" role="status">
         <span class="upd-msg">
@@ -650,6 +726,8 @@
 </div>
 
 <CommandPalette bind:open={paletteOpen} />
+<AssistantPanel bind:open={assistantOpen} />
+<svelte:window onkeydown={assistantKey} onfocus={loadAssistant} />
 
 {#if app.user && app.user.preferences && !app.user.preferences.onboardingDone}
   <ModeOnboarding />
@@ -1158,6 +1236,45 @@
     left: auto;
     right: 0;
     min-width: 200px;
+  }
+  .self-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+    box-shadow: inset 0 0 0 1px var(--danger);
+  }
+  .self-acts {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+    flex-wrap: wrap;
+  }
+  .self-log {
+    padding: 10px;
+    margin-bottom: 12px;
+    display: grid;
+    gap: 8px;
+  }
+  .self-log pre {
+    margin: 0;
+    max-height: 320px;
+    overflow: auto;
+    font-size: 12px;
+    white-space: pre-wrap;
+  }
+  .demo-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--foam);
+    background: var(--info-wash);
+    box-shadow: inset 0 0 0 1px var(--rope-strong);
   }
   .upd-banner {
     display: flex;

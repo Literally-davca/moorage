@@ -590,7 +590,7 @@ func (e *Engine) RollbackImages(ctx context.Context, stack string, targets map[s
 		err := e.execRollback(runCtx, stack, dir, targets, op)
 		if err != nil {
 			fmt.Fprintf(op, "✗ rollback failed: %v\n", err)
-			e.log.Warn("image rollback failed", "stack", stack, "author", author, "err", err)
+			e.log.Error("image rollback failed", "stack", stack, "author", author, "err", err)
 		} else {
 			fmt.Fprintf(op, "✓ rollback finished\n")
 			e.log.Info("image rollback finished", "stack", stack, "author", author)

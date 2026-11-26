@@ -24,6 +24,9 @@ const (
 	SettingBackupRemoteJSON = "backup_remote_config"
 	SettingBackupLastStatus = "backup_remote_last"
 	SettingSisterLinksJSON  = "sister_links"
+	// status-snapshot add-on (M18D): target configuration with its secret, last result
+	SettingStatusSnapshotJSON = "status_snapshot_config"
+	SettingStatusSnapshotLast = "status_snapshot_last"
 )
 
 // HostIPKey and BaseDomainKey store per-host network overrides in app_settings.

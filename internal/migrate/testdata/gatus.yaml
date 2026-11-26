@@ -1,0 +1,83 @@
+storage:
+  type: sqlite
+  path: /data/data.db
+ui:
+  header: "Homelab status"
+alerting:
+  discord:
+    webhook-url: "https://discord.com/api/webhooks/1/abc"
+    default-alert:
+      failure-threshold: 5
+  telegram:
+    token: "${TELEGRAM_TOKEN}"
+    id: "12345"
+  pagerduty:
+    integration-key: "xyz"
+  email:
+    from: "gatus@example.com"
+    username: "gatus"
+    password: "secret"
+    host: "mail.example.com"
+    port: 587
+    to: "ops@example.com"
+endpoints:
+  - name: website
+    group: public
+    url: "https://example.com"
+    interval: 2m
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY] == pat(*Welcome*)"
+      - "[RESPONSE_TIME] < 300"
+    alerts:
+      - type: discord
+      - type: telegram
+  - name: api
+    group: public
+    url: "https://api.example.com/health"
+    conditions:
+      - "[STATUS] >= 200"
+      - "[STATUS] < 400"
+      - "[BODY].status == UP"
+      - "[CERTIFICATE_EXPIRATION] > 48h"
+    alerts:
+      - type: email
+        failure-threshold: 2
+  - name: api
+    group: internal
+    url: "https://api.lan/health"
+    client:
+      insecure: true
+      timeout: 5s
+  - name: postgres
+    group: internal
+    url: "tcp://db.lan:5432"
+    interval: 30s
+    conditions:
+      - "[CONNECTED] == true"
+  - name: router
+    url: "icmp://192.168.1.1"
+    interval: 10s
+    enabled: false
+    conditions:
+      - "[CONNECTED] == true"
+  - name: dns
+    url: "8.8.8.8"
+    dns:
+      query-name: "example.com"
+      query-type: "A"
+    conditions:
+      - "[BODY] == 93.184.215.14"
+      - "[DNS_RCODE] == NOERROR"
+  - name: login
+    url: "https://example.com/login"
+    method: POST
+    body: '{"user":"x"}'
+  - name: ssh
+    url: "ssh://example.com:22"
+  - name: secret
+    url: "https://${HOST}/health"
+external-endpoints:
+  - name: backups
+    group: jobs
+    token: "abc"

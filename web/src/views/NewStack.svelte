@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type DeletedStack, type ImageLookup, type ImageCandidate, type LintIssue, type LintResult } from '../lib/api';
-  import { link, userPrefs } from '../lib/state.svelte';
+  import { app, link, userPrefs } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import ComposeEditor from '../lib/ComposeEditor.svelte';
   import EnvEditor from '../lib/EnvEditor.svelte';
@@ -128,7 +128,8 @@
         return;
       }
       envConflicts = null;
-      await api.create(name, compose, env);
+      const created = await api.create(name, compose, env);
+      app.generatedNote = created?.generatedNote ?? '';
       onCreated(name);
     } catch (err) {
       error = (err as Error).message;

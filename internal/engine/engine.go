@@ -47,8 +47,11 @@ type Engine struct {
 	cli command.Cli
 	api client.APIClient
 
-	mu   sync.Mutex
-	busy map[string]bool // stack name -> operation running
+	mu sync.Mutex
+
+	archOnce sync.Once // hostArch (M18F diagnosis)
+	arch     string
+	busy     map[string]bool // stack name -> operation running
 
 	ops  *opRegistry
 	hist *History // nil when the history repo can't be opened
@@ -248,3 +251,6 @@ func composeFile(dir string) string {
 	}
 	return ""
 }
+
+// ComposeFileIn returns the path of the compose file in dir ("" when none), for helpers.
+func ComposeFileIn(dir string) string { return composeFile(dir) }

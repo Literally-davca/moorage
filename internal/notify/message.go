@@ -36,6 +36,11 @@ type Message struct {
 	Until    time.Time     `json:"until,omitzero"`
 	Images   []ImageChange `json:"images,omitempty"`
 	Checks   []CheckDetail `json:"checks,omitempty"`
+	// Changes is what changed in the stack before an outage (M18A causal timeline).
+	Changes []string `json:"changes,omitempty"`
+	// LikelyCause is from the container diagnosis (M18F), e.g. "Out of memory
+	// (exit 137)". Detailed preset only; never log lines.
+	LikelyCause string `json:"likelyCause,omitempty"`
 }
 
 // Sender is who a message comes from: the affected host and the role of the Moorage

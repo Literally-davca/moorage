@@ -17,6 +17,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"moorage/internal/diagnose"
 	"moorage/internal/engine"
 )
 
@@ -175,6 +176,13 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 	if ds, ok := h.(DeletedStacksSource); ok {
 		mux.HandleFunc("GET /deleted-stacks", func(w http.ResponseWriter, r *http.Request) {
 			reply(w)(ds.DeletedStacks(r.Context()))
+		})
+	}
+	snapshotRoutes(mux, h, write)
+	selfApplyRoutes(mux, h, write)
+	if sd, ok := h.(StackDiagnoser); ok {
+		mux.HandleFunc("GET /stacks/{name}/diagnose", func(w http.ResponseWriter, r *http.Request) {
+			reply(w)(sd.DiagnoseStack(r.Context(), r.PathValue("name")))
 		})
 	}
 	if dp, ok := h.(DiskPruner); ok {
@@ -772,6 +780,12 @@ func (rm *Remote) ExportHistory(ctx context.Context, w io.Writer) error {
 func (rm *Remote) DeletedStacks(ctx context.Context) ([]engine.DeletedStack, error) {
 	var out []engine.DeletedStack
 	err := rm.call(ctx, http.MethodGet, "/deleted-stacks", nil, &out)
+	return out, err
+}
+
+func (rm *Remote) DiagnoseStack(ctx context.Context, stack string) ([]diagnose.Facts, error) {
+	var out []diagnose.Facts
+	err := rm.call(ctx, http.MethodGet, p(stack)+"/diagnose", nil, &out)
 	return out, err
 }
 

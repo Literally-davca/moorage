@@ -16,6 +16,17 @@ Manage in **Settings → Add-ons** (each card has an in-app **Guide** button):
 | `socket-proxy-check` | Socket Proxy Auditor | Scan Compose files for raw `/var/run/docker.sock` or `:2375` mounts and generate scoped proxy snippets. |
 | `registry-webhooks` | Registry Webhooks | Trigger image update checks or applies from GHCR, Docker Hub, Gitea, or Harbor push webhooks. |
 | `mcp-server` | MCP Server | Expose an ACL-scoped Streamable HTTP MCP endpoint (`/mcp`) with human approval drafts for AI assistants. |
+| `status-snapshot` | Static status page snapshot | Publish public status pages as static HTML + JSON to S3 / R2, WebDAV or GitHub Pages so they survive an outage of this server. |
+
+### Status snapshot
+
+The `status-snapshot` add-on keeps a static copy of your published status pages outside this server:
+
+- **Targets:** any S3-compatible bucket (AWS S3, Cloudflare R2, MinIO, Garage…), a WebDAV folder, or a GitHub Pages branch. Moorage never creates the bucket, folder or repository — create it yourself, then use **Test write access**.
+- **When it publishes:** a few seconds after any check changes state, every *N* minutes (default 5; at least 15 for GitHub Pages because of its build limits), and on **Publish now**. Failures are retried with backoff.
+- **What it writes:** `index.html` and `status.json` per page (`<slug>/`). The page shows when it was last updated and switches to *“data may be out of date”* by itself after the stale time (default 15 min), even when nothing can update it any more.
+- **Secrets** (S3 secret key, WebDAV password, GitHub token) are stored like other integration secrets, never returned by the API and never logged. Leaving a secret field empty keeps the saved one.
+- Changes, tests and manual publishes are in the audit log. The add-on is off in demo mode.
 
 ## Sidecar Add-ons & Custom Sources
 

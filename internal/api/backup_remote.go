@@ -58,24 +58,24 @@ type remoteBackupLastStatus struct {
 }
 
 type remoteBackupDTO struct {
-	Enabled           bool                    `json:"enabled"`
-	Provider          string                  `json:"provider"`
-	Schedule          string                  `json:"schedule"`
-	Retention         int                     `json:"retention"`
-	BackupPasswordSet bool                    `json:"backupPasswordSet"`
-	S3Endpoint        string                  `json:"s3Endpoint"`
-	S3Bucket          string                  `json:"s3Bucket"`
-	S3Region          string                  `json:"s3Region"`
-	S3AccessKey       string                  `json:"s3AccessKey"`
-	S3SecretKeySet    bool                    `json:"s3SecretKeySet"`
-	S3Prefix          string                  `json:"s3Prefix"`
-	S3AllowPrivate    bool                    `json:"s3AllowPrivate"`
-	WebDAVURL         string                  `json:"webdavUrl"`
-	WebDAVUsername    string                  `json:"webdavUsername"`
-	WebDAVPasswordSet bool                    `json:"webdavPasswordSet"`
-	WebDAVAllowPrivate bool                   `json:"webdavAllowPrivate"`
-	FromEnv           map[string]bool         `json:"fromEnv"`
-	Last              *remoteBackupLastStatus `json:"last,omitempty"`
+	Enabled            bool                    `json:"enabled"`
+	Provider           string                  `json:"provider"`
+	Schedule           string                  `json:"schedule"`
+	Retention          int                     `json:"retention"`
+	BackupPasswordSet  bool                    `json:"backupPasswordSet"`
+	S3Endpoint         string                  `json:"s3Endpoint"`
+	S3Bucket           string                  `json:"s3Bucket"`
+	S3Region           string                  `json:"s3Region"`
+	S3AccessKey        string                  `json:"s3AccessKey"`
+	S3SecretKeySet     bool                    `json:"s3SecretKeySet"`
+	S3Prefix           string                  `json:"s3Prefix"`
+	S3AllowPrivate     bool                    `json:"s3AllowPrivate"`
+	WebDAVURL          string                  `json:"webdavUrl"`
+	WebDAVUsername     string                  `json:"webdavUsername"`
+	WebDAVPasswordSet  bool                    `json:"webdavPasswordSet"`
+	WebDAVAllowPrivate bool                    `json:"webdavAllowPrivate"`
+	FromEnv            map[string]bool         `json:"fromEnv"`
+	Last               *remoteBackupLastStatus `json:"last,omitempty"`
 }
 
 func (s *Server) effectiveRemoteBackup(ctx context.Context) (remoteBackupConfig, map[string]bool) {

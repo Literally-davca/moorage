@@ -80,8 +80,10 @@ type Service struct {
 	setupToken string // empty once an active user exists
 
 	limiter   *limiter
-	dummy     string // hash used when the user does not exist, keeps timing similar
-	ticketKey []byte // signs TOTP re-enrolment tickets; per process, a restart only voids open ones
+	pkLimiter *limiter   // passkey sign-in challenges per IP
+	cer       ceremonies // open passkey challenges
+	dummy     string     // hash used when the user does not exist, keeps timing similar
+	ticketKey []byte     // signs TOTP re-enrolment tickets; per process, a restart only voids open ones
 	now       func() time.Time
 }
 
@@ -92,7 +94,7 @@ func New(db *store.Store, log *slog.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{db: db, log: log, limiter: newLimiter(5, time.Minute), dummy: dummy, now: time.Now}
+	s := &Service{db: db, log: log, limiter: newLimiter(5, time.Minute), pkLimiter: newLimiter(30, time.Minute), dummy: dummy, now: time.Now}
 	s.ticketKey = make([]byte, 32)
 	if _, err := rand.Read(s.ticketKey); err != nil {
 		return nil, err
@@ -202,28 +204,12 @@ func (s *Service) SetupFinish(ctx context.Context, c Client, token, username, co
 
 // Login checks password and TOTP code and returns a session token. Only finished,
 // enabled local accounts with TOTP can sign in this way; OIDC and proxy accounts have no
-// password.
-func (s *Service) Login(ctx context.Context, c Client, username, password, code string) (string, User, error) {
-	username = strings.ToLower(username)
-	if !s.limiter.allow("ip:"+c.IP) || !s.limiter.allow("user:"+username) {
-		return "", User{}, ErrRateLimited
-	}
-	u, err := s.db.UserByName(ctx, username)
+// password. LoginWithPasskey takes a passkey instead of the code.
+func (s *Service) Login(ctx context.Context, c Client, username, password, code string) (tok string, pu User, err error) {
+	defer func() { s.logSignInFailure(ctx, "password", c.IP, username, err) }()
+	u, err := s.passwordStep(ctx, c, username, password)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			VerifyPassword(password, s.dummy) //nolint:errcheck // timing only
-			return "", User{}, ErrInvalidCredentials
-		}
 		return "", User{}, err
-	}
-	if u.AuthSource != store.SourceLocal || u.PasswordHash == "" {
-		VerifyPassword(password, s.dummy) //nolint:errcheck // timing only
-		return "", User{}, ErrInvalidCredentials
-	}
-	ok, err := VerifyPassword(password, u.PasswordHash)
-	// An empty TOTP secret would make every code computable; such an account can't sign in.
-	if err != nil || !ok || !u.Active || u.Disabled || u.TOTPSecret == "" {
-		return "", User{}, ErrInvalidCredentials
 	}
 	counter, ok := matchTOTP(u.TOTPSecret, code, s.now())
 	if !ok {
@@ -236,6 +222,38 @@ func (s *Service) Login(ctx context.Context, c Client, username, password, code 
 	if !fresh { // the same code was already used
 		return "", User{}, ErrInvalidCredentials
 	}
+	return s.finishLogin(ctx, c, u, "totp")
+}
+
+// passwordStep is the first factor of a local sign-in: rate limits, the account and its
+// password. Every refusal is the same ErrInvalidCredentials.
+func (s *Service) passwordStep(ctx context.Context, c Client, username, password string) (store.User, error) {
+	username = strings.ToLower(username)
+	if !s.limiter.allow("ip:"+c.IP) || !s.limiter.allow("user:"+username) {
+		return store.User{}, ErrRateLimited
+	}
+	u, err := s.db.UserByName(ctx, username)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			VerifyPassword(password, s.dummy) //nolint:errcheck // timing only
+			return store.User{}, ErrInvalidCredentials
+		}
+		return store.User{}, err
+	}
+	if u.AuthSource != store.SourceLocal || u.PasswordHash == "" {
+		VerifyPassword(password, s.dummy) //nolint:errcheck // timing only
+		return store.User{}, ErrInvalidCredentials
+	}
+	ok, err := VerifyPassword(password, u.PasswordHash)
+	// An empty TOTP secret would make every code computable; such an account can't sign in.
+	if err != nil || !ok || !u.Active || u.Disabled || u.TOTPSecret == "" {
+		return store.User{}, ErrInvalidCredentials
+	}
+	return u, nil
+}
+
+// finishLogin creates the session of a sign-in that passed every factor.
+func (s *Service) finishLogin(ctx context.Context, c Client, u store.User, method string) (string, User, error) {
 	tok, err := s.newSession(ctx, u.ID, c)
 	if err != nil {
 		return "", User{}, err
@@ -243,7 +261,7 @@ func (s *Service) Login(ctx context.Context, c Client, username, password, code 
 	if err := s.db.SetLastLogin(ctx, u.ID); err != nil {
 		s.log.Warn("record sign-in", "err", err)
 	}
-	s.log.Info("signed in", "user", u.Username, "ip", c.IP)
+	s.log.Info("signed in", "user", u.Username, "ip", c.IP, "method", method)
 	return tok, publicUser(u), nil
 }
 

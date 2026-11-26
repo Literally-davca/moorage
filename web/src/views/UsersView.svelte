@@ -165,7 +165,7 @@
         </p>
         <p class="meta">
           Shown only now. Send it to them yourself; it works once, until {fmt(issued.link.expires)}.
-          {#if issued.link.kind === 'reset'}Their password and code change, and their sessions end, only when they finish it.{/if}
+          {#if issued.link.kind === 'reset'}Their password and code change, their passkeys are removed and their sessions end, only when they finish it.{/if}
         </p>
         <div class="copyrow">
           <code class="mono linkval">{linkURL(issued)}</code>
@@ -195,7 +195,7 @@
               <p class="meta">
                 <span class="badge {statusClass[u.status]}">{statusText[u.status]}</span>
                 · {u.role === 'admin' ? 'Admin' : 'Viewer'} · {sourceText[u.source] ?? u.source}
-                {#if u.source === 'local' && u.status === 'active'} · {u.totp ? 'two-factor on' : 'no two-factor'}{/if}
+                {#if u.source === 'local' && u.status === 'active'} · {u.totp ? 'two-factor on' : 'no two-factor'}{#if u.passkeys} · {u.passkeys} {u.passkeys === 1 ? 'passkey' : 'passkeys'}{/if}{/if}
               </p>
               <p class="meta">
                 {u.lastLoginAt ? `Last sign-in ${fmt(u.lastLoginAt)}` : 'Never signed in'}

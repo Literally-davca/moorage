@@ -267,11 +267,11 @@ type ImportPreview struct {
 }
 
 type SystemUpdatesOverview struct {
-	Channel        string `json:"channel"`
-	LatestVersion  string `json:"latestVersion,omitempty"`
-	UpdateAvailable bool  `json:"updateAvailable,omitempty"`
-	CheckError     string `json:"checkError,omitempty"`
-	Nodes          []struct {
+	Channel         string `json:"channel"`
+	LatestVersion   string `json:"latestVersion,omitempty"`
+	UpdateAvailable bool   `json:"updateAvailable,omitempty"`
+	CheckError      string `json:"checkError,omitempty"`
+	Nodes           []struct {
 		ID              string `json:"id"`
 		Name            string `json:"name"`
 		Kind            string `json:"kind"`
@@ -323,10 +323,10 @@ type LogLine struct {
 }
 
 type PrunePreview struct {
-	Containers int   `json:"containers"`
-	Images     int   `json:"images"`
-	Networks   int   `json:"networks"`
-	BuildCache int64 `json:"buildCache"`
-	Volumes    int   `json:"volumes"`
+	Containers  int   `json:"containers"`
+	Images      int   `json:"images"`
+	Networks    int   `json:"networks"`
+	BuildCache  int64 `json:"buildCache"`
+	Volumes     int   `json:"volumes"`
 	Reclaimable int64 `json:"reclaimableBytes"`
 }

@@ -140,6 +140,7 @@ Open an interactive shell in a running stack container directly from the stack's
 - **Users** (sidebar, admins): **Create invite link** gives a one-time link valid 48 h. The new user picks a password and adds an authenticator app; every local user needs two-factor sign-in. **Reset link** replaces the password and two-factor when the user finishes it; their sessions end then. Role changes, disabling and deleting end the user's sessions right away.
 - There is always at least one active **local admin** with two-factor, so you can get in when the identity provider is down. Moorage refuses anything that would remove the last one, and admins can't demote, disable or delete themselves from the list.
 - **Account** (click your name): change your password, add a new authenticator, see where you're signed in and sign out other sessions.
+- **Passkeys** (Account page): add a security key, phone or password manager passkey and use it instead of the code at sign-in; mark a passkey as passwordless to sign in with it alone (only when it asks for a PIN or biometrics). Adding one needs your password and a current code. The authenticator app always stays, so losing a passkey locks no one out; a reset link removes the user's passkeys. Passkeys work only at `MOORAGE_PUBLIC_URL` (HTTPS, a domain name; see [the threat model](docs/security/threat-model.md#2-sign-in-sessions-and-passkeys)).
 - **OIDC:** set `MOORAGE_PUBLIC_URL` and the `MOORAGE_OIDC_*` variables below. Register the redirect URI `<public URL>/api/auth/oidc/callback` at the identity provider; the Users page shows it with a copy button, plus the status of the connection. Roles come from groups at every sign-in (admin groups, then viewer groups, then `MOORAGE_OIDC_DEFAULT_ROLE`); a user in none of them is refused. An OIDC sign-in lasts 12 hours and signing out at the provider doesn't end it; disable the user in Moorage to cut access at once. Accounts are matched by issuer and subject, never by name or e-mail, so an SSO user can't take over a local account.
   - *Authentik:* OAuth2/OpenID provider with an RS256 signing key, issuer `https://<authentik>/application/o/<slug>/`, `MOORAGE_OIDC_SCOPES="openid profile email"` (groups come with `profile`).
   - *Keycloak:* client with standard flow and PKCE S256, issuer `https://<keycloak>/realms/<realm>`, a *Group Membership* mapper named `groups` (or `MOORAGE_OIDC_GROUPS_CLAIM=realm_access.roles`), `MOORAGE_OIDC_SCOPES="openid profile email"`.
@@ -240,6 +241,13 @@ Detailed guides for built-in integrations and features live in `docs/`:
 - [Backups & Restore](docs/backups.md) — encrypted `.mbk` exports, scheduled S3/WebDAV uploads, Restic volumes
 - [Add-ons & Integrations](docs/addons.md) — built-in add-ons, sidecar catalogs, custom add-on authoring & overrides
 - [Compose Editor & Experience Modes](docs/compose-editor.md) — Beginner/Advanced/Custom modes, lossless Form/Comments/Clean tabs, auto-indent & linter 1-click fixes
+- [Migrating from Portainer, Dockge, Uptime Kuma & Gatus](docs/migration.md) — Portainer API import, taking over a Dockge stacks folder, monitor/channel/status page import and what isn't converted
+- [Read-only demo mode](docs/demo.md) — `MOORAGE_DEMO=true`: sample data, no Docker socket, every change refused
+- [Logging](docs/logging.md) — `MOORAGE_LOG_LEVEL` / `MOORAGE_LOG_FORMAT`, what each level means, security events for CrowdSec/fail2ban
+- [Generated values](docs/generated-values.md) — `@generate(...)`, Coolify `SERVICE_*` variables and free ports
+- [Problems and snapshots](docs/snapshots.md) — container diagnosis and local restore points
+- [AI assistant](docs/assistant.md) — the chat panel, levels of what it may do and read
+- [Apply & restart of Moorage's own stack](docs/self-stack.md) — the helper's checks, rollback and manual recovery
 - [CLI, Headless Mode & Interactive TUI](docs/cli.md) — `MOORAGE_WEB_UI=false`, Unix socket (`moorage.sock`), API bearer tokens, full CLI command reference & `moorage cli` TUI
 
 ## Configuration
@@ -289,6 +297,7 @@ Detailed guides for built-in integrations and features live in `docs/`:
 - **Checks from agents (`MOORAGE_PROBES`, on by default):** the hub can ask an agent to run an HTTP, TCP, ping or DNS check from the agent's network (max. 8 at once, 30 s each, the same private-address guards as on the hub). This gives the hub no new reach: it can already run any compose stack there. Read-only agents probe too, since a probe changes nothing on the host. Set `MOORAGE_PROBES=false` to refuse.
 
 - Access to Moorage equals root on the host (it controls Docker). Keep it behind HTTPS and a VPN or SSO proxy.
+- The [threat model](docs/security/threat-model.md) lists each protection and the tests that guard it; report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 - Every write needs the `X-Moorage` header (CSRF guard) and a `SameSite=Strict` session cookie; WebSockets reject cross-origin requests.
 - Only the SHA-256 of session tokens is stored. Sign-in is rate limited per IP and per username; TOTP codes can't be reused.
 - Stack history (`<data>/history.git`) contains `.env` files, so treat the data volume like a secret. It is never pushed anywhere.
@@ -298,6 +307,7 @@ Detailed guides for built-in integrations and features live in `docs/`:
 - Checks and notifications never connect to link-local or cloud metadata addresses (169.254.169.254 and friends), checked on the actual IP, so DNS rebinding doesn't get around it. A check can opt in. Notifications run no external programs and use fixed wording, no user templates. Channel secrets are never shown again after saving.
 - Sign-in with OIDC uses the authorization code flow with PKCE, state and nonce; ID tokens are checked for signature (RS256/ES256/PS256 only), issuer, audience, expiry and nonce. Client secrets stay in the environment, never in the database or UI.
 - Self-update installs only releases signed with the project's Ed25519 key, checked on the node that installs them; there is no downgrade except rollback to the kept previous version.
+- Each release also has SBOMs (SPDX, CycloneDX), a keyless cosign signature of the image and SBOM / build provenance attestations; the release notes show how to verify them.
 - No telemetry. Fonts and icons are bundled, the UI loads nothing from the internet.
 
 ## Develop

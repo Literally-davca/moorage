@@ -69,7 +69,7 @@ func BootCheck(dataDir, version string, now time.Time, log *slog.Logger) string 
 	_ = os.Remove(st.PrevPath)
 	_ = os.Remove(statePath)
 	if log != nil {
-		log.Warn("self-update: rolled back to previous binary at boot", "reason", reason, "to", st.FromVersion)
+		log.Error("self-update: rolled back to previous binary at boot", "reason", reason, "to", st.FromVersion)
 	}
 	return st.ExePath
 }

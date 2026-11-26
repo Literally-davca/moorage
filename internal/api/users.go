@@ -326,7 +326,10 @@ func (s *Server) getAccount(w http.ResponseWriter, r *http.Request) {
 		s.authErr(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, acc)
+	writeJSON(w, http.StatusOK, struct {
+		auth.Account
+		Passkey passkeyStatus `json:"passkey"`
+	}{acc, s.passkeyStatus(r.Context())})
 }
 
 func (s *Server) setAccountPreferences(w http.ResponseWriter, r *http.Request) {
@@ -411,11 +414,16 @@ type loginInfo struct {
 	SSOLabel   string `json:"ssoLabel,omitempty"`
 	LocalLogin bool   `json:"localLogin"`
 	Proxy      bool   `json:"proxy"`
+	// PasskeyOrigin is set when passkeys work: only at this address (the public URL).
+	PasskeyOrigin string `json:"passkeyOrigin,omitempty"`
 }
 
-func (s *Server) loginInfo() loginInfo {
+func (s *Server) loginInfo(ctx context.Context) loginInfo {
 	oidcProv := s.getOIDC()
 	li := loginInfo{LocalLogin: oidcProv.LocalLogin(), Proxy: s.proxy.Enabled()}
+	if rp, err := s.passkeyRP(ctx); err == nil {
+		li.PasskeyOrigin = rp.Origin
+	}
 	if oidcProv.Ready() {
 		li.SSO, li.SSOLabel = true, oidcProv.Label()
 	}

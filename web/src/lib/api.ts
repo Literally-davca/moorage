@@ -55,6 +55,8 @@ export interface LoginInfo {
   ssoLabel?: string;
   localLogin: boolean;
   proxy: boolean;
+  /** Set when passkeys work: only at this address (the public URL). */
+  passkeyOrigin?: string;
 }
 export interface Session {
   setupRequired: boolean;
@@ -64,6 +66,8 @@ export interface Session {
   login?: LoginInfo;
   /** Why the trusted proxy's user was refused. */
   proxyError?: string;
+  /** Read-only demo mode (MOORAGE_DEMO). */
+  demo?: boolean;
 }
 export interface UserInfo {
   id: number;
@@ -74,6 +78,7 @@ export interface UserInfo {
   role: Role;
   status: 'active' | 'invited' | 'disabled';
   totp: boolean;
+  passkeys?: number;
   lastLoginAt?: string;
   createdBy: string;
   createdAt: string;
@@ -141,6 +146,96 @@ export interface ImportPreview {
     stacks: { name: string; exists: boolean }[];
   }[];
   skipped?: string[];
+}
+
+// ---- imports from other tools (M18C) ----
+
+export type PortainerStackStatus = 'ready' | 'exists' | 'unsupported' | 'invalid';
+export interface PortainerStackPreview {
+  id: number;
+  name: string;
+  target: string;
+  endpoint: string;
+  type: string;
+  git: boolean;
+  active: boolean;
+  status: PortainerStackStatus;
+  reason?: string;
+  warnings: string[];
+  compose?: string;
+  envKeys: string[];
+}
+export interface PortainerConn {
+  url: string;
+  token: string;
+  insecure: boolean;
+  hostId: string;
+}
+export interface ImportResult {
+  kind?: string;
+  id?: number;
+  name: string;
+  ok: boolean;
+  reason?: string;
+}
+export type MonitorImportSource = 'uptime-kuma' | 'gatus';
+export interface ImportCheckPreview {
+  key: string;
+  name: string;
+  group?: string;
+  kind: string;
+  target: string;
+  interval: number;
+  timeout: number;
+  retries: number;
+  enabled: boolean;
+  channels: string[];
+  warnings: string[];
+  exists: boolean;
+  error?: string;
+}
+export interface ImportChannelPreview {
+  key: string;
+  name: string;
+  kind: string;
+  summary: string;
+  enabled: boolean;
+  warnings: string[];
+  exists: boolean;
+  error?: string;
+}
+export interface ImportPagePreview {
+  key: string;
+  title: string;
+  slug: string;
+  entries: { section?: string; displayName: string; checkKey: string }[];
+  exists: boolean;
+}
+export interface MonitorImportPreview {
+  source: MonitorImportSource;
+  checks: ImportCheckPreview[];
+  channels: ImportChannelPreview[];
+  pages: ImportPagePreview[];
+  skipped: { kind: string; name: string; reason: string }[];
+  notes: string[];
+}
+
+/** POSTs an import; a 422 "nothing imported" still carries the per-item results. */
+async function importRequest<T extends { results: ImportResult[] }>(path: string, body: unknown): Promise<T & { error?: string }> {
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      method: 'POST',
+      headers: { 'X-Moorage': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      credentials: 'same-origin',
+    });
+  } catch {
+    throw new ApiError(0, "Can't reach Moorage. Check that it's running.");
+  }
+  const data = await res.json().catch(() => ({}));
+  if (res.ok || (res.status === 422 && Array.isArray(data.results))) return data as T & { error?: string };
+  throw new ApiError(res.status, data.error ?? `Request failed (${res.status}).`);
 }
 
 async function rawError(res: Response): Promise<string> {
@@ -335,11 +430,36 @@ export interface SessionInfo {
   userAgent: string;
   current: boolean;
 }
+export interface PasskeyInfo {
+  id: number;
+  name: string;
+  rpId: string;
+  passwordless: boolean;
+  /** The authenticator verified the user (PIN, biometrics), so it may sign in without a password. */
+  canPasswordless: boolean;
+  /** A synced passkey (password manager, iCloud Keychain, Google Password Manager). */
+  synced: boolean;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+export interface PasskeyStatus {
+  available: boolean;
+  rpId?: string;
+  origin?: string;
+  reason?: string;
+}
+/** First step of a passkey ceremony: options for navigator.credentials. */
+export interface PasskeyCeremony {
+  ceremony: string;
+  options: unknown;
+}
 export interface Account {
   user: User;
   email?: string;
   totp: boolean;
   sessions: SessionInfo[];
+  passkeys: PasskeyInfo[];
+  passkey: PasskeyStatus;
 }
 export interface InviteInfo {
   username: string;
@@ -414,7 +534,7 @@ export interface Stack extends StackSummary {
   env: string;
   containers: Container[];
   /** Outcome of the last Apply & restart of Moorage's own stack. */
-  selfResult?: { at: string; ok: boolean; rolledBack: boolean; message: string };
+  selfResult?: { at: string; ok: boolean; rolledBack: boolean; message: string; reason?: string; checked?: string[]; log?: string; acknowledged?: boolean };
 }
 export interface Stat {
   id: string;
@@ -516,6 +636,8 @@ export interface CheckSettings {
   resolver?: string;
   expect?: string;
   allowLinkLocal?: boolean;
+  /** http/tcp/ping/dns: a slower answer counts as a failure (0/absent = off). */
+  maxLatencyMs?: number;
   pattern?: string;
   regex?: boolean;
   caseSensitive?: boolean;
@@ -587,6 +709,7 @@ export interface LintFix {
   line?: number;
   keys?: string[];
   targetTag?: string;
+  value?: string;
 }
 export interface LintIssue {
   severity: LintSeverity;
@@ -805,6 +928,169 @@ export interface StatusPageItem {
   hostId?: string;
   stack?: string;
 }
+/** A value generated into .env on save (M18E): names and kinds only, values for ports and URLs. */
+export interface GeneratedValue {
+  key: string;
+  kind: string;
+  value?: string;
+  note?: string;
+}
+
+/** One container problem of the Problems card (M18F). */
+export interface ProblemFix {
+  kind: string;
+  label: string;
+  service?: string;
+  value?: string;
+}
+export interface Problem {
+  rule: string;
+  severity: 'error' | 'warning' | 'info';
+  container: string;
+  service?: string;
+  title: string;
+  detail: string;
+  evidence?: string[];
+  fixes?: ProblemFix[];
+  since?: string;
+  duringMaintenance?: boolean;
+  cause: string;
+}
+export interface StackProblems {
+  problems: Problem[];
+  ignored: Problem[];
+  basic?: boolean;
+}
+
+/** Stack snapshots (M18F). */
+export interface SnapshotPart {
+  name: string;
+  kind: 'volume' | 'bind' | 'config';
+  source: string;
+  target?: string;
+  service?: string;
+  users?: string[];
+  size: number;
+}
+export interface SnapshotManifest {
+  id: string;
+  stack: string;
+  service?: string;
+  kind: 'manual' | 'auto' | 'pre-restore';
+  mode: 'pause' | 'stop' | 'live';
+  pinned?: boolean;
+  note?: string;
+  time: string;
+  version?: string;
+  commit?: string;
+  images?: Record<string, string>;
+  parts: SnapshotPart[];
+  size: number;
+  uncompressed: number;
+}
+export interface SnapshotSource {
+  kind: 'volume' | 'bind';
+  source: string;
+  target: string;
+  service: string;
+  users?: string[];
+  external: boolean;
+  size: number;
+}
+export interface SnapshotPlan {
+  sources: SnapshotSource[];
+  estimate: number;
+  freeBytes: number;
+  freePct: number;
+}
+export interface SnapshotSettings {
+  beforeUpdates: boolean;
+  extraBinds: string[];
+  retainAuto: number;
+  minFreePct: number;
+}
+
+/** AI assistant (M18G). */
+export interface AssistantSettings {
+  provider: 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openai-compatible';
+  model: string;
+  baseUrl: string;
+  levels: Record<string, 'off' | 'advise' | 'propose' | 'auto'>;
+  data: Record<string, 'never' | 'ask' | 'allowed'>;
+  autoConfirmed: Record<string, boolean>;
+  monthlyTokenLimit: number;
+  usageMonth: string;
+  usageTokens: number;
+  enabled?: boolean;
+  apiKeySet?: boolean;
+  categories?: string[];
+}
+export interface AssistantAction {
+  draftId?: number;
+  kind: string;
+  title: string;
+  hostId?: string;
+  stack?: string;
+  diff?: string;
+  done?: boolean;
+  result?: string;
+  demoted?: boolean;
+  undo?: string;
+}
+export interface AssistantEvent {
+  type: 'text' | 'tool' | 'action' | 'permission' | 'usage' | 'error' | 'done';
+  text?: string;
+  tool?: string;
+  action?: AssistantAction;
+  permission?: string;
+  inTokens?: number;
+  outTokens?: number;
+  incomplete?: boolean;
+}
+
+export interface StatusSnapshotLast {
+  at: string;
+  ok: boolean;
+  error?: string;
+  trigger?: string;
+  target?: string;
+  pages?: string[];
+  lastSuccess?: string;
+  failures?: number;
+  nextRetry?: string;
+}
+
+export interface StatusSnapshotInput {
+  provider: string;
+  pages: number[];
+  intervalMinutes: number;
+  staleMinutes: number;
+  s3Endpoint?: string;
+  s3Bucket?: string;
+  s3Region?: string;
+  s3AccessKey?: string;
+  s3SecretKey?: string;
+  s3Prefix?: string;
+  webdavUrl?: string;
+  webdavUsername?: string;
+  webdavPassword?: string;
+  githubRepo?: string;
+  githubBranch?: string;
+  githubPath?: string;
+  githubToken?: string;
+}
+
+export interface StatusSnapshot extends StatusSnapshotInput {
+  enabled: boolean;
+  running: boolean;
+  s3SecretKeySet: boolean;
+  webdavPasswordSet: boolean;
+  githubTokenSet: boolean;
+  target?: string;
+  last?: StatusSnapshotLast;
+  stale: boolean;
+}
+
 export interface StatusPageInput {
   slug: string;
   title: string;
@@ -1012,6 +1298,51 @@ export interface TimelineEntry {
     /** upstream stack the alert was folded into (cascade) */
     causedBy?: StackRef;
   };
+}
+/** M18A: one entry in the causal timeline of an incident. */
+export interface TimelineSource {
+  type: string; // "compose_change" | "image_update" | "docker_event" | "log_match" | "probe_failure"
+  timestamp: string;
+  title: string;
+  detail?: string;
+  stack?: string;
+  hostId?: string;
+  sourceRef?: string;
+  severity?: string; // "info" | "warning" | "critical"
+  actor?: string;
+}
+/** M18A: the full causal timeline attached to an incident. */
+export interface CausalTimeline {
+  incidentId: number;
+  checkId: number;
+  checkName: string;
+  checkKind: string;
+  windowStart: string;
+  windowEnd: string;
+  sources: TimelineSource[];
+  generatedAt: string;
+}
+/** M18A: current Rollback & Verify state (empty object when none ran). */
+export interface RollbackVerifyState {
+  active: boolean;
+  startedAt?: string;
+  finishedAt?: string;
+  phase?: 'verifying' | 'done' | 'failed';
+  rollbackType?: 'image' | 'compose';
+  targetRef?: string;
+  targetLabel?: string;
+  triggeredBy?: string;
+  lastCheckAt?: string;
+  verificationPassed?: boolean;
+  error?: string;
+  incidentClosed?: boolean;
+}
+/** M18A: one rollback option offered to the user. */
+export interface RollbackOption {
+  type: 'image' | 'compose';
+  label: string;
+  description: string;
+  targetRef: string;
 }
 export type AutoRestartMode = 'off' | 'on_recover' | 'on_recover_and_deploy';
 export interface StackRef {
@@ -1422,6 +1753,12 @@ export const api = {
     request<User>('POST', '/api/setup/finish', { token, username, code }),
   login: (username: string, password: string, code: string) =>
     request<User>('POST', '/api/login', { username, password, code }),
+  /** Password plus a passkey instead of the TOTP code. */
+  loginWithPasskey: (username: string, password: string, ceremony: string, response: unknown) =>
+    request<User>('POST', '/api/login', { username, password, passkey: { ceremony, response } }),
+  passkeyLoginOptions: () => request<PasskeyCeremony>('POST', '/api/login/passkey/options', {}),
+  /** Passwordless sign-in with a passkey the user allowed for it. */
+  passkeyLogin: (ceremony: string, response: unknown) => request<User>('POST', '/api/login/passkey', { ceremony, response }),
   logout: () => request<{ redirect?: string } | undefined>('POST', '/api/logout'),
   inviteInspect: (token: string) => request<InviteInfo>('POST', '/api/invite/inspect', { token }),
   inviteStart: (token: string, password: string) =>
@@ -1441,6 +1778,13 @@ export const api = {
   totpStart: (password: string, code: string) => request<TOTPEnrolment>('POST', '/api/account/totp/start', { password, code }),
   totpFinish: (secret: string, ticket: string, code: string) =>
     request<void>('PUT', '/api/account/totp', { secret, ticket, code }),
+  passkeyRegisterStart: (password: string, code: string) =>
+    request<PasskeyCeremony>('POST', '/api/account/passkeys/start', { password, code }),
+  passkeyRegisterFinish: (ceremony: string, name: string, passwordless: boolean, response: unknown) =>
+    request<PasskeyInfo>('POST', '/api/account/passkeys', { ceremony, name, passwordless, response }),
+  updatePasskey: (id: number, name: string, passwordless: boolean) =>
+    request<PasskeyInfo>('PUT', `/api/account/passkeys/${id}`, { name, passwordless }),
+  deletePasskey: (id: number) => request<void>('DELETE', `/api/account/passkeys/${id}`),
   revokeSession: (id: number) => request<void>('DELETE', `/api/account/sessions/${id}`),
   revokeOtherSessions: () => request<{ revoked: number }>('DELETE', '/api/account/sessions'),
   hosts: () =>
@@ -1458,6 +1802,34 @@ export const api = {
   stats: (name: string) => request<Stat[]>('GET', `${H()}/stacks/${enc(name)}/stats`),
   validate: (name: string, compose: string, env: string, deploy = false) =>
     request<{ ok: boolean; error?: string; issues?: LintIssue[] }>('POST', `${H()}/stacks/${enc(name)}/validate`, { compose, env, deploy }),
+  snapshots: (name: string) => request<{ snapshots: SnapshotManifest[]; settings: SnapshotSettings }>('GET', `${H()}/stacks/${enc(name)}/snapshots`),
+  snapshotPlan: (name: string, service = '') =>
+    request<SnapshotPlan>('GET', `${H()}/stacks/${enc(name)}/snapshots/plan?service=${enc(service)}`),
+  createSnapshot: (name: string, req: { mode: string; service?: string; extraBinds?: string[]; note?: string }) =>
+    request<Op>('POST', `${H()}/stacks/${enc(name)}/snapshots`, req),
+  saveSnapshotSettings: (name: string, s: SnapshotSettings) =>
+    request<SnapshotSettings>('PUT', `${H()}/stacks/${enc(name)}/snapshots/settings`, s),
+  snapshotPreview: (name: string, id: string) =>
+    request<{ compose: string; env: string; currentCompose: string; currentEnv: string }>('GET', `${H()}/stacks/${enc(name)}/snapshots/${enc(id)}/preview`),
+  restoreSnapshot: (name: string, id: string, scope: string, preRestore: boolean) =>
+    request<Op>('POST', `${H()}/stacks/${enc(name)}/snapshots/${enc(id)}/restore`, { scope, preRestore }),
+  pinSnapshot: (name: string, id: string, pinned: boolean) =>
+    request<void>('PUT', `${H()}/stacks/${enc(name)}/snapshots/${enc(id)}/pin`, { pinned }),
+  deleteSnapshot: (name: string, id: string) => request<void>('DELETE', `${H()}/stacks/${enc(name)}/snapshots/${enc(id)}`),
+  snapshotDownloadUrl: (name: string, id: string) => `${H()}/stacks/${enc(name)}/snapshots/${enc(id)}/download`,
+  selfApplyNotices: () =>
+    request<{ hostId: string; hostName: string; stack: string; at: string; message: string; reason?: string }[]>('GET', '/api/self-apply/notices'),
+  ackSelfApply: (hostId: string) => request<void>('POST', `/api/hosts/${enc(hostId)}/self-apply/ack`),
+  selfApplyLog: (hostId: string) => request<{ log: string }>('GET', `/api/hosts/${enc(hostId)}/self-apply/log`),
+  assistantStatus: () => request<{ enabled: boolean; configured: boolean; admin: boolean }>('GET', '/api/assistant/status'),
+  assistantSettings: () => request<AssistantSettings>('GET', '/api/addons/assistant/settings'),
+  saveAssistantSettings: (s: AssistantSettings & { apiKey?: string; clearKey?: boolean }) =>
+    request<AssistantSettings>('PUT', '/api/addons/assistant/settings', s),
+  assistantApply: (id: number) => request<{ ok: boolean }>('POST', `/api/assistant/actions/${id}/apply`),
+  assistantReject: (id: number) => request<void>('POST', `/api/assistant/actions/${id}/reject`),
+  stackProblems: (name: string) => request<StackProblems>('GET', `${H()}/stacks/${enc(name)}/problems`),
+  ignoreProblem: (name: string, service: string, rule: string, ignored: boolean) =>
+    request<void>('PUT', `${H()}/stacks/${enc(name)}/problems/ignored`, { service, rule, ignored }),
   lintFix: (name: string, compose: string, env: string, fix: LintFix) =>
     request<LintResult>('POST', `${H()}/stacks/${enc(name || 'new')}/lint/fix`, { compose, env, fix }),
   extractEnv: (name: string, compose: string, env: string, overwrite = false) =>
@@ -1470,7 +1842,7 @@ export const api = {
     request<Op>('POST', `/api/hosts/${enc(host ?? app.host)}/containers/${enc(id)}/actions/${enc(action)}`),
   externalAction: (name: string, action: string) => request<Op>('POST', `${H()}/external/${enc(name)}/actions/${enc(action)}`),
   create: (name: string, compose: string, env: string, template?: TemplateRef) =>
-    request<void>('POST', `${H()}/stacks`, { name, compose, env, template }),
+    request<{ name: string; generated?: GeneratedValue[]; generatedNote?: string }>('POST', `${H()}/stacks`, { name, compose, env, template }),
   templates: () => request<TemplateCatalog>('GET', '/api/templates'),
   template: (source: string, id: string, host?: string) =>
     request<TemplateDetail>('GET', `/api/templates/${enc(source)}/${enc(id)}?host=${enc(host ?? app.host)}`),
@@ -1488,7 +1860,8 @@ export const api = {
     request<void>('PUT', `/api/templates/sources/${id}`, { url, allowLocal }),
   deleteTemplateSource: (id: number) => request<void>('DELETE', `/api/templates/sources/${id}`),
   refreshTemplateSource: (id: number) => request<void>('POST', `/api/templates/sources/${id}/refresh`),
-  save: (name: string, compose: string, env: string) => request<void>('PUT', `${H()}/stacks/${enc(name)}`, { compose, env }),
+  save: (name: string, compose: string, env: string) =>
+    request<{ generated: GeneratedValue[]; generatedNote: string; compose: string; env: string } | undefined>('PUT', `${H()}/stacks/${enc(name)}`, { compose, env }),
   selfApply: (name: string, compose: string, env: string) =>
     request<void>('POST', `${H()}/stacks/${enc(name)}/self-apply`, { compose, env }),
   remove: (name: string) => request<void>('DELETE', `${H()}/stacks/${enc(name)}`),
@@ -1521,6 +1894,15 @@ export const api = {
     request<{ id: number }>(id ? 'PUT' : 'POST', id ? `/api/checks/${id}` : '/api/checks', c),
   deleteCheck: (id: number) => request<void>('DELETE', `/api/checks/${id}`),
   testCheck: (c: CheckInput) => request<CheckTestResult>('POST', '/api/checks/test', c),
+  // M18A: causal incident timeline & rollback & verify
+  incidentTimeline: (checkId: number, incidentId: number) =>
+    request<CausalTimeline>('GET', `/api/checks/${checkId}/incidents/${incidentId}/timeline`),
+  rollbackOptions: (checkId: number, incidentId: number) =>
+    request<RollbackOption[]>('GET', `/api/checks/${checkId}/incidents/${incidentId}/rollback-options`),
+  rollbackState: (checkId: number, incidentId: number) =>
+    request<RollbackVerifyState>('GET', `/api/checks/${checkId}/incidents/${incidentId}/rollback-state`),
+  rollbackIncident: (checkId: number, incidentId: number, type: string) =>
+    request<RollbackVerifyState>('POST', `/api/checks/${checkId}/incidents/${incidentId}/rollback`, { type }),
   channels: () => request<Channel[]>('GET', '/api/channels'),
   saveChannel: (c: Omit<Channel, 'id'> & { id?: number }) =>
     request<{ id: number }>(c.id ? 'PUT' : 'POST', c.id ? `/api/channels/${c.id}` : '/api/channels', c),
@@ -1690,6 +2072,10 @@ export const api = {
   createRegistryWebhook: (body: { name: string; provider: string; secret: string; applyNow: boolean }) =>
     request<{ webhook: RegistryWebhook; token: string; url: string }>('POST', '/api/addons/webhooks', body),
   deleteRegistryWebhook: (id: number) => request<void>('DELETE', `/api/addons/webhooks/${id}`),
+  statusSnapshot: () => request<StatusSnapshot>('GET', '/api/addons/status-snapshot/config'),
+  saveStatusSnapshot: (c: StatusSnapshotInput) => request<StatusSnapshot>('PUT', '/api/addons/status-snapshot/config', c),
+  testStatusSnapshot: (c: StatusSnapshotInput) => request<{ ok: boolean; target: string }>('POST', '/api/addons/status-snapshot/test', c),
+  publishStatusSnapshot: () => request<StatusSnapshotLast>('POST', '/api/addons/status-snapshot/publish'),
   mcpTokens: () => request<{ tokens: MCPToken[]; endpoint: string }>('GET', '/api/addons/mcp/tokens'),
   createMCPToken: (body: { name: string; acl: MCPACLRule[]; requireApproval: boolean; expiresDays: number }) =>
     request<{ token: MCPToken; secret: string }>('POST', '/api/addons/mcp/tokens', body),
@@ -1764,6 +2150,14 @@ export const api = {
     request<void>('POST', '/api/push/subscriptions', sub),
   pushUnsubscribe: (endpoint: string) => request<void>('POST', '/api/push/subscriptions/delete', { endpoint }),
   pushTest: () => request<{ sent: number }>('POST', '/api/push/test'),
+  portainerPreview: (c: PortainerConn) =>
+    request<{ stacks: PortainerStackPreview[] }>('POST', '/api/import/portainer/preview', c),
+  portainerApply: (c: PortainerConn, stacks: { id: number; name: string }[]) =>
+    importRequest<{ results: ImportResult[]; created: number }>('/api/import/portainer/apply', { ...c, stacks }),
+  monitorImportPreview: (source: MonitorImportSource, content: string) =>
+    request<MonitorImportPreview>('POST', '/api/import/monitors/preview', { source, content }),
+  monitorImportApply: (source: MonitorImportSource, content: string, selected: string[], pause: boolean) =>
+    importRequest<{ results: ImportResult[]; created: Record<string, number> }>('/api/import/monitors/apply', { source, content, selected, pause }),
   importBackupApply: (token: string, database: boolean, stacks: boolean) =>
     request<{ restoredStacks: number; failedStacks: string[]; dbStaged: boolean }>('POST', '/api/settings/backup/import/apply', { token, database, stacks }),
   deletedStacks: (host?: string) => request<DeletedStack[]>('GET', `/api/hosts/${enc(host ?? app.host)}/deleted-stacks`),

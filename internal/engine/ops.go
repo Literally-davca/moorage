@@ -177,7 +177,11 @@ func (e *Engine) RunAction(name, action string) (*Op, error) {
 			fmt.Fprintf(op, "✓ %s finished\n", action)
 		}
 		op.finish(err)
-		e.log.Info("compose operation", "stack", name, "action", action, "ok", err == nil)
+		if err != nil {
+			e.log.Warn("compose operation failed", "stack", name, "action", action, "err", err)
+		} else {
+			e.log.Info("compose operation", "stack", name, "action", action)
+		}
 	}()
 	return op, nil
 }

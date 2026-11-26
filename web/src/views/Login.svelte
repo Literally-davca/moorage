@@ -3,6 +3,7 @@
   import { api, type LoginInfo } from '../lib/api';
   import { app, loginParams } from '../lib/state.svelte';
   import AuthFrame from './AuthFrame.svelte';
+  import { getPasskey, passkeysSupported } from '../lib/webauthn';
 
   let { login, proxyError = '', onDone }: { login: LoginInfo; proxyError?: string; onDone: () => void } = $props();
 
@@ -29,6 +30,45 @@
   // The first message only: later errors come from the form.
   let error = $state(ssoCode ? (ssoErrors[ssoCode] ?? ssoErrors.failed) : untrack(() => proxyError));
   let busy = $state(false);
+
+  // Passkeys are bound to the public URL; at any other address the browser refuses them.
+  const passkeyOK = $derived(!!login.passkeyOrigin && window.location.origin === login.passkeyOrigin && passkeysSupported());
+
+  /** Password plus a passkey instead of the code. */
+  async function passkeySecondFactor() {
+    error = '';
+    if (!username.trim() || !password) {
+      error = 'Enter your username and password first, then use your passkey.';
+      return;
+    }
+    busy = true;
+    try {
+      const c = await api.passkeyLoginOptions();
+      const response = await getPasskey(c.options);
+      app.user = await api.loginWithPasskey(username, password, c.ceremony, response);
+      onDone();
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** Passwordless: a passkey the user allowed to sign in on its own. */
+  async function passkeyOnly() {
+    error = '';
+    busy = true;
+    try {
+      const c = await api.passkeyLoginOptions();
+      const response = await getPasskey(c.options);
+      app.user = await api.passkeyLogin(c.ceremony, response);
+      onDone();
+    } catch (err) {
+      error = (err as Error).message;
+    } finally {
+      busy = false;
+    }
+  }
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
@@ -70,7 +110,17 @@
           maxlength="7" required />
       </div>
       <button class="btn btn-primary wide" aria-busy={busy}>Sign in</button>
+      {#if passkeyOK}
+        <button type="button" class="btn btn-ghost wide" disabled={busy} onclick={passkeySecondFactor}>
+          Use a passkey instead of the code
+        </button>
+      {/if}
     </form>
+    {#if passkeyOK}
+      <p class="or meta"><span>or</span></p>
+      <button type="button" class="btn wide" disabled={busy} onclick={passkeyOnly}>Sign in with a passkey</button>
+      <p class="meta hint-pk">Works for passkeys you allowed to sign in without a password on your Account page.</p>
+    {/if}
   {/if}
 </AuthFrame>
 
@@ -88,6 +138,10 @@
   }
   .code {
     letter-spacing: 0.2em;
+  }
+  .hint-pk {
+    margin-top: 8px;
+    text-align: center;
   }
   .top {
     margin-bottom: 16px;

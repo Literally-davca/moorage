@@ -42,16 +42,16 @@ type checkInput struct {
 
 type checkDTO struct {
 	checkInput
-	ID        int64            `json:"id"`
-	State     monitor.State    `json:"state"`
-	Uptime24h *float64         `json:"uptime24h"`
+	ID               int64            `json:"id"`
+	State            monitor.State    `json:"state"`
+	Uptime24h        *float64         `json:"uptime24h"`
 	Ticks            []monitor.Tick   `json:"ticks"`
 	HostName         string           `json:"hostName,omitempty"`
 	StackDisplayName string           `json:"stackDisplayName,omitempty"`
 	Incidents        []incidentDTO    `json:"incidents,omitempty"`
-	Anchors   []monitor.Anchor `json:"anchors,omitempty"`
-	Uptime7d  *float64         `json:"uptime7d,omitempty"`
-	Uptime30d *float64         `json:"uptime30d,omitempty"`
+	Anchors          []monitor.Anchor `json:"anchors,omitempty"`
+	Uptime7d         *float64         `json:"uptime7d,omitempty"`
+	Uptime30d        *float64         `json:"uptime30d,omitempty"`
 	// Maintenance is the planned window running over the check now, if any.
 	Maintenance *activeMaintDTO `json:"maintenance,omitempty"`
 	// LocationTicks are the newest results per location of a multi-location check.
@@ -108,12 +108,12 @@ func (s *Server) validateCheck(ctx context.Context, in *checkInput) error {
 		if n, perr := strconv.Atoi(p); err != nil || h == "" || perr != nil || n < 1 || n > 65535 {
 			return errors.New("Use host:port, for example db.lan:5432.")
 		}
-		*st = monitor.Settings{AllowLinkLocal: st.AllowLinkLocal}
+		*st = monitor.Settings{AllowLinkLocal: st.AllowLinkLocal, MaxLatencyMS: st.MaxLatencyMS}
 	case monitor.KindPing:
 		if strings.ContainsAny(in.Target, "/: ") && net.ParseIP(in.Target) == nil {
 			return errors.New("Ping needs a host name or IP address.")
 		}
-		*st = monitor.Settings{AllowLinkLocal: st.AllowLinkLocal}
+		*st = monitor.Settings{AllowLinkLocal: st.AllowLinkLocal, MaxLatencyMS: st.MaxLatencyMS}
 	case monitor.KindDNS:
 		switch strings.ToUpper(st.RecordType) {
 		case "", "A", "AAAA", "CNAME", "MX", "TXT", "NS":
@@ -130,7 +130,7 @@ func (s *Server) validateCheck(ctx context.Context, in *checkInput) error {
 				return errors.New("The DNS server must be an IP address.")
 			}
 		}
-		*st = monitor.Settings{RecordType: st.RecordType, Resolver: st.Resolver, Expect: st.Expect, AllowLinkLocal: st.AllowLinkLocal}
+		*st = monitor.Settings{RecordType: st.RecordType, Resolver: st.Resolver, Expect: st.Expect, AllowLinkLocal: st.AllowLinkLocal, MaxLatencyMS: st.MaxLatencyMS}
 	case monitor.KindStack:
 		stacks := st.Stacks
 		*st = monitor.Settings{}
@@ -173,6 +173,11 @@ func (s *Server) validateCheck(ctx context.Context, in *checkInput) error {
 	}
 	if in.Kind != monitor.KindHTTP {
 		st.URLs = nil
+	}
+	if !monitor.RemoteKinds[in.Kind] {
+		st.MaxLatencyMS = 0
+	} else if st.MaxLatencyMS != 0 && (st.MaxLatencyMS < 1 || st.MaxLatencyMS >= in.Timeout*1000) {
+		return fmt.Errorf("The latency limit must be between 1 ms and the timeout (%d s).", in.Timeout)
 	}
 	if in.Stack != "" && !stackNameRe.MatchString(in.Stack) {
 		return errors.New("The linked stack name isn't valid.")

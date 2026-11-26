@@ -30,9 +30,9 @@ type User struct {
 	TOTPLastCounter int64
 	Active          bool // false until TOTP enrolment is confirmed
 
-	AuthSource  string // "local", "oidc" or "proxy"
-	Disabled    bool   // set by an admin; wins over the IdP and the proxy
-	CreatedBy   string // username of the admin who invited them, "" for setup and external users
+	AuthSource      string // "local", "oidc" or "proxy"
+	Disabled        bool   // set by an admin; wins over the IdP and the proxy
+	CreatedBy       string // username of the admin who invited them, "" for setup and external users
 	LastLoginAt     time.Time
 	DisplayName     string // informational (OIDC claims or the invite)
 	Email           string // informational (OIDC claims)
@@ -570,6 +570,41 @@ var migrations = []string{
 	// answer with the certificate may have been lost), then it is deleted.
 	`ALTER TABLE join_tokens ADD COLUMN agent_id TEXT NOT NULL DEFAULT '';
 	ALTER TABLE join_tokens ADD COLUMN redeemed_at INTEGER NOT NULL DEFAULT 0;`,
+	// M18A: causal incident timeline and rollback & verify state
+	`ALTER TABLE incidents ADD COLUMN timeline_json TEXT NOT NULL DEFAULT '{}';
+	ALTER TABLE incidents ADD COLUMN rollback_verify_json TEXT NOT NULL DEFAULT '{}';`,
+	// M18A/F: container events for incident timeline and Problems card (shared)
+	`CREATE TABLE container_events (
+		id INTEGER PRIMARY KEY,
+		host_id TEXT NOT NULL,
+		stack TEXT NOT NULL,
+		service TEXT NOT NULL,
+		container_id TEXT NOT NULL,
+		type TEXT NOT NULL, -- die, oom, health_status, restart
+		detail TEXT NOT NULL DEFAULT '',
+		exit_code INTEGER,
+		time INTEGER NOT NULL,
+		count INTEGER NOT NULL DEFAULT 1 -- merged crash loops
+	);
+	CREATE INDEX container_events_stack_time ON container_events(host_id, stack, time);
+	CREATE INDEX container_events_container_time ON container_events(container_id, time);`,
+	// M18B: passkeys (WebAuthn credentials) of local users, a second factor next to TOTP.
+	// credential_id is the base64url credential id, user_handle the base64url WebAuthn user
+	// handle (random, shared by all passkeys of one user), data_json the library's credential
+	// record (public key, sign counter, flags).
+	`CREATE TABLE webauthn_credentials (
+		id INTEGER PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		credential_id TEXT NOT NULL UNIQUE,
+		user_handle TEXT NOT NULL,
+		rp_id TEXT NOT NULL,
+		name TEXT NOT NULL DEFAULT '',
+		data_json TEXT NOT NULL,
+		passwordless INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL,
+		last_used_at INTEGER NOT NULL DEFAULT 0
+	);
+	CREATE INDEX webauthn_credentials_user ON webauthn_credentials(user_id);`,
 }
 
 // Open opens (and migrates) moorage.db in dataDir.

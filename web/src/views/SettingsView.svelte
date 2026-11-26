@@ -11,6 +11,7 @@
   import UsersView from './UsersView.svelte';
   import TemplateSources from './TemplateSources.svelte';
   import AddonsView from './AddonsView.svelte';
+  import ImportView from './ImportView.svelte';
 
   let { tab, onHostsChanged }: { tab: SettingsTab; onHostsChanged: () => void } = $props();
 
@@ -27,6 +28,7 @@
           { id: 'users' as const, label: 'Users', icon: 'users' as const, href: '#/settings/users' },
           { id: 'templates' as const, label: 'Templates', icon: 'template' as const, href: '#/settings/templates' },
           { id: 'addons' as const, label: 'Add-ons', icon: 'plug' as const, href: '#/settings/addons' },
+          { id: 'import' as const, label: 'Import', icon: 'swap' as const, href: '#/settings/import' },
         ]
       : []),
   ]);
@@ -63,6 +65,8 @@
     <TemplateSources />
   {:else if activeTab === 'addons'}
     <AddonsView />
+  {:else if activeTab === 'import'}
+    <ImportView />
   {/if}
 </div>
 

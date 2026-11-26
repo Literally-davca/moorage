@@ -17,6 +17,8 @@ import (
 	"unicode/utf8"
 
 	"go.yaml.in/yaml/v4"
+
+	"moorage/internal/gen"
 )
 
 // Limits for template content. Compose and .env must also fit the editor's limit
@@ -157,7 +159,11 @@ func (v *Variable) validate() error {
 	switch v.Generate {
 	case "", GenPassword, GenHex32, GenUUID:
 	default:
-		return fmt.Errorf("unknown generate kind %q (use password, hex32 or uuid)", v.Generate)
+		// M18E: the shared generator's kinds with parameters ("password, 48", "base64key").
+		spec, _, err := gen.ParseGenerate("@generate(" + v.Generate + ")")
+		if err != nil || spec.Kind == gen.KindPort {
+			return fmt.Errorf("unknown generate kind %q (use password, alnum, hex, base64, base64key, uuid or user)", v.Generate)
+		}
 	}
 	if v.Pattern != "" {
 		if len(v.Pattern) > maxPattern {

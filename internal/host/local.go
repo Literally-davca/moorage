@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"moorage/internal/diagnose"
 	"moorage/internal/engine"
 )
 
@@ -58,6 +59,10 @@ func (l Local) ExportHistory(_ context.Context, w io.Writer) error {
 
 func (l Local) DeletedStacks(_ context.Context) ([]engine.DeletedStack, error) {
 	return l.E.DeletedStacks()
+}
+
+func (l Local) DiagnoseStack(ctx context.Context, stack string) ([]diagnose.Facts, error) {
+	return l.E.DiagnoseStack(ctx, stack)
 }
 
 func (l Local) PrunePreview(ctx context.Context) (engine.PrunePreview, error) {

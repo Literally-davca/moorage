@@ -128,9 +128,9 @@ func newTemplatesCmd(opts *rootOpts) *cobra.Command {
 				vals[strings.TrimSpace(k)] = v
 			}
 			var rendered struct {
-				Compose string   `json:"compose"`
-				Env     string   `json:"env"`
-				Notes   string   `json:"notes"`
+				Compose  string   `json:"compose"`
+				Env      string   `json:"env"`
+				Notes    string   `json:"notes"`
 				Warnings []string `json:"warnings"`
 			}
 			if err := c.Post(ctx, "/api/templates/render", map[string]any{

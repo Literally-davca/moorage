@@ -108,10 +108,10 @@ func (s *Server) buildGrafanaDashboard(ctx context.Context, req promDashboardReq
 
 	panels := []map[string]any{
 		{
-			"id":      1,
-			"type":    "stat",
-			"title":   "Hosts online",
-			"gridPos": map[string]int{"x": 0, "y": 0, "w": 6, "h": 4},
+			"id":         1,
+			"type":       "stat",
+			"title":      "Hosts online",
+			"gridPos":    map[string]int{"x": 0, "y": 0, "w": 6, "h": 4},
 			"datasource": ds,
 			"targets": []map[string]any{{
 				"expr":         "sum(moorage_host_up" + wrapFilter("", hostLabelOnly(req)) + ")",
@@ -132,10 +132,10 @@ func (s *Server) buildGrafanaDashboard(ctx context.Context, req promDashboardReq
 			},
 		},
 		{
-			"id":      2,
-			"type":    "stat",
-			"title":   "Stacks up",
-			"gridPos": map[string]int{"x": 6, "y": 0, "w": 6, "h": 4},
+			"id":         2,
+			"type":       "stat",
+			"title":      "Stacks up",
+			"gridPos":    map[string]int{"x": 6, "y": 0, "w": 6, "h": 4},
 			"datasource": ds,
 			"targets": []map[string]any{{
 				"expr":         "count(moorage_stack_state" + wrapFilter(hostFilter, `state="up"`) + ") or vector(0)",
@@ -149,10 +149,10 @@ func (s *Server) buildGrafanaDashboard(ctx context.Context, req promDashboardReq
 			},
 		},
 		{
-			"id":      3,
-			"type":    "stat",
-			"title":   "Checks degraded (Partially down)",
-			"gridPos": map[string]int{"x": 12, "y": 0, "w": 6, "h": 4},
+			"id":         3,
+			"type":       "stat",
+			"title":      "Checks degraded (Partially down)",
+			"gridPos":    map[string]int{"x": 12, "y": 0, "w": 6, "h": 4},
 			"datasource": ds,
 			"targets": []map[string]any{{
 				"expr":         `count(moorage_check_state{state="degraded"} == 1) or vector(0)`,
@@ -173,10 +173,10 @@ func (s *Server) buildGrafanaDashboard(ctx context.Context, req promDashboardReq
 			},
 		},
 		{
-			"id":      4,
-			"type":    "stat",
-			"title":   "Checks down",
-			"gridPos": map[string]int{"x": 18, "y": 0, "w": 6, "h": 4},
+			"id":         4,
+			"type":       "stat",
+			"title":      "Checks down",
+			"gridPos":    map[string]int{"x": 18, "y": 0, "w": 6, "h": 4},
 			"datasource": ds,
 			"targets": []map[string]any{{
 				"expr":         `count(moorage_check_state{state="down"} == 1) or vector(0)`,
@@ -197,16 +197,16 @@ func (s *Server) buildGrafanaDashboard(ctx context.Context, req promDashboardReq
 			},
 		},
 		{
-			"id":      5,
-			"type":    "table",
-			"title":   "Stacks status",
-			"gridPos": map[string]int{"x": 0, "y": 4, "w": 12, "h": 9},
+			"id":         5,
+			"type":       "table",
+			"title":      "Stacks status",
+			"gridPos":    map[string]int{"x": 0, "y": 4, "w": 12, "h": 9},
 			"datasource": ds,
 			"targets": []map[string]any{{
-				"expr":         "moorage_stack_state" + wrapFilter(hostFilter, "") + " == 1",
-				"format":       "table",
-				"instant":      true,
-				"refId":        "A",
+				"expr":    "moorage_stack_state" + wrapFilter(hostFilter, "") + " == 1",
+				"format":  "table",
+				"instant": true,
+				"refId":   "A",
 			}},
 			"fieldConfig": map[string]any{
 				"defaults": map[string]any{
@@ -215,10 +215,10 @@ func (s *Server) buildGrafanaDashboard(ctx context.Context, req promDashboardReq
 			},
 		},
 		{
-			"id":      6,
-			"type":    "timeseries",
-			"title":   "Check latency (ms)",
-			"gridPos": map[string]int{"x": 12, "y": 4, "w": 12, "h": 9},
+			"id":         6,
+			"type":       "timeseries",
+			"title":      "Check latency (ms)",
+			"gridPos":    map[string]int{"x": 12, "y": 4, "w": 12, "h": 9},
 			"datasource": ds,
 			"targets": []map[string]any{{
 				"expr":         "moorage_check_latency_ms" + wrapFilter(hostLabelOnly(req), ""),

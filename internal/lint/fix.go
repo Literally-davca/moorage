@@ -491,6 +491,29 @@ func Apply(compose, env string, f Fix) (Result, error) {
 		hcLines := healthcheckBlock(indent, sn.node)
 		i := sn.key.Line
 		t.lines = append(t.lines[:i], append(hcLines, t.lines[i:]...)...)
+	case "remove-ports":
+		sn, ok := findService(doc, f.Service)
+		if !ok {
+			return res, ErrNoFix
+		}
+		pk := mapGet(sn.node, "ports")
+		if pk == nil {
+			return res, nil
+		}
+		from, to := pk.key.Line-1, lastLine(pk.val)
+		t.lines = append(t.lines[:from], t.lines[to:]...)
+	case "set-mem-limit", "set-restart-no":
+		if err := setServiceKey(t, doc, f); err != nil {
+			return res, err
+		}
+	case "add-env-generate":
+		if err := addEnvGenerate(t, doc, f); err != nil {
+			return res, err
+		}
+	case "use-free-port":
+		if err := useFreePort(t, doc, f); err != nil {
+			return res, err
+		}
 	case "pin-tag":
 		if strings.TrimSpace(f.TargetTag) == "" {
 			return res, ErrNoFix

@@ -163,7 +163,7 @@ func (s *Server) wsTerminal(w http.ResponseWriter, r *http.Request) {
 		StartedAt:     startedAt,
 	})
 	if err != nil {
-		s.log.Warn("audit terminal start", "err", err)
+		s.log.Error("audit terminal start", "err", err)
 	}
 	// Kind "terminal" is not in monitor.DeployKinds: it never silences checks or adds a deploy anchor.
 	if s.mon != nil {
@@ -268,7 +268,7 @@ func (s *Server) wsContainerTerminal(w http.ResponseWriter, r *http.Request) {
 		StartedAt:     startedAt,
 	})
 	if err != nil {
-		s.log.Warn("audit container terminal start", "err", err)
+		s.log.Error("audit container terminal start", "err", err)
 	}
 	if s.mon != nil && ctr.Project != "" {
 		s.mon.StackEvent(hostID, ctr.Project, "terminal", user, svcName+" · "+shell)
@@ -363,7 +363,7 @@ func (s *Server) wsHostTerminal(w http.ResponseWriter, r *http.Request) {
 		StartedAt:     startedAt,
 	})
 	if err != nil {
-		s.log.Warn("audit host terminal start", "err", err)
+		s.log.Error("audit host terminal start", "err", err)
 	}
 	s.log.Info("host terminal session started",
 		"user", user, "ip", ip, "host", hostID, "shell", shell,

@@ -33,3 +33,7 @@ Alongside errors and warnings, informational linter **Tips** offer 1-click fixes
 - **Add memory limit**: adds `mem_limit: 512m` safely.
 - **Add healthcheck**: inserts a sensible `healthcheck` block tailored to the service image/ports.
 - **Add to `.env`**: appends missing `${VAR}` keys discovered in Compose.
+
+## Generated values
+
+Write `@generate(password, 32)`, `@generate(port, 8080)` or a Coolify name such as `${SERVICE_PASSWORD_DB}` and Moorage fills `.env` when you save. See [generated-values.md](./generated-values.md).

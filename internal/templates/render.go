@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"go.yaml.in/yaml/v4"
+
+	"moorage/internal/gen"
 )
 
 // Rendered is the result of filling a template's variables. It has no side effects:
@@ -166,6 +168,10 @@ func Generate(kind string) (string, error) {
 		b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
 		h := hex.EncodeToString(b)
 		return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], nil
+	}
+	// M18E kinds (alnum, hex, base64, base64key, user, password with a length…).
+	if v, err := gen.Kind(kind); err == nil && !strings.HasPrefix(kind, gen.KindPort) {
+		return v, nil
 	}
 	return "", fmt.Errorf("unknown generate kind %q", kind)
 }

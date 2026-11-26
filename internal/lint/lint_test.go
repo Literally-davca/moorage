@@ -40,17 +40,17 @@ services:
 `
 	got := codes(Lint(context.Background(), compose, "UNUSED=1\n", Options{Name: "t", Running: []PortUse{{Port: 5432, Proto: "tcp", Owner: "other/pg"}}}))
 	want := map[string]string{
-		"version/":                Info,
-		"no-restart/db":           Info,
-		"no-restart/web":          Info,
-		"secret-in-command/web":   Error,
-		"unused-env/":             Info,
-		"missing-var/":            DeployError,
-		"db-port-public/db":       Warning,
-		"privileged/db":           Warning,
-		"latest-tag/web":          Info,
-		"duplicate-port/web2":     Error,
-		"port-taken/db":           DeployError,
+		"version/":              Info,
+		"no-restart/db":         Info,
+		"no-restart/web":        Info,
+		"secret-in-command/web": Error,
+		"unused-env/":           Info,
+		"missing-var/":          DeployError,
+		"db-port-public/db":     Warning,
+		"privileged/db":         Warning,
+		"latest-tag/web":        Info,
+		"duplicate-port/web2":   Error,
+		"port-taken/db":         DeployError,
 	}
 	for k, sev := range want {
 		if got[k] != sev {
@@ -166,9 +166,9 @@ func TestQuickFixes(t *testing.T) {
 func TestPortReservedAndAddonsLatest(t *testing.T) {
 	compose := "services:\n  web:\n    image: nginx:latest\n    restart: unless-stopped\n    ports:\n      - \"127.0.0.1:8080:80\"\n      - \"9000:9000\"\n      - \"10.0.0.5:7000:7000\"\n"
 	running := []PortUse{
-		{Port: 8080, Proto: "tcp", IP: "", Owner: "other/app"},                    // every interface: collides
+		{Port: 8080, Proto: "tcp", IP: "", Owner: "other/app"},                            // every interface: collides
 		{Port: 9000, Proto: "tcp", IP: "127.0.0.1", Owner: "media/jelly", Reserved: true}, // stopped stack
-		{Port: 7000, Proto: "tcp", IP: "10.0.0.6", Owner: "a process on the host"}, // other address: no clash
+		{Port: 7000, Proto: "tcp", IP: "10.0.0.6", Owner: "a process on the host"},        // other address: no clash
 	}
 	got := codes(Lint(context.Background(), compose, "", Options{Name: "add-ons", Running: running, AllowLatest: true}))
 	if got["port-taken/web"] != DeployError || got["port-reserved/web"] != Warning {

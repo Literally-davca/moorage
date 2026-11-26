@@ -67,6 +67,7 @@ func (s *Service) getSubject() string {
 	defer s.subMu.RUnlock()
 	return s.subject
 }
+
 // services; without one the project page is used.
 func New(st *store.Store, log *slog.Logger, publicURL string) *Service {
 	sub := "https://github.com/Literally-davca/moorage"

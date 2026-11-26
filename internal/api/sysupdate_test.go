@@ -259,6 +259,9 @@ func TestSystemUpdatesRBACGatesAuditAndReconcile(t *testing.T) {
 	node.SelfUpdate = true
 	node.ShutdownWait = 5 * time.Millisecond
 	node.SpawnWatchFn = func(_, _ string) error { return nil }
+	// On Windows the clock advances in ticks of up to ~16 ms, so with StatusTTL = 1 ns the
+	// status cached by step 4 can still look fresh; wait one tick before asking again.
+	time.Sleep(20 * time.Millisecond)
 	recApply := req("POST", "/api/system/updates/apply", `{"targets":["hub"]}`, "tok-admin")
 	if recApply.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 apply hub, got %d: %s", recApply.Code, recApply.Body.String())

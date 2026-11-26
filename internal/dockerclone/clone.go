@@ -301,4 +301,3 @@ func cloneEndpointSettings(ep *network.EndpointSettings, oldContainerID string) 
 	}
 	return &c
 }
-

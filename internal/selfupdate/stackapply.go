@@ -6,18 +6,22 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 
 	"moorage/internal/dockerclone"
 	"moorage/internal/engine"
+	"moorage/internal/lint"
 )
 
 // Apply & restart of the stack Moorage itself runs from (M13). Compose recreates the
@@ -71,6 +75,9 @@ type StackApplyLaunch struct {
 	ListenAddr string
 	Version    string
 	DockerHost string
+	// HostNetwork runs the helper with network_mode: host (Linux Docker; not Docker
+	// Desktop or rootless Podman, where the host doesn't see container IPs).
+	HostNetwork bool
 }
 
 const roleStackApply = "stack-apply"
@@ -94,6 +101,13 @@ func LaunchStackApplyHelper(ctx context.Context, eng ContainerEngine, selfInsp *
 	if l.IsHub {
 		args = append(args, "--hub", "--listen", l.ListenAddr)
 	}
+	// M18H: the helper runs in the host's network, so it reaches the published ports
+	// and the container IPs the way users and proxies do, and doesn't depend on a
+	// network the new configuration may remove.
+	hostNet := l.HostNetwork
+	if hostNet {
+		args = append(args, "--host-net")
+	}
 	var env []string
 	if l.DockerHost != "" {
 		env = append(env, "DOCKER_HOST="+l.DockerHost)
@@ -103,6 +117,9 @@ func LaunchStackApplyHelper(ctx context.Context, eng ContainerEngine, selfInsp *
 		mounts = append(mounts, dockerclone.MountPointToMount(mp))
 	}
 	netMode, netCfg := helperNetwork(selfInsp)
+	if hostNet {
+		netMode, netCfg = "host", nil
+	}
 	cfg := &container.Config{
 		Image:      selfInsp.Image, // the image ID the Moorage container runs, not a tag that may have moved
 		Entrypoint: []string{"/moorage"},
@@ -123,6 +140,12 @@ func LaunchStackApplyHelper(ctx context.Context, eng ContainerEngine, selfInsp *
 		hc.SecurityOpt = append([]string(nil), selfInsp.HostConfig.SecurityOpt...)
 	}
 	created, err := eng.ContainerCreate(ctx, client.ContainerCreateOptions{Name: name, Config: cfg, HostConfig: hc, NetworkingConfig: netCfg})
+	if err != nil && hostNet {
+		// host networking refused (policy, rootless): the container's network and the
+		// older check, as before
+		l.HostNetwork = false
+		return LaunchStackApplyHelper(ctx, eng, selfInsp, l)
+	}
 	if err != nil {
 		return fmt.Errorf("create apply helper container: %w", err)
 	}
@@ -151,6 +174,9 @@ func refuseRunningApplyHelper(ctx context.Context, eng ContainerEngine, name str
 type StackApplyOptions struct {
 	Project, Service, StackDir, DataDir, Version, ListenAddr string
 	IsHub                                                    bool
+	HostNet                                                  bool // the helper runs in the host's network (M18H probe)
+	// RecordRollback writes the restored files as a history version.
+	RecordRollback func(reason string)
 
 	StartDelay    time.Duration // let the node answer the HTTP request first
 	HealthTimeout time.Duration // 120 s
@@ -172,6 +198,7 @@ func ParseStackApplyFlags(args []string) (StackApplyOptions, error) {
 	fs.StringVar(&o.Version, "version", "", "Moorage version")
 	fs.BoolVar(&o.IsHub, "hub", false, "the target serves the web UI")
 	fs.StringVar(&o.ListenAddr, "listen", ":5080", "hub listen address")
+	fs.BoolVar(&o.HostNet, "host-net", false, "the helper runs in the host's network")
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -205,40 +232,73 @@ func RunStackApplyHelper(ctx context.Context, eng ContainerEngine, up func(ctx c
 		o.HTTPClient = &http.Client{Timeout: 3 * time.Second}
 	}
 	o.Sleep(o.StartDelay)
-	out := os.Stdout
+	// the log survives the helper container (AutoRemove): <data>/self-stack-apply.log
+	var out io.Writer = os.Stdout
+	logPath := filepath.Join(o.DataDir, engine.SelfApplyLogFile)
+	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
+		defer f.Close()
+		out = io.MultiWriter(os.Stdout, &cappedWriter{w: f, max: 256 << 10})
+	}
+	fmt.Fprintf(out, "Apply & restart of %s/%s at %s\n", o.Project, o.Service, o.Now().Format(time.RFC3339))
+	proxyNets := map[string]string{}
+	if o.HostNet && o.IsHub {
+		proxyNets = proxyNetworks(ctx, eng, o.Project, o.Service)
+		for n, p := range proxyNets {
+			fmt.Fprintf(out, "network %s is shared with proxy %s\n", n, p)
+		}
+	}
 
 	startedAt := o.Now()
 	reason := ""
+	var lastChecked []string
 	if err := up(ctx, out); err != nil {
 		reason = "compose up failed: " + err.Error()
-	} else if why := waitStackHealthy(ctx, eng, o, startedAt); why != "" {
+	} else if why, checked := waitStackHealthy(ctx, eng, o, startedAt, proxyNets, out); why != "" {
 		reason = why
+		_ = checked
+	} else {
+		lastChecked = checked
 	}
 	if reason == "" {
-		writeStackApplyResult(o.DataDir, engine.SelfApplyResult{At: o.Now(), OK: true, Message: "Applied and Moorage came back."})
+		writeStackApplyResult(o.DataDir, engine.SelfApplyResult{At: o.Now(), OK: true, Message: "Applied and Moorage came back.", Checked: lastChecked, Log: logPath})
 		_ = os.RemoveAll(engine.SelfBackupDir(o.DataDir))
 		return nil
 	}
 
 	fmt.Fprintln(out, "rolling back:", reason)
-	res := engine.SelfApplyResult{At: o.Now(), RolledBack: true, Message: "Rolled back: " + reason}
+	res := engine.SelfApplyResult{At: o.Now(), RolledBack: true, Message: "Rolled back: " + reason, Reason: reason, Log: logPath}
 	if err := engine.RestoreSelfBackup(o.StackDir, engine.SelfBackupDir(o.DataDir)); err != nil {
 		res.RolledBack = false
 		res.Message = "Apply failed (" + reason + ") and the previous files couldn't be restored: " + err.Error()
-	} else if err := up(ctx, out); err != nil {
-		res.Message += "; compose up with the previous files failed too: " + err.Error()
+	} else {
+		if o.RecordRollback != nil {
+			o.RecordRollback(reason)
+		}
+		if err := up(ctx, out); err != nil {
+			res.Message += "; compose up with the previous files failed too: " + err.Error() + " – see docs/self-stack.md for the manual recovery"
+		}
 	}
 	writeStackApplyResult(o.DataDir, res)
 	return fmt.Errorf("%s", res.Message)
 }
 
 // waitStackHealthy waits for a running Moorage container of the project's service that
-// stays up for StableFor (and answers /api/session or writes a fresh healthy mark when it is the hub).
-func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOptions, startedAt time.Time) string {
+// stays up for StableFor and answers where users reach it. In the host's network (M18H)
+// the hub must answer on every published TCP port, on its listen port with
+// network_mode: host, and on its IP in every network it shared with a reverse proxy;
+// ports: that network_mode: host ignores fail at once. Otherwise /api/session on the
+// container or a fresh healthy mark in /data, as before.
+func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOptions, startedAt time.Time, proxyNets map[string]string, out io.Writer) (string, []string) {
 	deadline := o.Now().Add(o.HealthTimeout)
 	var stableSince time.Time
 	var stableKey string
 	last := "the Moorage container didn't start"
+	var checked []string
+	if o.HostNet && o.IsHub {
+		if why := ignoredPorts(ctx, o); why != "" {
+			return why, nil
+		}
+	}
 	for o.Now().Before(deadline) {
 		insp, why := currentServiceContainer(ctx, eng, o.Project, o.Service)
 		if insp == nil {
@@ -248,29 +308,187 @@ func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOpti
 			if key != stableKey {
 				stableKey, stableSince = key, o.Now()
 			}
-			// Do not require matching the old o.Version: Apply & restart is commonly used to change the Moorage image tag.
-			healthy := !o.IsHub || pollContainerSessionHealth(ctx, o.HTTPClient, *insp, o.ListenAddr, "")
-			if !healthy && o.DataDir != "" {
-				if mark, ok := readHealthyMark(o.DataDir); ok && !mark.At.Before(startedAt.Add(-time.Second)) {
-					healthy = true
+			var healthy bool
+			if o.HostNet && o.IsHub {
+				var fail string
+				checked, fail = probeEndpoints(ctx, o, *insp, proxyNets)
+				healthy = fail == ""
+				if !healthy {
+					last = fail
+				}
+			} else {
+				// Do not require matching the old o.Version: Apply & restart is commonly used to change the Moorage image tag.
+				healthy = !o.IsHub || pollContainerSessionHealth(ctx, o.HTTPClient, *insp, o.ListenAddr, "")
+				if !healthy && o.DataDir != "" {
+					if mark, ok := readHealthyMark(o.DataDir); ok && !mark.At.Before(startedAt.Add(-time.Second)) {
+						healthy = true
+					}
+				}
+				if !healthy {
+					last = "Moorage doesn't answer on its web port"
 				}
 			}
-			if !healthy {
-				last = "Moorage doesn't answer on its web port"
-			} else if o.Now().Sub(stableSince) >= o.StableFor {
-				return ""
-			} else {
+			if healthy && o.Now().Sub(stableSince) >= o.StableFor {
+				fmt.Fprintf(out, "healthy: %s\n", strings.Join(checked, ", "))
+				return "", checked
+			} else if healthy {
 				last = "the Moorage container keeps restarting"
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err().Error()
+			return ctx.Err().Error(), checked
 		default:
 		}
 		o.Sleep(o.PollInterval)
 	}
-	return last + " within " + o.HealthTimeout.String()
+	fmt.Fprintf(out, "not healthy: %s\n", last)
+	return last + " within " + o.HealthTimeout.String(), checked
+}
+
+// ignoredPorts reads the new compose file: ports: on the Moorage service with
+// network_mode: host are dropped by Docker, so users on those ports lose the UI.
+func ignoredPorts(ctx context.Context, o StackApplyOptions) string {
+	file := engine.ComposeFileIn(o.StackDir)
+	if file == "" {
+		return ""
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	env, _ := os.ReadFile(filepath.Join(o.StackDir, ".env"))
+	for _, is := range lint.Lint(ctx, string(b), string(env), lint.Options{Name: o.Project}) {
+		if is.Code == "ports-ignored" && is.Service == o.Service {
+			return "Moorage would not answer on its published ports (network_mode: host ignores ports:)"
+		}
+	}
+	return ""
+}
+
+// probeEndpoints checks every address users and proxies reach Moorage at. It returns
+// the addresses checked and the first failure ("" = all answered).
+func probeEndpoints(ctx context.Context, o StackApplyOptions, insp container.InspectResponse, proxyNets map[string]string) ([]string, string) {
+	_, listenPort, err := net.SplitHostPort(strings.TrimSpace(o.ListenAddr))
+	if err != nil || listenPort == "" {
+		listenPort = "5080"
+	}
+	type target struct{ url, fail string }
+	var ts []target
+	hostMode := insp.HostConfig != nil && insp.HostConfig.NetworkMode.IsHost()
+	if hostMode {
+		ts = append(ts, target{"http://127.0.0.1:" + listenPort + "/api/session", "Moorage doesn't answer on port " + listenPort + " of the host"})
+	} else if insp.NetworkSettings != nil {
+		for p, binds := range insp.NetworkSettings.Ports {
+			if p.Proto() != "tcp" {
+				continue
+			}
+			for _, b := range binds {
+				ip := "127.0.0.1"
+				if b.HostIP.IsValid() && !b.HostIP.IsUnspecified() {
+					ip = b.HostIP.String()
+				} else if b.HostIP.Is6() {
+					continue // the same port is checked on 127.0.0.1
+				}
+				ts = append(ts, target{"http://" + net.JoinHostPort(ip, b.HostPort) + "/api/session", "Moorage doesn't answer on port " + b.HostPort})
+			}
+		}
+	}
+	for netName, proxy := range proxyNets {
+		var ep *network.EndpointSettings
+		if insp.NetworkSettings != nil {
+			ep = insp.NetworkSettings.Networks[netName]
+		}
+		if ep == nil || !ep.IPAddress.IsValid() {
+			return nil, "Moorage left network " + netName + " that " + proxy + " uses"
+		}
+		ts = append(ts, target{"http://" + net.JoinHostPort(ep.IPAddress.String(), listenPort) + "/api/session", "Moorage doesn't answer in network " + netName + " that " + proxy + " uses"})
+	}
+	if len(ts) == 0 {
+		// only reachable from inside (no published ports, no proxy): the container check
+		if pollContainerSessionHealth(ctx, o.HTTPClient, insp, o.ListenAddr, "") {
+			return []string{"container"}, ""
+		}
+		return nil, "Moorage doesn't answer on its web port"
+	}
+	var checked []string
+	for _, t := range ts {
+		if !probeURL(ctx, o.HTTPClient, t.url) {
+			return checked, t.fail
+		}
+		checked = append(checked, strings.TrimSuffix(strings.TrimPrefix(t.url, "http://"), "/api/session"))
+	}
+	return checked, ""
+}
+
+func probeURL(ctx context.Context, cli *http.Client, u string) bool {
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode < 500
+}
+
+// proxyImageRe matches reverse proxies by image name.
+var proxyImageRe = regexp.MustCompile(`(?i)(traefik|caddy|nginx-proxy|haproxy|envoy|swag|cloudflared|pangolin|zoraxy)`)
+
+// proxyNetworks lists the networks the current Moorage container shares with a reverse
+// proxy container (network -> proxy name).
+func proxyNetworks(ctx context.Context, eng ContainerEngine, project, service string) map[string]string {
+	out := map[string]string{}
+	insp, _ := currentServiceContainer(ctx, eng, project, service)
+	if insp == nil || insp.NetworkSettings == nil {
+		return out
+	}
+	list, err := eng.ContainerList(ctx, client.ContainerListOptions{})
+	if err != nil {
+		return out
+	}
+	for _, c := range list.Items {
+		if c.ID == insp.ID || c.NetworkSettings == nil || !proxyImageRe.MatchString(c.Image) {
+			continue
+		}
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		for n := range c.NetworkSettings.Networks {
+			if _, shared := insp.NetworkSettings.Networks[n]; shared && n != "host" && n != "bridge" {
+				out[n] = name
+			}
+		}
+	}
+	return out
+}
+
+// cappedWriter keeps the log under max bytes.
+type cappedWriter struct {
+	w   io.Writer
+	n   int
+	max int
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if c.n >= c.max {
+		return len(p), nil
+	}
+	q := p
+	if c.n+len(q) > c.max {
+		q = q[:c.max-c.n]
+	}
+	n, err := c.w.Write(q)
+	c.n += n
+	if err != nil {
+		return n, err
+	}
+	return len(p), nil
 }
 
 func currentServiceContainer(ctx context.Context, eng ContainerEngine, project, service string) (*container.InspectResponse, string) {

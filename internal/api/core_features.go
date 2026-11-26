@@ -145,7 +145,7 @@ func (s *Server) StartCleanupLoop(ctx context.Context) {
 					if berr != nil {
 						outcome = store.AuditFailed
 						if s.log != nil {
-							s.log.Warn("scheduled remote backup failed", "err", berr)
+							s.log.Error("scheduled remote backup failed", "err", berr)
 						}
 					}
 					_ = s.store.Audit(ctx, store.AuditEntry{

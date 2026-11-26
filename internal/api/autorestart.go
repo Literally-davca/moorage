@@ -25,10 +25,10 @@ import (
 // is written to the Logbook and the audit log.
 
 const (
-	autoRestartStable   = 20 * time.Second
-	autoRestartCooldown = 15 * time.Minute
-	autoRestartDepth    = 3
-	autoRestartTick     = 5 * time.Second
+	autoRestartStable    = 20 * time.Second
+	autoRestartCooldown  = 15 * time.Minute
+	autoRestartDepth     = 3
+	autoRestartTick      = 5 * time.Second
 	autoRestartDeployTTL = 15 * time.Minute
 )
 

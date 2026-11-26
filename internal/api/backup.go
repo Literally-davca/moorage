@@ -96,7 +96,7 @@ func (s *Server) exportBackup(w http.ResponseWriter, r *http.Request) {
 	gz := gzip.NewWriter(enc)
 	tw := tar.NewWriter(gz)
 	if err := s.writeBackup(ctx, tw, tmpDir, dbPath); err != nil {
-		s.log.Warn("backup export failed", "err", err)
+		s.log.Error("backup export failed", "err", err)
 		return
 	}
 	if err := tw.Close(); err != nil {
@@ -179,7 +179,7 @@ func (s *Server) backupHost(ctx context.Context, tw *tar.Writer, tmpDir string, 
 			}
 			mh.History = true
 		} else if !host.IsUnsupported(herr) && !errors.Is(herr, engine.ErrHistoryOff) {
-			s.log.Warn("backup: history export failed", "host", meta.Name, "err", herr)
+			s.log.Error("backup: history export failed", "host", meta.Name, "err", herr)
 		}
 		os.Remove(histPath)
 	}

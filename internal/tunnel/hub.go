@@ -170,7 +170,7 @@ func (h *Hub) enroll(w http.ResponseWriter, r *http.Request) {
 	if err := h.St.Audit(r.Context(), store.AuditEntry{
 		Actor: store.AuditActorSystem, IP: ip, Action: "host.paired", HostID: id,
 	}); err != nil {
-		h.Log.Warn("audit agent pairing", "err", err)
+		h.Log.Error("audit agent pairing", "err", err)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(enrollResp{AgentID: id, Cert: der, CA: h.CA.Cert.Raw}) //nolint:errcheck
@@ -206,7 +206,7 @@ func (h *Hub) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	defer sess.Close()
 
-	remote := host.NewRemote(func(context.Context) (net.Conn, error) { return sess.Open() })
+	remote := host.NewRemote(func(context.Context) (net.Conn, error) { return openBounded(sess) })
 	ictx, icancel := context.WithTimeout(ctx, 15*time.Second)
 	info, err := remote.AgentInfo(ictx)
 	icancel()

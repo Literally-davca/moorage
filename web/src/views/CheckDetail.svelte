@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, type Check } from '../lib/api';
+  import { SvelteMap } from 'svelte/reactivity';
+  import { api, type Check, type CausalTimeline, type RollbackVerifyState, type RollbackOption } from '../lib/api';
   import { isAdmin, stackLabel } from '../lib/state.svelte';
-  import Icon from '../lib/Icon.svelte';
+  import Icon, { type IconName } from '../lib/Icon.svelte';
   import Strip from '../lib/Strip.svelte';
   import Confirm from '../lib/Confirm.svelte';
   import { ago, duration, kindName, multiLocation, pct, quorumText, statusText, targetStatus, toInput, voteText } from '../lib/checks';
@@ -15,6 +16,17 @@
   let error = $state('');
   let confirmDelete = $state(false);
   let busy = $state(false);
+  // M18A: causal timeline and Rollback & Verify per incident (SvelteMap: .set() re-renders)
+  const timelines = new SvelteMap<number, CausalTimeline>();
+  const rollbackStates = new SvelteMap<number, RollbackVerifyState>();
+  const rollbackOptions = new SvelteMap<number, RollbackOption[]>();
+  let rollbackBusy = $state(false);
+  let rollbackError = $state('');
+  let pendingRollback = $state<{ incidentId: number; opt: RollbackOption } | null>(null);
+  let confirmRollback = $state(false);
+
+  // Timelines of the newest incidents; options and state of the open ones.
+  const timelineIncidents = 5;
 
   async function load() {
     try {
@@ -22,8 +34,66 @@
       error = '';
     } catch (e) {
       error = (e as Error).message;
+      return;
+    }
+    for (const [i, inc] of (check.incidents ?? []).entries()) {
+      if (i < timelineIncidents) void loadTimeline(inc.id);
+      const st = rollbackStates.get(inc.id);
+      if (!inc.endedAt || st?.active) void loadRollbackState(inc.id);
+      if (!inc.endedAt && isAdmin()) void loadRollbackOptions(inc.id);
     }
   }
+
+  async function loadTimeline(incidentId: number) {
+    if (!check || timelines.has(incidentId)) return;
+    try {
+      timelines.set(incidentId, await api.incidentTimeline(check.id, incidentId));
+    } catch {
+      /* incidents from before M18A have none */
+    }
+  }
+
+  async function loadRollbackOptions(incidentId: number) {
+    if (!check || rollbackOptions.has(incidentId)) return;
+    try {
+      rollbackOptions.set(incidentId, await api.rollbackOptions(check.id, incidentId));
+    } catch {
+      rollbackOptions.set(incidentId, []);
+    }
+  }
+
+  async function loadRollbackState(incidentId: number) {
+    if (!check) return;
+    try {
+      rollbackStates.set(incidentId, await api.rollbackState(check.id, incidentId));
+    } catch {
+      /* state unavailable */
+    }
+  }
+
+  function askRollback(incidentId: number, opt: RollbackOption) {
+    pendingRollback = { incidentId, opt };
+    confirmRollback = true;
+  }
+
+  async function startRollback() {
+    if (!check || !pendingRollback) return;
+    const { incidentId, opt } = pendingRollback;
+    rollbackBusy = true;
+    rollbackError = '';
+    try {
+      rollbackStates.set(incidentId, await api.rollbackIncident(check.id, incidentId, opt.type));
+    } catch (e) {
+      rollbackError = (e as Error).message;
+    } finally {
+      rollbackBusy = false;
+    }
+  }
+
+  const sourceIcon: Record<string, IconName> = {
+    compose_change: 'history', image_update: 'cloudDown', docker_event: 'alert', log_match: 'logs', probe_failure: 'pulse',
+  };
+  const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
   $effect(() => {
     untrack(load);
@@ -221,12 +291,56 @@
                 </details>
               {/if}
             {/if}
+            {#if timelines.get(inc.id)?.sources.length}
+              {@const tl = timelines.get(inc.id)!}
+              <details class="tl" open={!inc.endedAt}>
+                <summary class="meta">What happened in the 15 minutes before ({tl.sources.length})</summary>
+                <ol class="tl-list">
+                  {#each tl.sources as src, i (i)}
+                    <li class="tl-item" class:crit={src.severity === 'critical'}>
+                      <span class="tl-icon"><Icon name={sourceIcon[src.type] ?? 'info'} /></span>
+                      <span class="tl-time mono">{clock.format(new Date(src.timestamp))}</span>
+                      <span class="tl-body">
+                        <span>{src.title}</span>
+                        {#if src.detail}<span class="meta tl-detail">{src.detail}</span>{/if}
+                        {#if src.actor}<span class="meta">by {src.actor}</span>{/if}
+                      </span>
+                    </li>
+                  {/each}
+                </ol>
+              </details>
+            {/if}
+            {#if rollbackStates.get(inc.id)?.phase}
+              {@const rb = rollbackStates.get(inc.id)!}
+              <p class="rb meta" class:ok={rb.phase === 'done'} class:error-text={rb.phase === 'failed'} role="status">
+                {#if rb.phase === 'verifying'}
+                  <span class="busy-dot"></span> Rolled back the {rb.targetLabel}. Waiting for the check to pass…
+                {:else if rb.phase === 'done'}
+                  Rollback & Verify: the {rb.targetLabel} was undone and the check passes again.
+                {:else}
+                  Rollback & Verify failed: {rb.error}.
+                {/if}
+              </p>
+            {/if}
+            {#if !inc.endedAt && isAdmin() && !rollbackStates.get(inc.id)?.active && rollbackOptions.get(inc.id)?.length}
+              <div class="acts">
+                {#each rollbackOptions.get(inc.id) ?? [] as opt (opt.type + opt.targetRef)}
+                  <button type="button" class="btn btn-sm" title={opt.description} onclick={() => askRollback(inc.id, opt)} disabled={rollbackBusy}>
+                    <Icon name="rollback" /> {opt.label}
+                  </button>
+                {/each}
+              </div>
+              {#if rollbackError}<p class="meta error-text">{rollbackError}</p>{/if}
+            {/if}
           </article>
         {/each}
       {/if}
     </section>
   </div>
 
+  <Confirm bind:open={confirmRollback} title={pendingRollback?.opt.label ?? 'Roll back'} confirmLabel="Roll back and verify"
+    body="{pendingRollback?.opt.description ?? ''} Moorage redeploys the stack and watches this check for up to 10 minutes; the incident closes when the check passes again."
+    onConfirm={startRollback} />
   <Confirm bind:open={confirmDelete} title="Delete {check.name}?" danger confirmLabel="Delete check"
     body="The check, its results and incidents are removed. Alerts for it stop." onConfirm={del} />
 {/if}
@@ -399,6 +513,60 @@
   }
   .logs .err {
     color: var(--adrift-text);
+  }
+  .ok {
+    color: var(--afloat-text);
+  }
+  .tl {
+    margin-top: 8px;
+  }
+  .tl-list {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 6px;
+  }
+  .tl-item {
+    display: grid;
+    grid-template-columns: 18px auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+    font-size: 13px;
+  }
+  .tl-item.crit .tl-icon {
+    color: var(--adrift);
+  }
+  .tl-icon {
+    color: var(--haze);
+  }
+  .tl-time {
+    color: var(--murk);
+    font-size: 12px;
+  }
+  .tl-body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .rb {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .busy-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--buoy);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    50% {
+      opacity: 0.3;
+    }
   }
 
   @media (max-width: 767px) {

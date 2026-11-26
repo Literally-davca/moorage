@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 
+	"moorage/internal/diagnose"
 	"moorage/internal/engine"
 )
 
@@ -75,6 +76,13 @@ type DeletedStacksSource interface {
 // (for backups). An older agent answers 404 (IsUnsupported).
 type HistoryExporter interface {
 	ExportHistory(ctx context.Context, w io.Writer) error
+}
+
+// StackDiagnoser is implemented by hosts that can inspect a stack's containers for the
+// Problems card (M18F). An older agent answers 404 (IsUnsupported): the hub then falls
+// back to the container list.
+type StackDiagnoser interface {
+	DiagnoseStack(ctx context.Context, stack string) ([]diagnose.Facts, error)
 }
 
 // DiskPruner is implemented by hosts that support disk cleanup preview and execution.

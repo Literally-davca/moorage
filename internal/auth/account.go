@@ -38,6 +38,7 @@ type Account struct {
 	Email    string        `json:"email,omitempty"`
 	TOTP     bool          `json:"totp"`
 	Sessions []SessionInfo `json:"sessions"`
+	Passkeys []PasskeyInfo `json:"passkeys"`
 }
 
 // Account returns the signed-in user's own account and sessions.
@@ -56,6 +57,9 @@ func (s *Service) Account(ctx context.Context, token string) (Account, error) {
 			ID: x.ID, CreatedAt: x.CreatedAt, LastSeen: x.LastSeenAt, ExpiresAt: x.ExpiresAt,
 			IP: x.IP, UserAgent: x.UserAgent, Current: x.ID == sess.ID,
 		})
+	}
+	if out.Passkeys, err = s.passkeyInfos(ctx, u.ID); err != nil {
+		return Account{}, err
 	}
 	return out, nil
 }

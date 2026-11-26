@@ -14,6 +14,7 @@ import (
 
 	"moorage/internal/engine"
 	"moorage/internal/host"
+	"moorage/internal/incident"
 	"moorage/internal/notify"
 	"moorage/internal/store"
 )
@@ -106,13 +107,22 @@ type Monitor struct {
 	deps         DepGraph
 	stackDownAt  map[string]time.Time // "host/stack" -> when its last incident opened (pruned after CascadeWindow)
 	onStackEvent func(hostID, stack, kind string)
+	onStatus     func(checkID int64) // a check's public state changed (status page snapshots)
 	OnStackDown  func(hostID, stack, checkName, cause string)
+	// LikelyCause diagnoses a stack's containers when an incident opens (Problems card,
+	// M18F): one short line such as "Out of memory (exit 137)", never log lines.
+	LikelyCause func(ctx context.Context, hostID, stack string) string
 	// Push receives every alert (check or host) for Web Push, channels or not.
 	Push func(ctx context.Context, event string, msg notify.Message)
 
 	// alert deliveries per channel kind since start, for the metrics endpoint
 	alertsSent   map[string]uint64
 	alertsFailed map[string]uint64
+
+	// causal timeline and Rollback & Verify (M18A), container event recorder
+	timelineBuilder *incident.TimelineBuilder
+	rollbackVerify  *incident.RollbackVerify
+	containers      *containerRecorder
 
 	// send is replaceable in tests.
 	send func(ctx context.Context, ch store.Channel, m notify.Message) error
@@ -137,6 +147,13 @@ func New(st *store.Store, reg *host.Registry, log *slog.Logger, publicURL string
 		}
 		return notify.Send(ctx, ch.Kind, cfg, msg)
 	}
+	var hosts incident.Hosts
+	if reg != nil {
+		hosts = reg
+	}
+	m.timelineBuilder = incident.NewTimelineBuilder(st, hosts, log)
+	m.rollbackVerify = incident.NewRollbackVerify(st, hosts, m, log)
+	m.containers = newContainerRecorder()
 	return m
 }
 
@@ -177,6 +194,8 @@ func (m *Monitor) Start(ctx context.Context) error {
 	}
 	go m.prune(ctx)
 	go m.watchAgents(ctx)
+	go m.recordContainers(ctx)
+	m.rollbackVerify.Start(ctx)
 	m.log.Info("checks started", "count", len(checks))
 	return nil
 }
@@ -255,6 +274,14 @@ func (m *Monitor) StackEvent(hostID, stack, kind, actor, detail string) {
 	if hook != nil {
 		hook(hostID, stack, kind)
 	}
+}
+
+// OnStatusChange registers a function called after a check changes state (up, down,
+// maintenance…), which status page snapshots publish soon after.
+func (m *Monitor) OnStatusChange(fn func(checkID int64)) {
+	m.mu.Lock()
+	m.onStatus = fn
+	m.mu.Unlock()
 }
 
 // OnStackEvent registers a function called after every stack event (dependency detection
@@ -385,11 +412,11 @@ func (m *Monitor) handle(c store.Check, out Outcome, now time.Time) {
 	}
 	r := store.Result{CheckID: c.ID, TS: now, Status: status, LatencyMS: int(out.Latency.Milliseconds()), Msg: out.Msg}
 	if err := m.st.AddResult(context.Background(), r); err != nil {
-		m.log.Warn("store result", "check", c.ID, "err", err)
+		m.log.Error("store result", "check", c.ID, "err", err)
 	}
 	if len(out.Locations) > 0 {
 		if err := m.st.AddLocationResults(context.Background(), storeLocations(c.ID, now, out.Locations)); err != nil {
-			m.log.Warn("store location results", "check", c.ID, "err", err)
+			m.log.Error("store location results", "check", c.ID, "err", err)
 		}
 	}
 
@@ -463,6 +490,7 @@ func (m *Monitor) handle(c store.Check, out Outcome, now time.Time) {
 			}
 		}
 	}
+	changed, statusHook := s.status != prevStatus, m.onStatus
 	m.mu.Unlock()
 
 	switch {
@@ -470,29 +498,56 @@ func (m *Monitor) handle(c store.Check, out Outcome, now time.Time) {
 		m.openIncident(c, out, now)
 	case escalate:
 		if err := m.st.SetIncidentCauseText(context.Background(), incident, out.Msg); err != nil {
-			m.log.Warn("update incident", "err", err)
+			m.log.Error("update incident", "err", err)
 		}
 		m.log.Warn("check down (was partially down)", "check", c.Name, "cause", out.Msg)
 		m.enqueue(alert{check: c, cause: out.Msg, at: now, ctx: m.gatherContext(c, out), escalated: true})
 	case closeIt:
 		if err := m.st.CloseIncident(context.Background(), incident, now); err != nil {
-			m.log.Warn("close incident", "err", err)
+			m.log.Error("close incident", "err", err)
 		}
 		if status == StatusUp {
 			m.enqueue(alert{check: c, up: true, cause: out.Msg, at: now, downFor: now.Sub(downSince), root: root})
 		}
 		m.log.Info("check recovered", "check", c.Name, "status", status)
 	}
+	if changed && statusHook != nil {
+		statusHook(c.ID) // after the incident is opened or closed, so a rebuild sees it
+	}
 }
 
 func (m *Monitor) openIncident(c store.Check, out Outcome, now time.Time) {
 	actx := m.gatherContext(c, out)
-	b, _ := json.Marshal(actx)
 	root := m.rootFor(c, now)
+	// Causal timeline (M18A): what changed in the 15 min before. It runs in this check's
+	// runner goroutine, bounded by a timeout, so the alert can say what changed.
+	tl := m.timelineBuilder.Build(context.Background(), c, now, out.Matches)
+	if changes := tl.Changes(5); len(changes) > 0 {
+		if actx == nil {
+			actx = &AlertContext{}
+		}
+		actx.Changes = changes
+	}
+	if m.LikelyCause != nil && c.Stack != "" && c.HostID != "" {
+		lctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if cause := m.LikelyCause(lctx, c.HostID, c.Stack); cause != "" {
+			if actx == nil {
+				actx = &AlertContext{}
+			}
+			actx.Cause = cause
+		}
+		cancel()
+	}
+	b, _ := json.Marshal(actx)
 	id, err := m.st.OpenIncident(context.Background(), c.ID, now, out.Msg, string(b))
 	if err != nil {
-		m.log.Warn("open incident", "err", err)
-	} else if root != "" {
+		m.log.Error("open incident", "err", err)
+		return
+	}
+	if err := incident.SaveTimeline(context.Background(), m.st, id, tl); err != nil {
+		m.log.Error("save incident timeline", "check", c.Name, "err", err)
+	}
+	if root != "" {
 		if err := m.st.SetIncidentCause(context.Background(), id, root); err != nil {
 			m.log.Warn("incident cause", "err", err)
 		}
@@ -678,6 +733,10 @@ type AlertContext struct {
 	Locations []LocationResult `json:"locations,omitempty"`
 	// Targets is the per-target breakdown of a multi-target check.
 	Targets []TargetResult `json:"targets,omitempty"`
+	// Changes is what changed in the stack before the outage (causal timeline, M18A).
+	Changes []string `json:"changes,omitempty"`
+	// Cause is the likely cause from the container diagnosis (M18F).
+	Cause string `json:"cause,omitempty"`
 }
 
 // hasStackInfo reports whether the context says anything besides the location breakdown.
@@ -745,6 +804,8 @@ type alert struct {
 	// partial: a multi-target check went partially down; escalated: it went from
 	// partially down to down
 	partial, escalated bool
+	// rollbackFailed: Rollback & Verify didn't bring the check back (M18A)
+	rollbackFailed bool
 }
 
 type batch struct {
@@ -933,6 +994,8 @@ func (m *Monitor) compose(group []alert) notify.Message {
 		msg.Title = fmt.Sprintf("DOWN: %d hosts", len(group))
 	case len(group) == 1 && up:
 		msg.Title = "Back up: " + first.check.Name
+	case len(group) == 1 && first.rollbackFailed:
+		msg.Title = "STILL DOWN after Rollback & Verify: " + first.check.Name
 	case len(group) == 1 && first.escalated:
 		msg.Title = "DOWN (was partially down): " + first.check.Name
 	case len(group) == 1 && first.partial:
@@ -988,6 +1051,18 @@ func (m *Monitor) compose(group []alert) notify.Message {
 		if len(matched) > maxAlertMatches {
 			matched = matched[len(matched)-maxAlertMatches:]
 		}
+		for _, a := range group {
+			if a.ctx != nil && len(a.ctx.Changes) > 0 {
+				msg.Changes = a.ctx.Changes // shown by the Detailed preset (check details)
+				break
+			}
+		}
+		for _, a := range group {
+			if a.ctx != nil && a.ctx.Cause != "" {
+				msg.LikelyCause = a.ctx.Cause
+				break
+			}
+		}
 		for _, l := range matched {
 			msg.Logs = append(msg.Logs, fmt.Sprintf("%s %s | %s", shortTime(l.Time), l.Container, l.Message))
 		}
@@ -1040,6 +1115,28 @@ func (m *Monitor) SetPublicURL(u string) {
 	m.mu.Lock()
 	m.publicURL = strings.TrimRight(u, "/")
 	m.mu.Unlock()
+}
+
+// RollbackVerify returns the Rollback & Verify handler (M18A).
+func (m *Monitor) RollbackVerify() *incident.RollbackVerify { return m.rollbackVerify }
+
+// KickCheck probes a check now instead of at its next interval.
+func (m *Monitor) KickCheck(id int64) {
+	m.mu.Lock()
+	k := m.kicks[id]
+	m.mu.Unlock()
+	if k == nil {
+		return
+	}
+	select {
+	case k <- struct{}{}:
+	default: // a kick is already pending
+	}
+}
+
+// RollbackFailed escalates: Rollback & Verify ran but the check is still down.
+func (m *Monitor) RollbackFailed(c store.Check, reason string) {
+	m.enqueue(alert{check: c, cause: "Rollback & Verify didn't bring it back: " + reason, at: time.Now(), rollbackFailed: true})
 }
 
 func (m *Monitor) getPublicURL() string {
@@ -1122,6 +1219,7 @@ func (m *Monitor) prune(ctx context.Context) {
 		_ = m.st.PruneImageUpdates(ctx, time.Now().Add(-90*24*time.Hour))
 		_ = m.st.PruneTerminalSessions(ctx, time.Now().Add(-365*24*time.Hour))
 		_ = m.st.PruneAudit(ctx, time.Now().Add(-365*24*time.Hour))
+		_, _ = m.st.PruneContainerEvents(ctx, time.Now().Add(-ContainerEventRetention))
 		select {
 		case <-ctx.Done():
 			return

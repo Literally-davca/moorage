@@ -51,6 +51,8 @@ var builtinAddonIDs = map[string]bool{
 	addonSocketProxyCheck:  true,
 	addonRegistryWebhooks:  true,
 	addonMCPServer:         true,
+	addonStatusSnapshot:    true,
+	addonAssistant:         true,
 }
 
 // AddonInfo describes one built-in or installed add-on in Settings -> Add-ons.
@@ -123,6 +125,8 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 	sockOn, _ := s.store.AddonEnabled(ctx, addonSocketProxyCheck)
 	webhookOn, _ := s.store.AddonEnabled(ctx, addonRegistryWebhooks)
 	mcpOn, _ := s.store.AddonEnabled(ctx, addonMCPServer)
+	snapOn, _ := s.store.AddonEnabled(ctx, addonStatusSnapshot)
+	assistantOn, _ := s.store.AddonEnabled(ctx, addonAssistant)
 
 	officialOn := false
 	if s.tpl != nil {
@@ -265,6 +269,34 @@ func (s *Server) listAddons(w http.ResponseWriter, r *http.Request) {
 			Toggleable:  true,
 			DocsSlug:    "mcp-server",
 			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#mcp-server",
+		},
+		{
+			ID:          addonStatusSnapshot,
+			Name:        "Static status page snapshot",
+			Description: "Publishes your public status pages as static HTML + JSON to S3 / R2, WebDAV or GitHub Pages after every status change and periodically, so they stay online even when this server is down.",
+			Category:    "Resilience",
+			Kind:        "builtin",
+			RAM:         "~0 MB",
+			CPU:         "~0% idle",
+			Enabled:     snapOn,
+			Installed:   true,
+			Toggleable:  !s.cfg.Demo,
+			DocsSlug:    "status-snapshot",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/addons.md#status-snapshot",
+		},
+		{
+			ID:          addonAssistant,
+			Name:        "AI assistant",
+			Description: "A chat panel (Ctrl+J) that knows where things are in Moorage, reads your stacks and their Problems, and proposes or makes changes at the levels you allow. Uses your own Anthropic, OpenAI, Gemini, Ollama or OpenAI-compatible key.",
+			Category:    "Assistant",
+			Kind:        "builtin",
+			RAM:         "~0 MB",
+			CPU:         "~0% idle",
+			Enabled:     assistantOn,
+			Installed:   true,
+			Toggleable:  !s.cfg.Demo,
+			DocsSlug:    "assistant",
+			DocsURL:     "https://github.com/Literally-davca/moorage/blob/main/docs/assistant.md",
 		},
 	}
 
@@ -567,7 +599,7 @@ func (s *Server) setAddon(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	switch id {
-	case addonProxyLabels, addonOfficialTemplates, addonCoolify, addonStackScheduler, addonSocketProxyCheck, addonRegistryWebhooks, addonMCPServer:
+	case addonProxyLabels, addonOfficialTemplates, addonCoolify, addonStackScheduler, addonSocketProxyCheck, addonRegistryWebhooks, addonMCPServer, addonStatusSnapshot, addonAssistant:
 		if err := s.toggleBuiltinAddon(ctx, id, req.Enabled); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -738,12 +770,15 @@ func (s *Server) uninstallAddon(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) toggleBuiltinAddon(ctx context.Context, id string, enabled bool) error {
 	switch id {
-	case addonProxyLabels, addonCoolify, addonStackScheduler, addonSocketProxyCheck, addonRegistryWebhooks, addonMCPServer:
+	case addonProxyLabels, addonCoolify, addonStackScheduler, addonSocketProxyCheck, addonRegistryWebhooks, addonMCPServer, addonStatusSnapshot, addonAssistant:
 		if err := s.store.SetAddon(ctx, id, enabled); err != nil {
 			return err
 		}
 		if id == addonCoolify && enabled && s.coolify != nil {
 			s.coolify.TriggerSync()
+		}
+		if id == addonStatusSnapshot && enabled {
+			s.snapshot.Kick("enabled")
 		}
 		return nil
 	case addonOfficialTemplates:

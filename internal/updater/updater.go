@@ -172,7 +172,13 @@ type Updater struct {
 	// Strategy returns the deploy strategy of a stack: "rolling" runs updates as rolling
 	// deploys with an automatic rollback. Nil means standard.
 	Strategy func(ctx context.Context, hostID, stack string) string
+	// BeforeUpdate takes the snapshot of a stack with "Snapshot before updates" on (M18F).
+	// An error postpones the update: the admin turned the safeguard on on purpose.
+	BeforeUpdate func(ctx context.Context, hostID, stack string) error
 }
+
+// ErrSnapshotFailed postpones an update whose snapshot before the update failed.
+var ErrSnapshotFailed = errors.New("update postponed: the snapshot before the update failed")
 
 // New creates an Updater.
 func New(st *store.Store, reg *host.Registry, events StackEventRecorder, log *slog.Logger, publicURL string) *Updater {
@@ -668,7 +674,7 @@ func (u *Updater) applyAutoUpdate(
 		return
 	}
 	if err != nil {
-		u.log.Warn("auto-update failed to start", "host", he.ID, "stack", stack, "err", err)
+		u.log.Error("auto-update failed to start", "host", he.ID, "stack", stack, "err", err)
 		return
 	}
 	u.auditAutoUpdate(ctx, he.ID, stack, rec)
@@ -732,7 +738,7 @@ func (u *Updater) auditAutoUpdate(ctx context.Context, hostID, stack string, rec
 		Actor: store.AuditActorSystem, Action: AuditAutoUpdate, HostID: hostID, Stack: stack, Target: target, Outcome: outcome,
 	})
 	if err != nil {
-		u.log.Warn("audit auto-update", "err", err)
+		u.log.Error("audit auto-update", "err", err)
 	}
 }
 
@@ -765,6 +771,14 @@ func (u *Updater) StartUpdate(ctx context.Context, hostID, stack, actor string) 
 	}
 	if he.ReadOnly {
 		return engine.OpInfo{}, nil, host.ErrHostReadOnly
+	}
+	if u.BeforeUpdate != nil {
+		if err := u.BeforeUpdate(ctx, hostID, stack); err != nil {
+			if u.events != nil {
+				u.events.StackEvent(hostID, stack, "update", actor, "Update postponed: snapshot before update failed ("+err.Error()+")")
+			}
+			return engine.OpInfo{}, nil, fmt.Errorf("%w: %v", ErrSnapshotFailed, err)
+		}
 	}
 
 	before, err := h.StackImages(ctx, stack)
@@ -1277,7 +1291,7 @@ func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
 	// Rollback also switches the stack's policy to notify and skips the bad digests.
 	if _, err := u.Rollback(ctx, hostID, stack, rec.ID, "auto-rollback"); err != nil {
 		if u.log != nil {
-			u.log.Warn("auto-rollback failed", "host", hostID, "stack", stack, "err", err)
+			u.log.Error("auto-rollback failed", "host", hostID, "stack", stack, "err", err)
 		}
 		_ = u.st.SetAutoRollbackReason(ctx, rbID, fmt.Sprintf("%s (rollback failed: %v)", cause, err))
 		_ = u.st.Audit(ctx, store.AuditEntry{

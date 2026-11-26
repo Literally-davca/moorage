@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"moorage/internal/engine"
+	"moorage/internal/gen"
 	"moorage/internal/host"
 	"moorage/internal/lint"
 	"moorage/internal/store"
@@ -96,6 +97,13 @@ func maskEnvText(raw string) string {
 }
 
 func generateMCPSecret(kind string) string {
+	if v, err := gen.Kind(kind); err == nil && kind != "" {
+		return v
+	}
+	return generateMCPSecretLegacy(kind)
+}
+
+func generateMCPSecretLegacy(kind string) string {
 	b := make([]byte, 24)
 	_, _ = rand.Read(b)
 	switch kind {
@@ -262,19 +270,54 @@ func (s *Server) approveMCPDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user := currentUser(r).Username
+	if code, err := s.applyDraft(ctx, d, "mcp:"+d.TokenName); err != nil {
+		if code != 0 {
+			writeErr(w, code, err.Error())
+		} else {
+			s.engErr(w, err)
+		}
+		return
+	}
+	_ = s.store.DecideMCPDraft(ctx, d.ID, "approved", user)
+	setAuditStack(r, d.Stack)
+	setAuditTarget(r, d.Tool)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// applyDraft carries out an approved draft (MCP or assistant): save the compose files
+// (generating @generate values), deploy, or run a stack action. code is an HTTP status
+// for errors meant for the user; 0 means an engine error.
+func (s *Server) applyDraft(ctx context.Context, d store.MCPDraft, author string) (int, error) {
 	h, meta, err := s.reg.Get(ctx, d.HostID)
 	if err != nil {
-		status, msg := s.errStatus(err)
-		writeErr(w, status, msg)
-		return
+		code, msg := s.errStatus(err)
+		return code, errors.New(msg)
 	}
 	if meta.ReadOnly {
-		writeErr(w, http.StatusForbidden, host.ErrHostReadOnly.Error())
-		return
+		return http.StatusForbidden, host.ErrHostReadOnly
 	}
-	user := currentUser(r).Username
-	author := "mcp:" + d.TokenName
+	if d.Tool == "stack_action" {
+		if !assistantStackActions[d.Note] {
+			return http.StatusBadRequest, fmt.Errorf("unknown action %q", d.Note)
+		}
+		action := d.Note
+		if action == "start" {
+			action = s.deployAction(ctx, d.HostID, d.Stack, "up", "")
+		}
+		op, err := h.RunAction(ctx, d.Stack, action, author)
+		if err != nil {
+			return 0, err
+		}
+		s.watchOp(h, d.HostID, d.Stack, action, op.ID)
+		return 0, nil
+	}
 	if d.Compose != "" {
+		gres, gerr := s.materializeStack(ctx, d.HostID, h, d.Stack, d.Compose, d.Env)
+		if gerr != nil {
+			return http.StatusBadRequest, errors.New("Can't generate values: " + gerr.Error())
+		}
+		d.Compose, d.Env = gres.Compose, gres.Env
 		if d.CreateNew {
 			if nc, ok := h.(host.NotedCreator); ok {
 				err = nc.CreateNoted(ctx, d.Stack, d.Compose, d.Env, author, d.Note)
@@ -285,23 +328,20 @@ func (s *Server) approveMCPDraft(w http.ResponseWriter, r *http.Request) {
 			err = h.Save(ctx, d.Stack, d.Compose, d.Env, author, false)
 		}
 		if err != nil {
-			s.engErr(w, err)
-			return
+			return 0, err
 		}
 	}
 	if d.Deploy {
 		action := s.deployAction(ctx, d.HostID, d.Stack, "up", "")
-		if op, oerr := h.RunAction(ctx, d.Stack, action, author); oerr != nil {
-			s.engErr(w, oerr)
-			return
-		} else if action == "rolling" && op.ID != "" {
+		op, oerr := h.RunAction(ctx, d.Stack, action, author)
+		if oerr != nil {
+			return 0, oerr
+		}
+		if action == "rolling" && op.ID != "" {
 			s.watchRollback(h, d.HostID, d.Stack, op.ID)
 		}
 	}
-	_ = s.store.DecideMCPDraft(ctx, d.ID, "approved", user)
-	setAuditStack(r, d.Stack)
-	setAuditTarget(r, d.Tool)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	return 0, nil
 }
 
 func (s *Server) rejectMCPDraft(w http.ResponseWriter, r *http.Request) {
@@ -483,6 +523,7 @@ func (s *Server) execMCPTool(ctx context.Context, r *http.Request, tok store.MCP
 	stack := strArg("stack")
 
 	recordAudit := func(outcome string) {
+		s.log.Info("mcp tool", "token", tok.Name, "tool", tool, "host", hostID, "stack", stack, "outcome", outcome)
 		_ = s.store.Audit(ctx, store.AuditEntry{
 			At:      time.Now(),
 			Actor:   "mcp:" + tok.Name,
@@ -680,6 +721,11 @@ func (s *Server) execMCPTool(ctx context.Context, r *http.Request, tok store.MCP
 			if compose == "" {
 				return nil, errors.New("compose is required")
 			}
+			gres, gerr := s.materializeStack(ctx, hostID, h, stack, compose, nextEnv)
+			if gerr != nil {
+				return nil, fmt.Errorf("can't generate values: %w", gerr)
+			}
+			compose, nextEnv = gres.Compose, gres.Env
 			if tool == "create_stack" {
 				if nc, ok := h.(host.NotedCreator); ok && note != "" {
 					err = nc.CreateNoted(ctx, stack, compose, nextEnv, author, note)
@@ -694,7 +740,8 @@ func (s *Server) execMCPTool(ctx context.Context, r *http.Request, tok store.MCP
 				return nil, err
 			}
 			recordAudit(store.AuditOK)
-			return map[string]any{"ok": true, "stack": stack}, nil
+			// names and kinds only: the values stay in .env, which MCP never sees
+			return map[string]any{"ok": true, "stack": stack, "generated": gres.Generated}, nil
 		}
 
 		action := s.deployAction(ctx, hostID, stack, "up", "")

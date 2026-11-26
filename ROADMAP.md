@@ -21,6 +21,8 @@ Položky schválené k realizaci do jádra Moorage:
 | **Importéry (Portainer, Uptime Kuma, Gatus) a demo instance** | Snadný přechod od konkurence. | Zařazeno do M18C (`PLAN.md`). | agent (analýza konkurence) |
 | **Klíčová slova `@generate` / Coolify `SERVICE_*`, volné porty a recepty služeb** | Hesla, klíče a nekolizní porty se vygenerují při uložení do `.env`; linter podle image napoví, co služba potřebuje. | Zařazeno do M18E (`PLAN.md`). | uživatel + agent |
 | **Statický snapshot status stránky, oddělení logů v tunelu** | Status stránka přežije výpadek serveru; logy nebrzdí řídicí provoz. | Zařazeno do M18D (`PLAN.md`). | agent (analýza konkurence) |
+| **Karta Problems u kontejnerů a komprimované snapshoty stacků a kontejnerů** | Konkrétně říct, co je s kontejnerem špatně a jak to opravit; bod obnovy dat a konfigurace před riskantní změnou. | Zařazeno do M18F (`PLAN.md`). | uživatel + agent |
+| **AI asistent (built-in add-on)** | Panel s chatem, který ví, kde co v Moorage je, dává přesné odkazy a podle zvolené míry oprávnění navrhne nebo provede změnu. | Zařazeno do M18G (`PLAN.md`). | uživatel + agent |
 | **Prohlížeč a editor souborů stacku** | Úprava doprovodných souborů (`Caddyfile`, `nginx.conf`…) přímo ze stacku s git historií. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
 | **Hlídání volného disku a RAM hosta** | Včasné varování před zaplněním disku nebo paměti hosta. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
 | **Hromadné operace nad stacky (Bulk actions)** | Hromadný start, stop, restart a update vybraných stacků ve frontě. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
@@ -64,6 +66,13 @@ Vestavěné (`builtin`) funkce a integrace mimo univerzální jádro, zapínatel
 | **Export SLA / incident reportů** | Měsíční přehled výpadků a dostupnosti v Markdownu/JSON. | nápad | agent |
 | **Záložní hub (pasivní standby)** | Standby hub přebírající replikovanou SQLite (např. Litestream) s fencingem. | nápad | uživatel + agent |
 | **Vyhledávání image při zakládání stacku** | Našeptávač názvů image z Docker Hubu / GHCR. | implementováno (`imagefind`) | agent |
+| **Přesun stacku na jiný host pomocí snapshotu** | Snapshot (data + konfigurace) obnovený na jiném hostu = migrace stacku jedním tokem. | nápad (po M18F) | agent |
+| **Databázově vědomé snapshoty (`pg_dump` / `mysqldump` hooky)** | Snapshot databáze bez pauzy a s jistotou obnovy; hook z katalogu receptů M18E. | nápad (po M18F) | agent |
+| **`restic-backup` zálohuje i složku snapshotů** | Snapshoty z M18F se dostanou mimo server a do retence Resticu bez další konfigurace. | nápad (po M18F) | agent |
+| **Uložení image do snapshotu (`docker save`)** | Obnova i tehdy, když tag z registru zmizel nebo host je offline. | nápad (po M18F) | agent |
+| **Asistent reaguje na alert („Explain this alert“)** | Tlačítko u alertu a v incidentu M18A otevře panel s předvyplněným kontextem výpadku. | nápad (po M18G) | agent |
+| **Další poskytovatelé LLM: Azure OpenAI, Amazon Bedrock** | Firemní účty bez veřejného API klíče. | nápad (po M18G) | agent |
+| **Asistent v CLI (`moorage ask`)** | Stejný asistent a nástroje v terminálu / TUI. | nápad (po M18G) | agent |
 
 ---
 
