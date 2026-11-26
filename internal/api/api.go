@@ -321,6 +321,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/restore", s.admin(s.restore))
 	mux.Handle("POST /api/agents", s.admin(s.addAgent))
 	mux.Handle("PATCH /api/hosts/{host}", s.admin(s.renameHost))
+	mux.Handle("GET /api/hosts/{host}/addresses", s.user(s.getHostAddresses))
+	mux.Handle("PUT /api/hosts/{host}/addresses", s.admin(s.putHostAddresses))
 	mux.Handle("DELETE /api/hosts/{host}", s.admin(s.removeHost))
 	mux.Handle("POST /api/checks", s.admin(s.saveCheck))
 	mux.Handle("POST /api/checks/test", s.admin(s.testCheck))
@@ -781,8 +783,16 @@ func (s *Server) listHosts(w http.ResponseWriter, r *http.Request) {
 		list = []host.Entry{}
 	}
 	for i := range list {
+		envIP := list[i].HostIP
 		list[i].HostIP, list[i].BaseDomain, list[i].HostIPFromEnv, list[i].BaseDomainFromEnv =
 			s.effectiveHostNetwork(ctx, list[i].ID, list[i].HostIP, list[i].BaseDomain)
+		e := list[i]
+		e.HostIP = envIP
+		var def string
+		list[i].Addresses, def = s.hostAddresses(ctx, list[i].ID, e)
+		if def != "" {
+			list[i].HostIP = def
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"hosts": list, "agentPort": s.agentPort(), "agentPublicAddr": s.effectiveAgentPublicAddr(ctx),
@@ -891,7 +901,7 @@ func (s *Server) renameHost(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "Primary IP or hostname must not contain spaces or slashes.")
 			return
 		}
-		if err := s.store.SetSetting(ctx, store.HostIPKey(hostID), v); err != nil {
+		if err := s.setPrimaryAddress(ctx, hostID, v); err != nil {
 			s.engErr(w, err)
 			return
 		}
@@ -940,12 +950,22 @@ func (s *Server) hostEffectiveIP(ctx context.Context, hostID string) string {
 	if s.reg == nil {
 		return ""
 	}
+	ip, _ := s.hostLinkAddresses(ctx, hostID)
+	return ip
+}
+
+// hostLinkAddresses returns the default address of a host and its other addresses for
+// service links (M17B).
+func (s *Server) hostLinkAddresses(ctx context.Context, hostID string) (string, []engine.HostAddress) {
+	if s.reg == nil {
+		return "", nil
+	}
 	_, entry, err := s.reg.Get(ctx, hostID)
 	if errors.Is(err, host.ErrUnknownHost) {
-		return ""
+		return "", nil
 	}
-	ip, _, _, _ := s.effectiveHostNetwork(ctx, hostID, entry.HostIP, entry.BaseDomain)
-	return ip
+	list, def := s.hostAddresses(ctx, hostID, entry)
+	return def, alternativeAddresses(list)
 }
 
 func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
@@ -958,7 +978,7 @@ func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
 	list, err := h.ListStacks(ctx)
 	proxyOn, _ := s.store.AddonEnabled(ctx, addonProxyLabels)
 	coolifyOn, _ := s.store.AddonEnabled(ctx, addonCoolify)
-	hostIP := s.hostEffectiveIP(ctx, hostID)
+	hostIP, altAddrs := s.hostLinkAddresses(ctx, hostID)
 	var portByProject map[string][]string
 	var ctrs []engine.ContainerInfo
 	if cm, isCM := h.(host.ContainerManager); isCM {
@@ -1002,6 +1022,7 @@ func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
 		}
 		if !hasExplicit && hostIP != "" && len(portByProject[list[i].Name]) > 0 {
 			list[i].URLs = mergeURLs(list[i].URLs, hostPortURLs(hostIP, portByProject[list[i].Name]), 10)
+			list[i].AltURLs = hostAltURLs(altAddrs, portByProject[list[i].Name])
 		}
 		list[i].ProxyURLs = nil
 		if coolifyOn {
@@ -1097,7 +1118,7 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		s.enrichCoolifySummary(ctx, hostID, &st.StackSummary, lblMeta, deploying)
 	}
 	proxyOn, _ := s.store.AddonEnabled(ctx, addonProxyLabels)
-	hostIP := s.hostEffectiveIP(ctx, hostID)
+	hostIP, altAddrs := s.hostLinkAddresses(ctx, hostID)
 	stackHasExplicit := len(st.URLs) > 0
 	if proxyOn && len(st.ProxyURLs) > 0 {
 		st.URLs = mergeURLs(st.URLs, st.ProxyURLs, 10)
@@ -1111,8 +1132,11 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		if !ctrExplicit && hostIP != "" {
 			purls := hostPortURLs(hostIP, st.Containers[i].Ports)
 			st.Containers[i].URLs = mergeURLs(st.Containers[i].URLs, purls, 5)
+			alts := hostAltURLs(altAddrs, st.Containers[i].Ports)
+			st.Containers[i].AltURLs = alts
 			if !stackHasExplicit {
 				st.URLs = mergeURLs(st.URLs, purls, 10)
+				st.AltURLs = append(st.AltURLs, alts...)
 			}
 		}
 		st.Containers[i].ProxyURLs = nil

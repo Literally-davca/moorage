@@ -38,6 +38,12 @@ type Entry struct {
 	BaseDomain        string            `json:"baseDomain,omitempty"`
 	HostIPFromEnv     bool              `json:"hostIpFromEnv,omitempty"`
 	BaseDomainFromEnv bool              `json:"baseDomainFromEnv,omitempty"`
+	// NetMode, DetectedAddresses and DataHostPath come from the host itself (M17B).
+	NetMode           string               `json:"netMode,omitempty"`
+	DetectedAddresses []engine.HostAddress `json:"detectedAddresses,omitempty"`
+	DataHostPath      string               `json:"dataHostPath,omitempty"`
+	// Addresses is the merged list (env, saved and detected) the API fills in.
+	Addresses []engine.HostAddress `json:"addresses,omitempty"`
 }
 
 type conn struct {
@@ -107,6 +113,7 @@ func (r *Registry) entryOf(id string, c *conn) Entry {
 		Watchdog: c.info.Watchdog, WatchdogAddr: c.info.WatchdogAddr,
 		Probes: c.info.Probes,
 		Locks:  agentLocks(c.info), HostIP: c.info.HostIP, BaseDomain: c.info.BaseDomain,
+		NetMode: c.info.NetMode, DetectedAddresses: c.info.Addresses, DataHostPath: c.info.DataHostPath,
 	}
 }
 
@@ -127,6 +134,11 @@ func (r *Registry) localEntry() Entry {
 	}
 	if hn, ok := r.local.(interface{ Network() (string, string) }); ok {
 		e.HostIP, e.BaseDomain = hn.Network()
+	}
+	if hn, ok := r.local.(interface {
+		HostNet() (string, []engine.HostAddress, string)
+	}); ok {
+		e.NetMode, e.DetectedAddresses, e.DataHostPath = hn.HostNet()
 	}
 	return e
 }

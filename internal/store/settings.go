@@ -30,6 +30,10 @@ const (
 func HostIPKey(hostID string) string     { return "host_ip:" + hostID }
 func BaseDomainKey(hostID string) string { return "base_domain:" + hostID }
 
+// HostAddressesKey stores the named addresses of a host (JSON list, M17B). Without it the
+// legacy HostIPKey value is the host's only (default) address.
+func HostAddressesKey(hostID string) string { return "host_addresses:" + hostID }
+
 // GetSetting returns a single setting value or "" if not set.
 func (s *Store) GetSetting(ctx context.Context, key string) (string, error) {
 	if s == nil {

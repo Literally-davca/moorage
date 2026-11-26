@@ -7,9 +7,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
+	"moorage/internal/engine"
 	"moorage/internal/host"
 	"moorage/internal/store"
 )
@@ -92,7 +92,15 @@ func (s *Server) effectiveHostNetwork(ctx context.Context, hostID, envIP, envDom
 	if strings.TrimSpace(envIP) != "" {
 		ip, ipEnv = strings.TrimSpace(envIP), true
 	} else if s.store != nil {
-		ip, _ = s.store.GetSetting(ctx, store.HostIPKey(hostID))
+		if saved, ok := s.savedHostAddresses(ctx, hostID); ok {
+			for _, a := range mergeHostAddresses("", "", saved, true, nil) {
+				if a.IsDefault {
+					ip = a.Address
+				}
+			}
+		} else {
+			ip, _ = s.store.GetSetting(ctx, store.HostIPKey(hostID))
+		}
 	}
 	if strings.TrimSpace(envDomain) != "" {
 		domain, domEnv = strings.TrimSpace(envDomain), true
@@ -103,51 +111,27 @@ func (s *Server) effectiveHostNetwork(ctx context.Context, hostID, envIP, envDom
 }
 
 // hostPortURLs builds http://<hostIP>:<port> links from published container port strings
-// (e.g. "8080:80/tcp", "0.0.0.0:3000:3000/tcp", "100.87.100.2:8090:8090/tcp"), skipping
-// loopback-bound ports (127.0.0.1 / ::1) and UDP ports.
+// (e.g. "8080:80/tcp", "127.0.0.1:8080:80/tcp", "100.87.100.2:8090:8090/tcp"), skipping
+// loopback-bound ports (127.0.0.1 / ::1) and UDP ports. A port bound to one address is
+// linked on that address, since it isn't reachable on the host's default one.
 func hostPortURLs(hostIP string, ports []string) []string {
 	hostIP = strings.TrimSpace(hostIP)
 	if hostIP == "" || len(ports) == 0 {
 		return nil
 	}
-	fmtHost := hostIP
-	if strings.Contains(fmtHost, ":") && !strings.HasPrefix(fmtHost, "[") {
-		fmtHost = "[" + fmtHost + "]"
-	}
 	seen := map[string]bool{}
 	var out []string
 	for _, raw := range ports {
-		base, proto, _ := strings.Cut(raw, "/")
-		if proto != "" && proto != "tcp" {
+		b, ok := engine.ParsePortString(raw)
+		if !ok {
 			continue
 		}
-		parts := strings.Split(base, ":")
-		var pubPort string
-		switch len(parts) {
-		case 2: // "8080:80"
-			pubPort = parts[0]
-		case 3: // "0.0.0.0:8080:80" or "127.0.0.1:8080:80"
-			bindIP := strings.Trim(parts[0], "[]")
-			if bindIP == "127.0.0.1" || bindIP == "::1" || bindIP == "localhost" {
-				continue
-			}
-			pubPort = parts[1]
-		default:
-			continue
+		addr := hostIP
+		if b.IP != "" && !engine.IsLoopbackIP(b.IP) {
+			addr = b.IP
 		}
-		n, err := strconv.Atoi(pubPort)
-		if err != nil || n <= 0 || n > 65535 {
-			continue
-		}
-		scheme := "http"
-		if n == 443 || n == 8443 {
-			scheme = "https"
-		}
-		u := scheme + "://" + fmtHost + ":" + pubPort
-		if (scheme == "http" && n == 80) || (scheme == "https" && n == 443) {
-			u = scheme + "://" + fmtHost
-		}
-		if !seen[u] && len(out) < 5 {
+		u := portURL(addr, raw)
+		if u != "" && !seen[u] && len(out) < 5 {
 			seen[u] = true
 			out = append(out, u)
 		}

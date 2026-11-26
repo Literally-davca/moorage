@@ -73,3 +73,9 @@ func portRoutes(mux *http.ServeMux, h Host) {
 		reply(w)(pl.Ports(r.Context()))
 	})
 }
+
+// HostNet returns the network mode, auto-detected addresses and the data directory's host
+// path of this host (M17B).
+func (l Local) HostNet() (string, []engine.HostAddress, string) {
+	return l.E.NetMode(), l.E.DetectedAddresses(), l.E.RuntimeNet().DataHostPath
+}

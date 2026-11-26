@@ -42,23 +42,24 @@ func IsInternalContainer(s container.Summary) bool {
 
 // Container is the UI view of one container.
 type Container struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name"`
-	Service   string   `json:"service"`
-	Image     string   `json:"image"`
-	ImageID   string   `json:"imageId,omitempty"`
-	State     string   `json:"state"`  // running, exited, restarting, paused, created, dead
-	Status    string   `json:"status"` // human text from Docker, e.g. "Up 3 hours"
-	ExitCode  *int     `json:"exitCode,omitempty"`
-	Health    string   `json:"health,omitempty"` // healthy, unhealthy, starting
-	Created   int64    `json:"created"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Service  string `json:"service"`
+	Image    string `json:"image"`
+	ImageID  string `json:"imageId,omitempty"`
+	State    string `json:"state"`  // running, exited, restarting, paused, created, dead
+	Status   string `json:"status"` // human text from Docker, e.g. "Up 3 hours"
+	ExitCode *int   `json:"exitCode,omitempty"`
+	Health   string `json:"health,omitempty"` // healthy, unhealthy, starting
+	Created  int64  `json:"created"`
 	// Ports are the published ports: "8080:80/tcp" on every interface, or with the bind
 	// address "127.0.0.1:8080:80/tcp" / "[fd00::1]:8080:80/tcp" (see ParsePortString).
 	Ports []string `json:"ports,omitempty"`
 	// HostNetwork is set for containers with network_mode: host (no port mappings).
-	HostNetwork bool `json:"hostNetwork,omitempty"`
-	URLs      []string `json:"urls,omitempty"`
-	ProxyURLs []string `json:"proxyUrls,omitempty"`
+	HostNetwork bool     `json:"hostNetwork,omitempty"`
+	URLs        []string `json:"urls,omitempty"`
+	ProxyURLs   []string `json:"proxyUrls,omitempty"`
+	AltURLs     []AltURL `json:"altUrls,omitempty"`
 }
 
 var exitRe = regexp.MustCompile(`^Exited \((-?\d+)\)`)

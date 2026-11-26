@@ -25,6 +25,18 @@ type HostAddress struct {
 	Interface    string `json:"interface,omitempty"`
 	IsDefault    bool   `json:"isDefault,omitempty"`
 	AutoDetected bool   `json:"autoDetected,omitempty"`
+	// Locked: set from MOORAGE_HOST_IP on that host, can't be changed in the UI.
+	Locked bool `json:"locked,omitempty"`
+	// Missing: a saved auto-detected address the host doesn't report right now.
+	Missing bool `json:"missing,omitempty"`
+}
+
+// AltURL is a service link on one of the host's other addresses.
+type AltURL struct {
+	Label   string `json:"label"`
+	Kind    string `json:"kind"`
+	Address string `json:"address"`
+	URL     string `json:"url"`
 }
 
 // RuntimeNet is how this Moorage process is attached to the host network (set once at

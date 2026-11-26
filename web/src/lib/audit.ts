@@ -29,6 +29,7 @@ const labels: Record<string, string> = {
   'host.add': 'Created join token',
   'host.paired': 'Paired agent',
   'host.rename': 'Renamed host',
+  'host.addresses': 'Changed host addresses',
   'host.remove': 'Removed host',
   'check.create': 'Added check',
   'check.save': 'Saved check',

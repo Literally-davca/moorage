@@ -50,6 +50,7 @@ var auditActions = map[string]string{
 	"POST /api/agents":                                           "host.add",
 	"PATCH /api/hosts/{host}":                                    "host.rename",
 	"DELETE /api/hosts/{host}":                                   "host.remove",
+	"PUT /api/hosts/{host}/addresses":                            "host.addresses",
 	"POST /api/checks":                                           "check.create",
 	"PUT /api/checks/{id}":                                       "check.save",
 	"DELETE /api/checks/{id}":                                    "check.delete",
