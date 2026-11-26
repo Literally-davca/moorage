@@ -456,3 +456,11 @@ func (s *Store) PruneImageUpdates(ctx context.Context, cutoff time.Time) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM image_updates WHERE started_at < ?`, cutoff.Unix())
 	return err
 }
+
+// HasStackUpdatePolicy reports whether a policy row exists for the stack (M17B: the
+// add-ons stack gets "auto" only the first time it is created).
+func (s *Store) HasStackUpdatePolicy(ctx context.Context, hostID, stack string) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM stack_update_policies WHERE host_id = ? AND stack = ?`, hostID, stack).Scan(&n)
+	return n > 0, err
+}
