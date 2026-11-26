@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,46 +25,22 @@ type lintReq struct {
 	Deploy bool `json:"deploy"`
 }
 
-// runningPorts lists the host ports that running containers of other stacks publish.
-func runningPorts(ctx context.Context, h host.Host, except string) []lint.PortUse {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	stacks, err := h.ListStacks(ctx)
+// runningPorts lists the host ports taken outside the stack: containers of other stacks
+// and standalone containers, ports declared by stopped stacks (reserved) and, in native /
+// host-network mode, the host's own sockets. It shares the collection with the port map.
+func (s *Server) runningPorts(ctx context.Context, hostID string, h host.Host, except string) []lint.PortUse {
+	rep, err := s.hostPorts(ctx, hostID, h, false)
 	if err != nil {
 		return nil
 	}
-	var out []lint.PortUse
-	for _, sm := range stacks {
-		if sm.Name == except || sm.Running == 0 {
-			continue
-		}
-		st, err := h.GetStack(ctx, sm.Name)
-		if err != nil {
-			continue
-		}
-		for _, c := range st.Containers {
-			if c.State != "running" {
-				continue
-			}
-			for _, p := range c.Ports { // "8080:80/tcp"
-				pub, rest, _ := strings.Cut(p, ":")
-				_, proto, _ := strings.Cut(rest, "/")
-				n, err := strconv.Atoi(pub)
-				if err != nil {
-					continue
-				}
-				out = append(out, lint.PortUse{Port: n, Proto: proto, Owner: sm.Name + "/" + c.Name})
-			}
-		}
-	}
-	return out
+	return portUses(rep, except)
 }
 
-func (s *Server) lintStack(ctx context.Context, h host.Host, name, compose, env string, deploy bool) []lint.Issue {
-	o := lint.Options{Name: name}
-	if deploy {
-		o.Running = runningPorts(ctx, h, name)
-	}
+func (s *Server) lintStack(ctx context.Context, hostID string, h host.Host, name, compose, env string, deploy bool) []lint.Issue {
+	// The port check runs on every validation (live editing too): port-taken stays a
+	// deploy error, so it warns while typing and only blocks Deploy.
+	o := lint.Options{Name: name, AllowLatest: name == addonsStackName}
+	o.Running = s.runningPorts(ctx, hostID, h, name)
 	issues := lint.Lint(ctx, compose, env, o)
 	if issues == nil {
 		issues = []lint.Issue{}
@@ -84,7 +59,7 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	issues := s.lintStack(r.Context(), h, name, req.Compose, req.Env, req.Deploy)
+	issues := s.lintStack(r.Context(), r.PathValue("host"), h, name, req.Compose, req.Env, req.Deploy)
 	err := h.Validate(r.Context(), name, req.Compose, req.Env)
 	var ve engine.ValidationError
 	if errors.As(err, &ve) {
@@ -224,12 +199,12 @@ func (s *Server) deployAction(ctx context.Context, hostID, stack, action, overri
 // deployBlocked runs the linter with the deploy rules over the stack as saved on the host.
 // It returns the first blocking issue, nil when the deploy may go ahead (or the stack has
 // no compose file Moorage can read).
-func (s *Server) deployBlocked(ctx context.Context, h host.Host, stack string) *lint.Issue {
+func (s *Server) deployBlocked(ctx context.Context, hostID string, h host.Host, stack string) *lint.Issue {
 	st, err := h.GetStack(ctx, stack)
 	if err != nil || !st.Managed || st.Compose == "" {
 		return nil
 	}
-	return lint.Blocking(s.lintStack(ctx, h, stack, st.Compose, st.Env, true), true)
+	return lint.Blocking(s.lintStack(ctx, hostID, h, stack, st.Compose, st.Env, true), true)
 }
 
 // watchRollback follows a rolling deploy: when it put the previous container back, it

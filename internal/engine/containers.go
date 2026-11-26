@@ -52,7 +52,11 @@ type Container struct {
 	ExitCode  *int     `json:"exitCode,omitempty"`
 	Health    string   `json:"health,omitempty"` // healthy, unhealthy, starting
 	Created   int64    `json:"created"`
-	Ports     []string `json:"ports,omitempty"`
+	// Ports are the published ports: "8080:80/tcp" on every interface, or with the bind
+	// address "127.0.0.1:8080:80/tcp" / "[fd00::1]:8080:80/tcp" (see ParsePortString).
+	Ports []string `json:"ports,omitempty"`
+	// HostNetwork is set for containers with network_mode: host (no port mappings).
+	HostNetwork bool `json:"hostNetwork,omitempty"`
 	URLs      []string `json:"urls,omitempty"`
 	ProxyURLs []string `json:"proxyUrls,omitempty"`
 }
@@ -84,12 +88,17 @@ func toContainer(s container.Summary) Container {
 	if c.Health == "" {
 		c.Health = healthFromStatus(s.Status)
 	}
+	c.HostNetwork = s.HostConfig.NetworkMode == "host"
 	seen := map[string]bool{}
 	for _, p := range s.Ports {
 		if p.PublicPort == 0 {
 			continue
 		}
-		v := strconv.Itoa(int(p.PublicPort)) + ":" + strconv.Itoa(int(p.PrivatePort)) + "/" + string(p.Type)
+		ip := ""
+		if p.IP.IsValid() && !p.IP.IsUnspecified() {
+			ip = p.IP.Unmap().String()
+		}
+		v := FormatPortString(ip, int(p.PublicPort), int(p.PrivatePort), string(p.Type))
 		if !seen[v] {
 			seen[v] = true
 			c.Ports = append(c.Ports, v)

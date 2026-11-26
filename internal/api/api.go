@@ -284,6 +284,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/updates", s.user(s.listUpdates))
 	mux.Handle("GET /api/nav-summary", s.user(s.navSummary))
 	mux.Handle("GET /api/hosts/{host}/containers", s.user(s.listContainers))
+	mux.Handle("GET /api/hosts/{host}/ports", s.user(s.listHostPorts))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/images", s.user(s.getStackImages))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/maintenance", s.user(s.stackMaintenance))
 	mux.Handle("GET /api/maintenance", s.user(s.listMaintenance))
@@ -1273,7 +1274,7 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	name, action, user := r.PathValue("name"), r.PathValue("action"), currentUser(r).Username
 	action = s.deployAction(r.Context(), r.PathValue("host"), name, action, r.URL.Query().Get("strategy"))
 	if actionEvent[action] == "deploy" || actionEvent[action] == "update" {
-		if b := s.deployBlocked(r.Context(), h, name); b != nil {
+		if b := s.deployBlocked(r.Context(), r.PathValue("host"), h, name); b != nil {
 			writeErr(w, http.StatusUnprocessableEntity, "Can't deploy: "+b.Message)
 			return
 		}

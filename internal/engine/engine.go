@@ -71,6 +71,7 @@ type Engine struct {
 
 	selfMu sync.Mutex
 	self   *SelfStack // the stack Moorage runs from, nil for binary installs (self.go)
+	rtNet  RuntimeNet // how Moorage is attached to the host network (hostnet.go)
 
 	engMu    sync.Mutex
 	eng      engineIdent // Docker or Podman, from /version (see podman.go)
@@ -134,6 +135,11 @@ type HostInfo struct {
 	// HostIP and BaseDomain come from MOORAGE_HOST_IP / MOORAGE_BASE_DOMAIN of that host.
 	HostIP     string `json:"hostIp,omitempty"`
 	BaseDomain string `json:"baseDomain,omitempty"`
+	// NetMode, Addresses and DataHostPath: how Moorage sees the host network (M17B,
+	// hostnet.go). Addresses are auto-detected only in native / host-network mode.
+	NetMode      string        `json:"netMode,omitempty"`
+	Addresses    []HostAddress `json:"addresses,omitempty"`
+	DataHostPath string        `json:"dataHostPath,omitempty"`
 }
 
 // HostLocks are the security switches of a host, as its own environment sets them.
@@ -168,6 +174,7 @@ func (e *Engine) Locks() HostLocks {
 // Host returns basic information about the Docker host.
 func (e *Engine) Host(ctx context.Context) HostInfo {
 	h := HostInfo{StacksDir: e.cfg.StacksDir, Locks: e.Locks(), HostIP: e.cfg.HostIP, BaseDomain: e.cfg.BaseDomain}
+	h.NetMode, h.Addresses, h.DataHostPath = e.NetMode(), e.DetectedAddresses(), e.RuntimeNet().DataHostPath
 	if e.api == nil {
 		h.Name, _ = os.Hostname()
 		return h

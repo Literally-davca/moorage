@@ -162,3 +162,35 @@ func TestQuickFixes(t *testing.T) {
 		t.Fatalf("add-env-var: %v %q", err, r.Env)
 	}
 }
+
+func TestPortReservedAndAddonsLatest(t *testing.T) {
+	compose := "services:\n  web:\n    image: nginx:latest\n    restart: unless-stopped\n    ports:\n      - \"127.0.0.1:8080:80\"\n      - \"9000:9000\"\n      - \"10.0.0.5:7000:7000\"\n"
+	running := []PortUse{
+		{Port: 8080, Proto: "tcp", IP: "", Owner: "other/app"},                    // every interface: collides
+		{Port: 9000, Proto: "tcp", IP: "127.0.0.1", Owner: "media/jelly", Reserved: true}, // stopped stack
+		{Port: 7000, Proto: "tcp", IP: "10.0.0.6", Owner: "a process on the host"}, // other address: no clash
+	}
+	got := codes(Lint(context.Background(), compose, "", Options{Name: "add-ons", Running: running, AllowLatest: true}))
+	if got["port-taken/web"] != DeployError || got["port-reserved/web"] != Warning {
+		t.Fatalf("ports: %v", got)
+	}
+	if _, ok := got["latest-tag/web"]; ok {
+		t.Fatal("add-ons stack must not get the latest-tag tip")
+	}
+	issues := Lint(context.Background(), compose, "", Options{Name: "x", Running: running})
+	n := 0
+	for _, is := range issues {
+		if is.Code == "port-taken" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("want exactly one port-taken, got %d", n)
+	}
+	if Blocking(issues, false) != nil {
+		t.Fatal("port-taken must not block saving, only deploys")
+	}
+	if Blocking(issues, true) == nil {
+		t.Fatal("port-taken blocks a deploy")
+	}
+}
