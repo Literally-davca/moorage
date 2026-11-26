@@ -4,6 +4,9 @@
   import Icon from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
   import Select from '../lib/Select.svelte';
+  import NotifyPresentation from './NotifyPresentation.svelte';
+  import NotifyBranding from './NotifyBranding.svelte';
+  import { presets } from '../lib/notifications';
 
   type Draft = { id?: number; name: string; kind: ChannelKind; config: ChannelConfig; enabled: boolean };
 
@@ -182,7 +185,7 @@
         <div class="row">
           <span class="dot {c.enabled ? 'up' : 'paused'}"></span>
           <div class="info">
-            <span class="name">{c.name} <span class="tag">{kindName[c.kind]}</span></span>
+            <span class="name">{c.name} <span class="tag">{kindName[c.kind]}</span> <span class="tag">{presets.find((p) => p.k === (c.config.preset ?? 'standard'))?.label}{c.config.format === 'plain' ? ' · plain' : ''}</span></span>
             <span class="meta mono sum">{summary(c)}</span>
           </div>
           <div class="row-actions">
@@ -342,6 +345,8 @@
           <p class="hint">Moorage only sends over an encrypted connection.</p>
         {/if}
 
+        <NotifyPresentation kind={draft.kind} bind:config={draft.config} />
+
         <div>
           <span class="label">Events</span>
           <div style="display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:4px">
@@ -370,6 +375,8 @@
       </form>
     {/if}
   </section>
+
+  <NotifyBranding />
 </div>
 
 <Confirm bind:open={confirmRemove} title="Delete {removing?.name}?" danger confirmLabel="Delete channel"
