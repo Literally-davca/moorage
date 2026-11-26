@@ -141,6 +141,7 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 		}
 	}
 	s.autoRestart = newAutoRestarter(s)
+	s.initNotifyIdentity()
 	return s
 }
 
@@ -331,6 +332,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/channels", s.admin(s.listChannels))
 	mux.Handle("POST /api/channels", s.admin(s.saveChannel))
 	mux.Handle("POST /api/channels/test", s.admin(s.testChannel))
+	mux.Handle("POST /api/channels/preview", s.admin(s.previewNotification))
+	mux.Handle("GET /api/notifications/settings", s.admin(s.getNotifySettings))
+	mux.Handle("PUT /api/notifications/settings", s.admin(s.putNotifySettings))
 	mux.Handle("PUT /api/channels/{id}", s.admin(s.saveChannel))
 	mux.Handle("DELETE /api/channels/{id}", s.admin(s.deleteChannel))
 	mux.Handle("GET /api/watchdog", s.admin(s.getWatchdog))

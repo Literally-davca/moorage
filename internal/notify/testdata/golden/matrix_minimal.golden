@@ -1,0 +1,10 @@
+PUT https://matrix.example.com/_matrix/client/v3/rooms/%21room:example.com/send/m.room.message/abababababababab
+Content-Type: application/json
+Authorization: Bearer mx-token
+
+{
+  "body": "nas • Moorage agent\nDOWN: web *prod* (stack web on nas)\n\nHost: nas\n\nhttps://moorage.example.com/#/h/nas/stacks/web",
+  "format": "org.matrix.custom.html",
+  "formatted_body": "\u003cb\u003enas • Moorage agent\u003c/b\u003e\u003cbr\u003e🔴 \u003cb\u003eDOWN: web *prod* (stack web on nas)\u003c/b\u003e\u003cbr\u003e\u003cbr\u003e\u003cb\u003eHost:\u003c/b\u003e nas\u003cbr\u003e\u003cbr\u003e\u003ca href=\"https://moorage.example.com/#/h/nas/stacks/web\"\u003eOpen in Moorage\u003c/a\u003e",
+  "msgtype": "m.text"
+}

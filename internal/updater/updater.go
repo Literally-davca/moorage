@@ -1169,12 +1169,17 @@ func (u *Updater) sendDiscoveryBatch(ctx context.Context, channelIDs []int64, no
 			linkURL = u.stackURL(notices[0].hostID, notices[0].stack)
 		}
 	}
-	u.deliverToChannels(ctx, channelIDs, notify.Message{
+	msg := notify.Message{
 		Status: "up",
+		Event:  notify.EventUpdates,
 		Title:  title,
 		Text:   strings.Join(lines, "\n"),
 		URL:    linkURL,
-	})
+	}
+	if len(notices) == 1 {
+		msg.HostID, msg.Stack, msg.Host = notices[0].hostID, notices[0].stack, notices[0].hostName
+	}
+	u.deliverToChannels(ctx, channelIDs, msg)
 }
 
 // SetPublicURL updates the public URL used in update notifications live.
@@ -1320,6 +1325,12 @@ func (u *Updater) HandleStackCheckDown(hostID, stack, checkName, cause string) {
 	}
 	rbMsg := notify.Message{
 		Status: "down",
+		Event:  notify.EventRollback,
+		HostID: hostID,
+		Stack:  stack,
+		Host:   u.hostName(hostID),
+		Cause:  cause,
+		Images: imageChanges(rec),
 		Title:  fmt.Sprintf("Auto-rollback: %s (%s)", stack, checkName),
 		Text:   fmt.Sprintf("Check %q failed after auto-update (%s). Rolled back to previous images and switched update policy to notify.", checkName, cause),
 		URL:    u.stackURL(hostID, stack),
@@ -1355,6 +1366,13 @@ func (u *Updater) sendAutoAppliedNotice(ctx context.Context, channelIDs []int64,
 	}
 	u.deliverToChannels(ctx, ids, notify.Message{
 		Status: "up",
+		Event:  notify.EventAutoUpdate,
+		HostID: rec.HostID,
+		Stack:  stack,
+		Host:   u.hostName(rec.HostID),
+		Since:  rec.StartedAt,
+		Until:  rec.FinishedAt,
+		Images: imageChanges(rec),
 		Title:  fmt.Sprintf("Updated %s: %s", stack, strings.Join(changedServices(rec), ", ")),
 		URL:    u.stackURL(rec.HostID, stack),
 	})
@@ -1375,6 +1393,14 @@ func (u *Updater) sendFailureNotice(ctx context.Context, channelIDs []int64, sta
 	}
 	u.deliverToChannels(ctx, channelIDs, notify.Message{
 		Status: "down",
+		Event:  notify.EventAutoUpdate,
+		HostID: rec.HostID,
+		Stack:  stack,
+		Host:   u.hostName(rec.HostID),
+		Cause:  first,
+		Since:  rec.StartedAt,
+		Until:  rec.FinishedAt,
+		Images: imageChanges(rec),
 		Title:  fmt.Sprintf("Update of %s failed: %s", stack, first),
 		Text:   text,
 		Logs:   logs,

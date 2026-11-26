@@ -36,13 +36,22 @@ func TestChannels(t *testing.T) {
 	var d struct {
 		Content         string
 		AllowedMentions struct{ Parse []string } `json:"allowed_mentions"`
+		Embeds          []struct{ Description string }
 	}
 	json.Unmarshal(got.body, &d) //nolint:errcheck
 	if d.AllowedMentions.Parse == nil || len(d.AllowedMentions.Parse) != 0 {
 		t.Fatalf("discord must disable mentions: %s", got.body)
 	}
+	if len(d.Embeds) != 1 || strings.Count(d.Embeds[0].Description, "```") != 2 {
+		t.Fatalf("log line broke out of the code block: %s", got.body)
+	}
+	if err := Send(ctx, "discord", Config{URL: srv.URL + "/hook", Format: FormatPlain}, m); err != nil {
+		t.Fatal(err)
+	}
+	d.Content = ""
+	json.Unmarshal(got.body, &d) //nolint:errcheck
 	if strings.Count(d.Content, "```") != 2 {
-		t.Fatalf("log line broke out of the code block: %q", d.Content)
+		t.Fatalf("plain: log line broke out of the code block: %q", d.Content)
 	}
 
 	if err := Send(ctx, "webhook", Config{URL: srv.URL + "/w"}, m); err != nil {

@@ -1,0 +1,19 @@
+POST https://api.telegram.org/bot123:abc/sendMessage
+Content-Type: application/json
+
+{
+  "chat_id": "42",
+  "disable_web_page_preview": true,
+  "parse_mode": "HTML",
+  "reply_markup": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "Open in Moorage",
+          "url": "https://moorage.example.com/#/h/nas/stacks/web"
+        }
+      ]
+    ]
+  },
+  "text": "\u003cb\u003enas • Moorage agent\u003c/b\u003e\n🔴 \u003cb\u003eDOWN: web *prod* (stack web on nas)\u003c/b\u003e\n\n\u003cb\u003eHost:\u003c/b\u003e nas"
+}

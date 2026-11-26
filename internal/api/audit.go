@@ -37,6 +37,7 @@ var auditActions = map[string]string{
 	"POST /api/convert":              auditSkip,
 	"POST /api/image-lookup":         auditSkip, // reads registries, changes nothing
 	"POST /api/checks/test":          auditSkip, // a one-off probe, nothing is stored
+	"POST /api/channels/preview":     auditSkip, // renders a sample message, sends nothing
 	"POST /api/status-pages/preview": auditSkip,
 	"POST /api/templates/render":     auditSkip, // fills variables, writes nothing; the create is audited
 
@@ -51,6 +52,7 @@ var auditActions = map[string]string{
 	"PATCH /api/hosts/{host}":                                    "host.rename",
 	"DELETE /api/hosts/{host}":                                   "host.remove",
 	"PUT /api/hosts/{host}/addresses":                            "host.addresses",
+	"PUT /api/notifications/settings":                            "notify.settings",
 	"POST /api/checks":                                           "check.create",
 	"PUT /api/checks/{id}":                                       "check.save",
 	"DELETE /api/checks/{id}":                                    "check.delete",

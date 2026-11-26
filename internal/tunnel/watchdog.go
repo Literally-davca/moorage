@@ -48,6 +48,8 @@ type WatchdogConfig struct {
 	Peers            []WatchdogPeer `json:"peers,omitempty"`
 	PeerCert         []byte         `json:"peerCert,omitempty"` // DER-encoded peer certificate
 	ConfigVersion    string         `json:"configVersion,omitempty"`
+	// IconBase is the hub's logo base URL for notifications (M17B; "" = default).
+	IconBase string `json:"iconBase,omitempty"`
 }
 
 // Hash computes a short fingerprint of the shared watchdog parameters (excluding PeerCert)
@@ -344,6 +346,10 @@ func composeWatchdogDown(cfg WatchdogConfig, since time.Time, seen, total int, n
 	}
 	return notify.Message{
 		Status: "down",
+		Event:  notify.EventWatchdog,
+		Host:   hub,
+		Since:  since,
+		Cause:  fmt.Sprintf("seen by %d of %d %s", seen, total, word),
 		Title:  fmt.Sprintf("Moorage hub %s is unreachable", hub),
 		Text: fmt.Sprintf("Since %s (seen by %d of %d %s: %s). Stacks keep running. Alerts from Moorage are paused until the hub is back.",
 			since.Local().Format("15:04"), seen, total, word, strings.Join(names, ", ")),
@@ -357,10 +363,13 @@ func composeWatchdogUp(cfg WatchdogConfig, downFor time.Duration) notify.Message
 		hub = "Moorage"
 	}
 	return notify.Message{
-		Status: "up",
-		Title:  fmt.Sprintf("Moorage hub %s is back after %s", hub, humanDuration(downFor)),
-		Text:   fmt.Sprintf("Moorage hub %s is back after %s.", hub, humanDuration(downFor)),
-		URL:    cfg.PublicURL,
+		Status:   "up",
+		Event:    notify.EventWatchdog,
+		Host:     hub,
+		Duration: downFor,
+		Title:    fmt.Sprintf("Moorage hub %s is back after %s", hub, humanDuration(downFor)),
+		Text:     fmt.Sprintf("Moorage hub %s is back after %s.", hub, humanDuration(downFor)),
+		URL:      cfg.PublicURL,
 	}
 }
 
@@ -426,6 +435,19 @@ func (w *AgentWatchdog) now() time.Time {
 }
 
 func (w *AgentWatchdog) send(ctx context.Context, kind string, cfg notify.Config, m notify.Message) error {
+	// The sender is this agent in its watchdog role, with the hub's logo base (M17B).
+	w.mu.Lock()
+	name, base := w.selfName(), w.cfg.IconBase
+	w.mu.Unlock()
+	if m.Sender.Role == "" {
+		m.Sender = notify.Sender{Host: name, Role: notify.RoleWatchdog}
+	}
+	if m.IconBase == "" {
+		m.IconBase = base
+	}
+	if m.Event == "" {
+		m.Event = notify.EventWatchdog
+	}
 	if w.Send != nil {
 		return w.Send(ctx, kind, cfg, m)
 	}
@@ -433,6 +455,17 @@ func (w *AgentWatchdog) send(ctx context.Context, kind string, cfg notify.Config
 }
 
 func (w *AgentWatchdog) path(name string) string { return filepath.Join(w.Dir, name) }
+
+// selfName is this agent's name in the watchdog peer list (its ID when unknown). Call
+// with w.mu held.
+func (w *AgentWatchdog) selfName() string {
+	for _, p := range w.cfg.Peers {
+		if p.ID == w.selfID && p.Name != "" {
+			return p.Name
+		}
+	}
+	return w.selfID
+}
 
 // Init loads the agent's identity, CA certificate, and any persisted watchdog.json.
 func (w *AgentWatchdog) Init() error {
@@ -600,6 +633,8 @@ func (w *AgentWatchdog) SendTest(ctx context.Context, hubName, publicURL, kind s
 	w.mu.Unlock()
 	msg := notify.Message{
 		Status: "test",
+		Event:  notify.EventTest,
+		Host:   hubName,
 		Title:  "Moorage hub watchdog test",
 		Text:   fmt.Sprintf("Sent directly by agent %s watching hub %s. If the hub goes down, this agent can reach you here.", id, hubName),
 		URL:    publicURL,

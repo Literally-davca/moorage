@@ -231,6 +231,10 @@ func (s *Server) watchRollback(h host.Host, hostID, stack, opID string) {
 			HostID: hostID, Stack: stack, Target: opErr, Outcome: "ok"})
 		s.notifyEvent(ctx, notify.EventDeployFailed, notify.Message{
 			Status: "down",
+			Event:  notify.EventRollback,
+			HostID: hostID,
+			Stack:  stack,
+			Cause:  opErr,
 			Title:  fmt.Sprintf("Auto-rollback: %s", stack),
 			Text:   fmt.Sprintf("The rolling deploy of %s failed and the previous container was put back: %s", stack, opErr),
 			URL:    s.stackLink(hostID, stack),

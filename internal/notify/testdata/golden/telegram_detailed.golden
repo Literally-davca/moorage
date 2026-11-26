@@ -1,0 +1,19 @@
+POST https://api.telegram.org/bot123:abc/sendMessage
+Content-Type: application/json
+
+{
+  "chat_id": "42",
+  "disable_web_page_preview": true,
+  "parse_mode": "HTML",
+  "reply_markup": {
+    "inline_keyboard": [
+      [
+        {
+          "text": "Open in Moorage",
+          "url": "https://moorage.example.com/#/h/nas/stacks/web"
+        }
+      ]
+    ]
+  },
+  "text": "\u003cb\u003enas • Moorage agent\u003c/b\u003e\n🔴 \u003cb\u003eDOWN: web *prod* (stack web on nas)\u003c/b\u003e\n\nweb: HTTP 503 \u0026lt;b\u0026gt;Service Unavailable\u0026lt;/b\u0026gt; (HTTP https://web.example.com/health)\nContainer web-1 exited with code 137.\n\n\u003cb\u003eHost:\u003c/b\u003e nas\n\u003cb\u003eStack:\u003c/b\u003e web\n\u003cb\u003eDuration:\u003c/b\u003e 4 min\n\u003cb\u003eImage:\u003c/b\u003e app: nginx:1.27.2 → nginx:1.27.3\n\u003cb\u003eweb:\u003c/b\u003e HTTP https://web.example.com/health: HTTP 503\nnas down · 120 ms (503)\nvps up · 40 ms\n\u003cb\u003eStarted:\u003c/b\u003e 2026-11-26 11:55:53 UTC\n\u003cb\u003eEnded:\u003c/b\u003e 2026-11-26 11:59:53 UTC\n\n\u003cpre\u003e11:55:50 web-1 | @everyone \u0026lt;script\u0026gt;alert(1)\u0026lt;/script\u0026gt;\n11:55:51 web-1 | ```break out``` **bold** [link](https://evil.example)\n11:55:52 web-1 | Killed\u003c/pre\u003e"
+}

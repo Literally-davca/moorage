@@ -37,6 +37,7 @@ const labels: Record<string, string> = {
   'channel.create': 'Added notification channel',
   'channel.save': 'Saved notification channel',
   'channel.delete': 'Deleted notification channel',
+  'notify.settings': 'Changed notification settings',
   'channel.test': 'Sent test notification',
   'watchdog.save': 'Saved hub watchdog',
   'watchdog.maintenance': 'Set hub maintenance',
