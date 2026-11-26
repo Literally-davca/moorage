@@ -1,0 +1,17 @@
+POST https://api.pushover.net/1/messages.json
+Content-Type: application/x-www-form-urlencoded
+
+html=1
+message=<b>Stack:</b> web
+<b>Image:</b> app: nginx:1.27.2 → nginx:1.27.3
+
+<i>Last log lines</i>
+11:55:50 web-1 | @everyone &lt;script&gt;alert(1)&lt;/script&gt;
+11:55:51 web-1 | ```break out``` **bold** [link](https://evil.example)
+11:55:52 web-1 | Killed
+priority=1
+title=nas • Moorage agent: DOWN: web *prod* (stack web on nas)
+token=po-token
+url=https://moorage.example.com/#/h/nas/stacks/web
+url_title=Open in Moorage
+user=po-user

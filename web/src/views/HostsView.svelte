@@ -8,6 +8,12 @@
   import MultiSelect from '../lib/MultiSelect.svelte';
   import Select from '../lib/Select.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
+  import HostPorts from './HostPorts.svelte';
+  import HostAddresses from './HostAddresses.svelte';
+
+  // M17B: port map and named addresses of a host (panels below the list)
+  let portsHost = $state<HostEntry | null>(null);
+  let addrHost = $state<HostEntry | null>(null);
 
   let { onChanged }: { onChanged: () => void } = $props();
 
@@ -403,6 +409,7 @@ volumes:
             <div class="meta details">
               <span class:ok={h.connected}>{seen(h)}</span>
               {#if h.hostIp}<span class="mono">{h.hostIp}</span>{/if}
+              {#if (h.addresses?.length ?? 0) > 1}<span title={h.addresses?.map((a) => `${a.label}: ${a.address}`).join('\n')}>+{(h.addresses?.length ?? 1) - 1} more addresses</span>{/if}
               {#if h.baseDomain}<span class="mono">*.{h.baseDomain}</span>{/if}
               {#if h.hostname && h.hostname !== h.name}<span>{h.hostname}</span>{/if}
               {#if engineLabel(h)}<span>{engineLabel(h)}</span>{/if}
@@ -433,16 +440,31 @@ volumes:
               {#if h.connected && !h.readOnly}
                 <button class="btn btn-ghost" onclick={() => openPrune(h)}>Disk cleanup</button>
               {/if}
+              {#if h.connected}<button class="btn btn-ghost" onclick={() => (portsHost = h)}>Ports</button>{/if}
+              <button class="btn btn-ghost" onclick={() => (addrHost = h)}>Addresses</button>
               <button class="btn btn-ghost" onclick={() => startEdit(h)}>Edit</button>
               {#if h.kind === 'agent'}
                 <button class="btn btn-ghost danger" onclick={() => { removing = h; confirmRemove = true; }}>Remove</button>
               {/if}
             </div>
+          {:else if !isAdmin() && h.connected}
+            <div class="row-actions"><button class="btn btn-ghost" onclick={() => (portsHost = h)}>Ports</button></div>
           {/if}
         </div>
       {/each}
     {/if}
   </section>
+
+  {#if portsHost}
+    {#key portsHost.id}
+      <HostPorts hostId={portsHost.id} hostName={portsHost.name} onClose={() => (portsHost = null)} />
+    {/key}
+  {/if}
+  {#if isAdmin() && addrHost}
+    {#key addrHost.id}
+      <HostAddresses hostId={addrHost.id} hostName={addrHost.name} onClose={() => (addrHost = null)} onSaved={() => { load(); onChanged(); }} />
+    {/key}
+  {/if}
 
   {#if isAdmin() && hostTermTarget}
     {#key hostTermTarget.id}

@@ -1,4 +1,6 @@
-// Package notify delivers alerts to webhook, ntfy, Telegram, Discord and e-mail.
+// Package notify delivers alerts to webhook, ntfy, Telegram, Discord, Slack, Gotify,
+// Pushover, Matrix and e-mail, rendered per channel (render.go) with the channel's
+// content preset and format (preset.go).
 //
 // Everything is done with Go's HTTP and SMTP clients: no external programs
 // (Uptime Kuma's Apprise integration was a code-execution risk) and no user
@@ -10,12 +12,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/mail"
@@ -56,6 +55,11 @@ type Config struct {
 	To       string            `json:"to,omitempty"`       // smtp, comma separated
 	Headers  map[string]string `json:"headers,omitempty"`  // custom HTTP headers for webhook
 	Events   []string          `json:"events,omitempty"`   // subscribed event kinds (empty = checks only)
+
+	// Presentation (M17B). Missing values = Standard + rich, what channels showed before.
+	Preset  string          `json:"preset,omitempty"`  // minimal | standard | detailed | custom
+	Include map[string]bool `json:"include,omitempty"` // parts shown by the Custom preset (PartKeys)
+	Format  string          `json:"format,omitempty"`  // rich | plain
 }
 
 // Event kinds a channel can subscribe to (Config.Events).
@@ -65,6 +69,13 @@ const (
 	EventRollback     = "rollback"      // an automatic rollback after a failed update
 	EventDeployFailed = "deploy_failed" // a stack operation (up, restart, pull…) failed
 	EventAgents       = "agents"        // an agent went offline / came back
+)
+
+// Kinds of messages that aren't channel subscriptions (Message.Event only).
+const (
+	EventWatchdog = "watchdog" // the agent watchdog reports the hub down / back
+	EventTest     = "test"     // "Send test" and previews
+	EventUpdates  = "updates"  // image updates are available (per-stack notify policy)
 )
 
 // Events lists the known event kinds.
@@ -135,6 +146,9 @@ func (c *Config) KeepSecrets(kind string, old Config) {
 
 // Validate checks a configuration before it is stored.
 func Validate(kind string, c Config) error {
+	if err := validatePresentation(c); err != nil {
+		return err
+	}
 	httpURL := func(s, what string) error {
 		u, err := url.Parse(s)
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -210,29 +224,6 @@ func recipients(s string) []string {
 	return out
 }
 
-// Message is one notification. Text is plain text; Logs are shown as a block.
-type Message struct {
-	Status string   `json:"status"` // down | up | test
-	Title  string   `json:"title"`
-	Text   string   `json:"text"`
-	Logs   []string `json:"logs,omitempty"`
-	URL    string   `json:"url,omitempty"`
-	Data   any      `json:"data,omitempty"` // structured details for webhooks
-}
-
-func (m Message) plain(maxLen int) string {
-	var b strings.Builder
-	b.WriteString(m.Text)
-	if len(m.Logs) > 0 {
-		b.WriteString("\n\nLast log lines:\n")
-		b.WriteString(strings.Join(m.Logs, "\n"))
-	}
-	if m.URL != "" {
-		b.WriteString("\n\n" + m.URL)
-	}
-	return clip(b.String(), maxLen)
-}
-
 const sendTimeout = 20 * time.Second
 
 var httpClient = &http.Client{
@@ -246,41 +237,33 @@ var httpClient = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
-// Send delivers m through a channel of the given kind.
+// Send delivers m through a channel of the given kind, rendered with the channel's
+// preset and format.
 func Send(ctx context.Context, kind string, c Config, m Message) error {
 	ctx, cancel := context.WithTimeout(ctx, sendTimeout)
 	defer cancel()
-	switch kind {
-	case "webhook":
-		return sendWebhook(ctx, c, m)
-	case "ntfy":
-		return sendNtfy(ctx, c, m)
-	case "telegram":
-		return sendTelegram(ctx, c, m)
-	case "discord":
-		return sendDiscord(ctx, c, m)
-	case "smtp":
-		return sendSMTP(ctx, c, m)
-	case "slack":
-		return sendSlack(ctx, c, m)
-	case "gotify":
-		return sendGotify(ctx, c, m)
-	case "pushover":
-		return sendPushover(ctx, c, m)
-	case "matrix":
-		return sendMatrix(ctx, c, m)
-	}
-	return fmt.Errorf("unknown channel type %q", kind)
-}
-
-func post(ctx context.Context, u, contentType string, body []byte, headers map[string]string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(body))
+	req, err := Render(kind, c, m)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", contentType)
+	if req.Method == "SMTP" {
+		return sendSMTP(ctx, c, req.Body)
+	}
+	return do(ctx, req)
+}
+
+func do(ctx context.Context, r Request) error {
+	req, err := http.NewRequestWithContext(ctx, r.Method, r.URL, bytes.NewReader(r.Body))
+	if err != nil {
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			return fmt.Errorf("%s", ue.Err) // the URL may contain a secret, don't echo it
+		}
+		return errors.New("the channel URL isn't valid")
+	}
+	req.Header.Set("Content-Type", r.ContentType)
 	req.Header.Set("User-Agent", "Moorage")
-	for k, v := range headers {
+	for k, v := range r.Headers {
 		req.Header.Set(k, v)
 	}
 	resp, err := httpClient.Do(req)
@@ -300,175 +283,17 @@ func post(ctx context.Context, u, contentType string, body []byte, headers map[s
 	return nil
 }
 
-func sendWebhook(ctx context.Context, c Config, m Message) error {
-	body, err := json.Marshal(map[string]any{
-		"event": m.Status, "title": m.Title, "text": m.Text, "logs": m.Logs, "url": m.URL, "data": m.Data,
-		"sentAt": time.Now().UTC().Format(time.RFC3339),
-	})
+func cryptoRand(b []byte) (int, error) { return rand.Read(b) }
+
+func parseAddress(s string) (*mail.Address, error) {
+	a, err := mail.ParseAddress(s)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("address %q isn't valid", s)
 	}
-	h := map[string]string{}
-	for k, v := range c.Headers {
-		if k != "" && v != "" {
-			h[headerSafe(k)] = headerSafe(v)
-		}
-	}
-	if c.Token != "" {
-		h["Authorization"] = "Bearer " + c.Token
-	}
-	return post(ctx, c.URL, "application/json", body, h)
+	return a, nil
 }
 
-func sendSlack(ctx context.Context, c Config, m Message) error {
-	color := "#FF7A45"
-	switch m.Status {
-	case "down":
-		color = "#F2555A"
-	case "up":
-		color = "#4CC38A"
-	}
-	body, err := json.Marshal(map[string]any{
-		"text": m.Title,
-		"attachments": []map[string]any{{
-			"color": color,
-			"text":  m.plain(3000),
-		}},
-	})
-	if err != nil {
-		return err
-	}
-	return post(ctx, c.URL, "application/json", body, nil)
-}
-
-func sendGotify(ctx context.Context, c Config, m Message) error {
-	prio := 5
-	if m.Status == "down" {
-		prio = 8
-	} else if m.Status == "up" {
-		prio = 4
-	}
-	body, err := json.Marshal(map[string]any{
-		"title":    m.Title,
-		"message":  m.plain(4000),
-		"priority": prio,
-	})
-	if err != nil {
-		return err
-	}
-	u := strings.TrimRight(c.URL, "/") + "/message"
-	return post(ctx, u, "application/json", body, map[string]string{"X-Gotify-Key": c.Token})
-}
-
-func sendPushover(ctx context.Context, c Config, m Message) error {
-	prio := "0"
-	if m.Status == "down" {
-		prio = "1"
-	}
-	form := url.Values{
-		"token":    {c.Token},
-		"user":     {c.ChatID},
-		"title":    {clip(m.Title, 250)},
-		"message":  {m.plain(1024)},
-		"priority": {prio},
-	}
-	if m.URL != "" {
-		form.Set("url", m.URL)
-	}
-	return post(ctx, "https://api.pushover.net/1/messages.json", "application/x-www-form-urlencoded", []byte(form.Encode()), nil)
-}
-
-func sendMatrix(ctx context.Context, c Config, m Message) error {
-	var rb [8]byte
-	_, _ = rand.Read(rb[:])
-	txnID := hex.EncodeToString(rb[:])
-	u := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/send/m.room.message/%s",
-		strings.TrimRight(c.URL, "/"), url.PathEscape(c.ChatID), txnID)
-	body, err := json.Marshal(map[string]string{
-		"msgtype": "m.text",
-		"body":    m.Title + "\n\n" + m.plain(4000),
-	})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.Token)
-	req.Header.Set("User-Agent", "Moorage")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
-		return fmt.Errorf("matrix answered %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
-	}
-	return nil
-}
-
-func sendNtfy(ctx context.Context, c Config, m Message) error {
-	h := map[string]string{"Title": mime.BEncoding.Encode("utf-8", headerSafe(m.Title))} // ntfy decodes RFC 2047
-	switch m.Status {
-	case "down":
-		h["Priority"], h["Tags"] = "5", "rotating_light"
-	case "up":
-		h["Priority"], h["Tags"] = "3", "white_check_mark"
-	default:
-		h["Priority"], h["Tags"] = "2", "test_tube"
-	}
-	if m.URL != "" {
-		h["Click"] = headerSafe(m.URL)
-	}
-	if c.Token != "" {
-		h["Authorization"] = "Bearer " + c.Token
-	}
-	m2 := m
-	m2.URL = "" // already a click action
-	return post(ctx, c.URL, "text/plain; charset=utf-8", []byte(m2.plain(3500)), h)
-}
-
-func sendTelegram(ctx context.Context, c Config, m Message) error {
-	body, err := json.Marshal(map[string]any{
-		"chat_id":                  c.ChatID,
-		"text":                     clip(m.Title+"\n\n"+m.plain(3900), 4000), // plain text: no parse mode, nothing to inject
-		"disable_web_page_preview": true,
-	})
-	if err != nil {
-		return err
-	}
-	return post(ctx, "https://api.telegram.org/bot"+c.Token+"/sendMessage", "application/json", body, nil)
-}
-
-func sendDiscord(ctx context.Context, c Config, m Message) error {
-	var b strings.Builder
-	b.WriteString("**" + discordEscape(m.Title) + "**\n" + discordEscape(m.Text))
-	if len(m.Logs) > 0 {
-		logs := strings.ReplaceAll(strings.Join(m.Logs, "\n"), "```", "ˋˋˋ")
-		b.WriteString("\n```\n" + clip(logs, 1200) + "\n```")
-	}
-	if m.URL != "" {
-		b.WriteString("\n" + m.URL)
-	}
-	body, err := json.Marshal(map[string]any{
-		"content":          clip(b.String(), 1990),
-		"allowed_mentions": map[string]any{"parse": []string{}}, // log lines must never ping @everyone
-	})
-	if err != nil {
-		return err
-	}
-	return post(ctx, c.URL, "application/json", body, nil)
-}
-
-func discordEscape(s string) string {
-	r := strings.NewReplacer("*", "\\*", "_", "\\_", "~", "\\~", "`", "\\`", "|", "\\|", ">", "\\>")
-	return r.Replace(s)
-}
-
-func sendSMTP(ctx context.Context, c Config, m Message) error {
+func sendSMTP(ctx context.Context, c Config, message []byte) error {
 	addr := net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
 	d := netguard.Dialer(10*time.Second, false)
 	var conn net.Conn
@@ -503,56 +328,31 @@ func sendSMTP(ctx context.Context, c Config, m Message) error {
 			return err
 		}
 	}
-	from, _ := mail.ParseAddress(c.From)
+	from, err := parseAddress(c.From)
+	if err != nil {
+		return err
+	}
 	if err := cl.Mail(from.Address); err != nil {
 		return err
 	}
-	var to []string
 	for _, r := range recipients(c.To) {
-		a, _ := mail.ParseAddress(r)
+		a, err := parseAddress(r)
+		if err != nil {
+			return err
+		}
 		if err := cl.Rcpt(a.Address); err != nil {
 			return err
 		}
-		to = append(to, a.String())
 	}
 	w, err := cl.Data()
 	if err != nil {
 		return err
 	}
-	id := make([]byte, 12)
-	rand.Read(id) //nolint:errcheck
-	var msg strings.Builder
-	msg.WriteString("From: " + from.String() + "\r\n")
-	msg.WriteString("To: " + strings.Join(to, ", ") + "\r\n")
-	msg.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", headerSafe(m.Title)) + "\r\n")
-	msg.WriteString("Date: " + time.Now().Format(time.RFC1123Z) + "\r\n")
-	msg.WriteString("Message-ID: <" + hex.EncodeToString(id) + "@moorage>\r\n")
-	msg.WriteString("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
-	body := strings.ReplaceAll(m.plain(100_000), "\r\n", "\n")
-	msg.WriteString(strings.ReplaceAll(body, "\n", "\r\n") + "\r\n")
-	if _, err := io.WriteString(w, msg.String()); err != nil {
+	if _, err := w.Write(message); err != nil {
 		return err
 	}
 	if err := w.Close(); err != nil {
 		return err
 	}
 	return cl.Quit()
-}
-
-// headerSafe removes line breaks so text can't inject headers.
-func headerSafe(s string) string {
-	return clip(strings.Map(func(r rune) rune {
-		if r == '\r' || r == '\n' || r < 0x20 {
-			return ' '
-		}
-		return r
-	}, s), 200)
-}
-
-func clip(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n-1]) + "…"
 }

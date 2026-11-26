@@ -417,6 +417,7 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user := currentUser(r).Username
+	var envRes addonEnvResult
 	for _, hostID := range targetHosts {
 		if _, err := s.store.InstalledAddonByHost(ctx, id, hostID); err == nil {
 			writeErr(w, http.StatusConflict, fmt.Sprintf("Add-on %q is already installed on host %s.", id, hostID))
@@ -432,7 +433,15 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusForbidden, host.ErrHostReadOnly.Error())
 			return
 		}
-		if err := s.deploySidecarToHost(ctx, h, hostID, entry.ID, "Installed add-on "+entry.Name, composeRaw, "", false, user); err != nil {
+		// Zero-config: fill the host-specific variables the fragment uses into add-ons/.env.
+		prevEnv := ""
+		if cur, err := h.GetStack(ctx, addonsStackName); err == nil {
+			prevEnv = cur.Env
+		}
+		nextEnv, res := withAddonEnvDefaults(prevEnv, string(composeRaw), s.addonEnvDefaults(ctx, hostID, h, meta))
+		envRes.Added = append(envRes.Added, res.Added...)
+		envRes.Generated = append(envRes.Generated, res.Generated...)
+		if err := s.deploySidecarToHost(ctx, h, hostID, entry.ID, "Installed add-on "+entry.Name, composeRaw, nextEnv, nextEnv != prevEnv, user); err != nil {
 			s.engErr(w, err)
 			return
 		}
@@ -462,13 +471,13 @@ func (s *Server) installAddon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	setAuditTarget(r, id)
-	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, http.StatusCreated, envRes)
 }
 
 func (s *Server) deploySidecarToHost(
 	ctx context.Context,
 	h host.Host,
-	_ string,
+	hostID string,
 	addonID, note string,
 	composeFragment []byte,
 	nextEnv string,
@@ -518,6 +527,9 @@ func (s *Server) deploySidecarToHost(
 			_ = h.Delete(ctx, stackName, user)
 		}
 		return err
+	}
+	if !existed {
+		s.ensureAddonsAutoPolicy(ctx, hostID)
 	}
 	return nil
 }

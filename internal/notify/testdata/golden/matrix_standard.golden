@@ -1,0 +1,10 @@
+PUT https://matrix.example.com/_matrix/client/v3/rooms/%21room:example.com/send/m.room.message/abababababababab
+Content-Type: application/json
+Authorization: Bearer mx-token
+
+{
+  "body": "nas • Moorage agent\nDOWN: web *prod* (stack web on nas)\n\nweb: HTTP 503 \u003cb\u003eService Unavailable\u003c/b\u003e (HTTP https://web.example.com/health)\nContainer web-1 exited with code 137.\n\nHost: nas\nStack: web\nDuration: 4 min\n\nLast log lines:\n11:55:50 web-1 | @everyone \u003cscript\u003ealert(1)\u003c/script\u003e\n11:55:51 web-1 | ```break out``` **bold** [link](https://evil.example)\n11:55:52 web-1 | Killed\n\nhttps://moorage.example.com/#/h/nas/stacks/web",
+  "format": "org.matrix.custom.html",
+  "formatted_body": "\u003cb\u003enas • Moorage agent\u003c/b\u003e\u003cbr\u003e🔴 \u003cb\u003eDOWN: web *prod* (stack web on nas)\u003c/b\u003e\u003cbr\u003e\u003cbr\u003eweb: HTTP 503 \u0026lt;b\u0026gt;Service Unavailable\u0026lt;/b\u0026gt; (HTTP https://web.example.com/health)\u003cbr\u003eContainer web-1 exited with code 137.\u003cbr\u003e\u003cbr\u003e\u003cb\u003eHost:\u003c/b\u003e nas\u003cbr\u003e\u003cb\u003eStack:\u003c/b\u003e web\u003cbr\u003e\u003cb\u003eDuration:\u003c/b\u003e 4 min\u003cbr\u003e\u003cbr\u003e\u003cpre\u003e\u003ccode\u003e11:55:50 web-1 | @everyone \u0026lt;script\u0026gt;alert(1)\u0026lt;/script\u0026gt;\n11:55:51 web-1 | ```break out``` **bold** [link](https://evil.example)\n11:55:52 web-1 | Killed\u003c/code\u003e\u003c/pre\u003e\u003cbr\u003e\u003cbr\u003e\u003ca href=\"https://moorage.example.com/#/h/nas/stacks/web\"\u003eOpen in Moorage\u003c/a\u003e",
+  "msgtype": "m.text"
+}

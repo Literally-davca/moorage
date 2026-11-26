@@ -33,6 +33,8 @@ type StackSummary struct {
 	Self      bool     `json:"self,omitempty"`
 	URLs      []string `json:"urls,omitempty"`
 	ProxyURLs []string `json:"proxyUrls,omitempty"`
+	// AltURLs are the same port links on the host's other addresses (M17B).
+	AltURLs []AltURL `json:"altUrls,omitempty"`
 
 	// Optional Coolify enrichment populated by Hub when coolify-integration is active.
 	DisplayName      string `json:"displayName,omitempty"`

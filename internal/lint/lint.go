@@ -62,14 +62,20 @@ type PortUse struct {
 	Port  int    `json:"port"`
 	Proto string `json:"proto"`
 	Owner string `json:"owner"` // "stack/container" or container name
+	// Reserved marks a port declared by a stopped stack: a warning, not a deploy error.
+	Reserved bool `json:"reserved,omitempty"`
 }
 
 // Options tune a run.
 type Options struct {
 	// Name is the project name (for the compose loader).
 	Name string
-	// Running are host ports taken by other running containers (deploy-time check).
+	// Running are host ports taken outside the stack: other stacks, standalone containers,
+	// reserved ports of stopped stacks and the host's own sockets (port map, M17B).
 	Running []PortUse
+	// AllowLatest skips the latest-tag tip (the add-ons stack follows :latest on purpose
+	// and updates automatically).
+	AllowLatest bool
 }
 
 // Blocking reports whether issues stop a save (deploy=false) or a deploy (deploy=true).
@@ -218,6 +224,11 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 				}
 				for _, r := range o.Running {
 					if r.Port == port && protoOf(r.Proto) == k.proto && ipsOverlap(r.IP, ip) {
+						if r.Reserved {
+							add(Issue{Severity: Warning, Code: "port-reserved", Service: name, Line: ln,
+								Message: fmt.Sprintf("Host port %d/%s is reserved by %s (stopped): both can't run at the same time.", port, k.proto, r.Owner)})
+							continue
+						}
 						add(Issue{Severity: DeployError, Code: "port-taken", Service: name, Line: ln,
 							Message: fmt.Sprintf("Host port %d/%s is already used by %s.", port, k.proto, r.Owner)})
 					}
@@ -244,7 +255,7 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 					Message: fmt.Sprintf("%s mounts the Docker socket: whoever controls it controls the host. Consider a socket proxy.", name)})
 			}
 		}
-		if s.Image != "" && s.Build == nil {
+		if s.Image != "" && s.Build == nil && !o.AllowLatest {
 			if tag := imageTag(s.Image); tag == "" || tag == "latest" {
 				add(Issue{Severity: Info, Code: "latest-tag", Service: name, Line: ln, Message: fmt.Sprintf("%s uses a moving tag (%s): pin a version so updates are deliberate.", name, s.Image),
 					Fix: &Fix{Kind: "pin-tag", Label: "Pin latest stable tag", Service: name, Line: ln}})

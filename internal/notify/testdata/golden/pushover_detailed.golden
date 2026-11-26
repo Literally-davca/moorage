@@ -1,0 +1,27 @@
+POST https://api.pushover.net/1/messages.json
+Content-Type: application/x-www-form-urlencoded
+
+html=1
+message=web: HTTP 503 &lt;b&gt;Service Unavailable&lt;/b&gt; (HTTP https://web.example.com/health)
+Container web-1 exited with code 137.
+
+<b>Host:</b> nas
+<b>Stack:</b> web
+<b>Duration:</b> 4 min
+<b>Image:</b> app: nginx:1.27.2 → nginx:1.27.3
+<b>web:</b> HTTP https://web.example.com/health: HTTP 503
+nas down · 120 ms (503)
+vps up · 40 ms
+<b>Started:</b> 2026-11-26 11:55:53 UTC
+<b>Ended:</b> 2026-11-26 11:59:53 UTC
+
+<i>Last log lines</i>
+11:55:50 web-1 | @everyone &lt;script&gt;alert(1)&lt;/script&gt;
+11:55:51 web-1 | ```break out``` **bold** [link](https://evil.example)
+11:55:52 web-1 | Killed
+priority=1
+title=nas • Moorage agent: DOWN: web *prod* (stack web on nas)
+token=po-token
+url=https://moorage.example.com/#/h/nas/stacks/web
+url_title=Open in Moorage
+user=po-user

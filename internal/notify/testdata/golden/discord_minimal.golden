@@ -1,0 +1,32 @@
+POST https://discord.com/api/webhooks/1/secret
+Content-Type: application/json
+
+{
+  "allowed_mentions": {
+    "parse": []
+  },
+  "avatar_url": "https://cdn.jsdelivr.net/gh/Literally-davca/moorage@main/docs/assets/notify/agent.png",
+  "embeds": [
+    {
+      "author": {
+        "icon_url": "https://cdn.jsdelivr.net/gh/Literally-davca/moorage@main/docs/assets/notify/agent.png",
+        "name": "nas • Moorage agent"
+      },
+      "color": 15881562,
+      "fields": [
+        {
+          "name": "Host",
+          "value": "nas",
+          "inline": true
+        }
+      ],
+      "footer": {
+        "icon_url": "https://cdn.jsdelivr.net/gh/Literally-davca/moorage@main/docs/assets/notify/agent.png",
+        "text": "Moorage · Checks"
+      },
+      "title": "DOWN: web \\*prod\\* \\(stack web on nas\\)",
+      "url": "https://moorage.example.com/#/h/nas/stacks/web"
+    }
+  ],
+  "username": "nas • Moorage agent"
+}

@@ -347,6 +347,7 @@ func (h *Hub) PushWatchdog(ctx context.Context) {
 			ChannelConfig:    chCfg,
 			Peers:            peers,
 			PeerCert:         cert,
+			IconBase:         notify.IconBase(),
 		}
 		cfg.ConfigVersion = cfg.Hash()
 		if err := rm.PushWatchdog(pctx, cfg); err != nil && !host.IsUnsupported(err) && h.Log != nil {

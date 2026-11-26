@@ -128,6 +128,7 @@ func runSelfStackHelper(args []string) error {
 // wireSelfStack finds the compose stack this node runs from and lets the engine refuse
 // stopping it and apply changes to it through the helper container.
 func wireSelfStack(ctx context.Context, eng *engine.Engine, cfg config.Config, isHub bool, log *slog.Logger) {
+	wireRuntimeNet(ctx, eng, cfg, log)
 	me := selfupdate.MobyEngine{API: eng.RawClient()}
 	s, insp := selfupdate.DetectSelfStack(ctx, me, cfg.DataDir)
 	if s == nil {

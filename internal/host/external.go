@@ -82,6 +82,7 @@ func (rm *Remote) ExternalStackAction(ctx context.Context, project, action, auth
 // ---- agent routes ---------------------------------------------------------------------
 
 func externalRoutes(mux *http.ServeMux, h Host, write func(http.HandlerFunc) http.HandlerFunc) {
+	portRoutes(mux, h)
 	cm, ok := h.(ContainerManager)
 	if !ok {
 		return

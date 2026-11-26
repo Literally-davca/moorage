@@ -1021,6 +1021,7 @@ func (m *Monitor) compose(group []alert) notify.Message {
 	}
 	msg.Text = strings.Join(lines, "\n")
 	msg.Data = data
+	m.structure(&msg, group)
 	pubURL := m.getPublicURL()
 	if pubURL != "" {
 		if first.check.Kind == "host" {
@@ -1049,14 +1050,9 @@ func (m *Monitor) getPublicURL() string {
 
 // TestChannel sends a test message through a channel.
 func (m *Monitor) TestChannel(ctx context.Context, ch store.Channel) error {
-	msg := notify.Message{
-		Status: "test",
-		Title:  "Moorage test notification",
-		Text:   "If you can read this, alerts from Moorage will reach you here.",
-		Logs:   []string{"12:00:01 web-1 | example log line attached to real alerts"},
-		URL:    m.getPublicURL(),
-	}
-	return m.send(ctx, ch, msg)
+	// The sample has every part set, so the channel's preset shows what it keeps; it is
+	// sent as the hub ("<hub> • Moorage hub").
+	return m.send(ctx, ch, notify.SampleMessage(m.getPublicURL()))
 }
 
 func stackOf(c store.Check) string {

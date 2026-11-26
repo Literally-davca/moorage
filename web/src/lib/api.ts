@@ -382,6 +382,8 @@ export interface StackSummary {
   /** Moorage itself runs from this stack: no stop/down/delete, changes go through Apply & restart. */
   self?: boolean;
   urls?: string[];
+  /** The same port links on the host's other addresses (M17B, see hostnet.ts). */
+  altUrls?: AltUrl[];
   displayName?: string;
   coolifyUuid?: string;
   coolifyType?: string;
@@ -403,6 +405,8 @@ export interface Container {
   created: number;
   ports?: string[];
   urls?: string[];
+  altUrls?: AltUrl[];
+  hostNetwork?: boolean;
 }
 export interface Stack extends StackSummary {
   composeFile?: string;
@@ -472,6 +476,9 @@ export interface HostEntry {
   baseDomain?: string;
   hostIpFromEnv?: boolean;
   baseDomainFromEnv?: boolean;
+  /** M17B: how Moorage sees this host's network and its named addresses. */
+  netMode?: NetMode;
+  addresses?: HostAddress[];
 }
 export interface WatchdogAgent {
   id: string;
@@ -731,6 +738,10 @@ export interface ChannelConfig {
   to?: string;
   headers?: Record<string, string>;
   events?: string[];
+  /** M17B: content preset, Custom parts and rich / plain format (missing = Standard + rich). */
+  preset?: NotifyPreset;
+  include?: Partial<Record<NotifyPart, boolean>>;
+  format?: 'rich' | 'plain';
 }
 export interface Channel {
   id: number;
@@ -1368,7 +1379,7 @@ export type TerminalTicketReq = {
   container?: string;
 };
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+export async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (method !== 'GET') headers['X-Moorage'] = '1';
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -1398,6 +1409,10 @@ const enc = encodeURIComponent;
 const H = () => `/api/hosts/${enc(app.host)}`;
 /** hostPath turns a host-relative API path into a full one (for WebSockets). */
 export const hostPath = (p: string) => H() + p;
+
+import type { AltUrl, HostAddress, NetMode } from './hostnet';
+import type { NotifyPart, NotifyPreset } from './notifications';
+export type { AltUrl, HostAddress, NetMode, NotifyPart, NotifyPreset };
 
 export const api = {
   session: () => request<Session>('GET', '/api/session'),
@@ -1587,7 +1602,7 @@ export const api = {
   },
   installAddon: (id: string, hostIds?: string | string[], source?: string) => {
     const list = Array.isArray(hostIds) ? hostIds : hostIds ? [hostIds] : [];
-    return request<void>('POST', '/api/addons/install', {
+    return request<{ envAdded?: string[]; generatedSecrets?: string[] } | undefined>('POST', '/api/addons/install', {
       id,
       hostId: list[0] ?? '',
       hostIds: list,

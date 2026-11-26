@@ -18,6 +18,7 @@
   } from '../lib/api';
   import { app, canEdit, currentHost, go, isAdmin, userPrefs } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import AltUrls from '../lib/AltUrls.svelte';
   import ComposeEditor from '../lib/ComposeEditor.svelte';
   import EnvEditor from '../lib/EnvEditor.svelte';
   import Confirm from '../lib/Confirm.svelte';
@@ -648,6 +649,7 @@
                   <Icon name="external" /> <span>{shortUrlLabel(u)}</span>
                 </a>
               {/each}
+              <AltUrls urls={stack.altUrls} />
             {/if}
           </div>
         </div>
@@ -905,6 +907,7 @@
                             <span>{shortUrlLabel(u)}</span>
                           </a>
                         {/each}
+                        <AltUrls urls={c.altUrls} compact />
                       </div>
                     {/if}
                   </td>

@@ -1,0 +1,26 @@
+SMTP smtp://smtp.example.com:587
+
+From: =?utf-8?q?nas_=E2=80=A2_Moorage_agent?= <alerts@example.com>
+To: <ops@example.com>
+Subject: DOWN: web *prod* (stack web on nas)
+Date: Thu, 26 Nov 2026 12:00:05 +0000
+Message-ID: <abababababababababababab@moorage>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+DOWN: web *prod* (stack web on nas)
+
+web: HTTP 503 <b>Service Unavailable</b> (HTTP https://web.example.com/health)
+Container web-1 exited with code 137.
+
+Host: nas
+Stack: web
+Duration: 4 min
+
+Last log lines:
+11:55:50 web-1 | @everyone <script>alert(1)</script>
+11:55:51 web-1 | ```break out``` **bold** [link](https://evil.example)
+11:55:52 web-1 | Killed
+
+https://moorage.example.com/#/h/nas/stacks/web

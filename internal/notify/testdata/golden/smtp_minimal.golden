@@ -1,0 +1,36 @@
+SMTP smtp://smtp.example.com:587
+
+From: =?utf-8?q?nas_=E2=80=A2_Moorage_agent?= <alerts@example.com>
+To: <ops@example.com>
+Subject: DOWN: web *prod* (stack web on nas)
+Date: Thu, 26 Nov 2026 12:00:05 +0000
+Message-ID: <abababababababababababab@moorage>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="moorage-abababababababababababab"
+
+--moorage-abababababababababababab
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+DOWN: web *prod* (stack web on nas)
+
+Host: nas
+
+https://moorage.example.com/#/h/nas/stacks/web
+--moorage-abababababababababababab
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<!doctype html>
+<html><body style="font-family:system-ui,sans-serif;font-size:14px;line-height:1.45">
+<div style="border-left:4px solid #F2555A;padding-left:12px">
+<span style="color:#888">nas • Moorage agent</span><br>
+🔴 <b>DOWN: web *prod* (stack web on nas)</b><br>
+<br>
+<b>Host:</b> nas<br>
+<br>
+<a href="https://moorage.example.com/#/h/nas/stacks/web">Open in Moorage</a>
+</div>
+<p style="color:#888;font-size:12px">Moorage · Checks</p>
+</body></html>
+--moorage-abababababababababababab--

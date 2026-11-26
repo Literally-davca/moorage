@@ -119,6 +119,19 @@
           },
         });
       }
+      for (const a of stack.altUrls ?? []) {
+        items.push({
+          id: `url:${hostId}/${stack.name}:${a.url}`,
+          group: 'Service',
+          title: a.url.replace(/^https?:\/\//, '').replace(/\/+$/, ''),
+          sub: `${disp} (${hostName}) via ${a.label}`,
+          icon: 'external',
+          dot: stack.status,
+          run: () => {
+            window.open(a.url, '_blank', 'noopener,noreferrer');
+          },
+        });
+      }
     }
     for (const h of app.hosts) {
       items.push({

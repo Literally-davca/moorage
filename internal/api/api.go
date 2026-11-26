@@ -144,6 +144,7 @@ func New(cfg config.Config, a *auth.Service, st *store.Store, reg *host.Registry
 		}
 	}
 	s.autoRestart = newAutoRestarter(s)
+	s.initNotifyIdentity()
 	return s
 }
 
@@ -287,6 +288,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/updates", s.user(s.listUpdates))
 	mux.Handle("GET /api/nav-summary", s.user(s.navSummary))
 	mux.Handle("GET /api/hosts/{host}/containers", s.user(s.listContainers))
+	mux.Handle("GET /api/hosts/{host}/ports", s.user(s.listHostPorts))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/images", s.user(s.getStackImages))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/maintenance", s.user(s.stackMaintenance))
 	mux.Handle("GET /api/maintenance", s.user(s.listMaintenance))
@@ -325,6 +327,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/agents/join-tokens", s.admin(s.listJoinTokens))
 	mux.Handle("DELETE /api/agents/join-tokens/{id}", s.admin(s.cancelJoinToken))
 	mux.Handle("PATCH /api/hosts/{host}", s.admin(s.renameHost))
+	mux.Handle("GET /api/hosts/{host}/addresses", s.user(s.getHostAddresses))
+	mux.Handle("PUT /api/hosts/{host}/addresses", s.admin(s.putHostAddresses))
 	mux.Handle("DELETE /api/hosts/{host}", s.admin(s.removeHost))
 	mux.Handle("POST /api/checks", s.admin(s.saveCheck))
 	mux.Handle("POST /api/checks/test", s.admin(s.testCheck))
@@ -333,6 +337,9 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/channels", s.admin(s.listChannels))
 	mux.Handle("POST /api/channels", s.admin(s.saveChannel))
 	mux.Handle("POST /api/channels/test", s.admin(s.testChannel))
+	mux.Handle("POST /api/channels/preview", s.admin(s.previewNotification))
+	mux.Handle("GET /api/notifications/settings", s.admin(s.getNotifySettings))
+	mux.Handle("PUT /api/notifications/settings", s.admin(s.putNotifySettings))
 	mux.Handle("PUT /api/channels/{id}", s.admin(s.saveChannel))
 	mux.Handle("DELETE /api/channels/{id}", s.admin(s.deleteChannel))
 	mux.Handle("GET /api/watchdog", s.admin(s.getWatchdog))
@@ -791,8 +798,16 @@ func (s *Server) listHosts(w http.ResponseWriter, r *http.Request) {
 		list = []host.Entry{}
 	}
 	for i := range list {
+		envIP := list[i].HostIP
 		list[i].HostIP, list[i].BaseDomain, list[i].HostIPFromEnv, list[i].BaseDomainFromEnv =
 			s.effectiveHostNetwork(ctx, list[i].ID, list[i].HostIP, list[i].BaseDomain)
+		e := list[i]
+		e.HostIP = envIP
+		var def string
+		list[i].Addresses, def = s.hostAddresses(ctx, list[i].ID, e)
+		if def != "" {
+			list[i].HostIP = def
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"hosts": list, "agentPort": s.agentPort(), "agentPublicAddr": s.effectiveAgentPublicAddr(ctx),
@@ -932,7 +947,7 @@ func (s *Server) renameHost(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "Primary IP or hostname must not contain spaces or slashes.")
 			return
 		}
-		if err := s.store.SetSetting(ctx, store.HostIPKey(hostID), v); err != nil {
+		if err := s.setPrimaryAddress(ctx, hostID, v); err != nil {
 			s.engErr(w, err)
 			return
 		}
@@ -981,12 +996,22 @@ func (s *Server) hostEffectiveIP(ctx context.Context, hostID string) string {
 	if s.reg == nil {
 		return ""
 	}
+	ip, _ := s.hostLinkAddresses(ctx, hostID)
+	return ip
+}
+
+// hostLinkAddresses returns the default address of a host and its other addresses for
+// service links (M17B).
+func (s *Server) hostLinkAddresses(ctx context.Context, hostID string) (string, []engine.HostAddress) {
+	if s.reg == nil {
+		return "", nil
+	}
 	_, entry, err := s.reg.Get(ctx, hostID)
 	if errors.Is(err, host.ErrUnknownHost) {
-		return ""
+		return "", nil
 	}
-	ip, _, _, _ := s.effectiveHostNetwork(ctx, hostID, entry.HostIP, entry.BaseDomain)
-	return ip
+	list, def := s.hostAddresses(ctx, hostID, entry)
+	return def, alternativeAddresses(list)
 }
 
 func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
@@ -999,7 +1024,7 @@ func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
 	list, err := h.ListStacks(ctx)
 	proxyOn, _ := s.store.AddonEnabled(ctx, addonProxyLabels)
 	coolifyOn, _ := s.store.AddonEnabled(ctx, addonCoolify)
-	hostIP := s.hostEffectiveIP(ctx, hostID)
+	hostIP, altAddrs := s.hostLinkAddresses(ctx, hostID)
 	var portByProject map[string][]string
 	var ctrs []engine.ContainerInfo
 	if cm, isCM := h.(host.ContainerManager); isCM {
@@ -1043,6 +1068,7 @@ func (s *Server) listStacks(w http.ResponseWriter, r *http.Request) {
 		}
 		if !hasExplicit && hostIP != "" && len(portByProject[list[i].Name]) > 0 {
 			list[i].URLs = mergeURLs(list[i].URLs, hostPortURLs(hostIP, portByProject[list[i].Name]), 10)
+			list[i].AltURLs = hostAltURLs(altAddrs, portByProject[list[i].Name])
 		}
 		list[i].ProxyURLs = nil
 		if coolifyOn {
@@ -1138,7 +1164,7 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		s.enrichCoolifySummary(ctx, hostID, &st.StackSummary, lblMeta, deploying)
 	}
 	proxyOn, _ := s.store.AddonEnabled(ctx, addonProxyLabels)
-	hostIP := s.hostEffectiveIP(ctx, hostID)
+	hostIP, altAddrs := s.hostLinkAddresses(ctx, hostID)
 	stackHasExplicit := len(st.URLs) > 0
 	if proxyOn && len(st.ProxyURLs) > 0 {
 		st.URLs = mergeURLs(st.URLs, st.ProxyURLs, 10)
@@ -1152,8 +1178,11 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		if !ctrExplicit && hostIP != "" {
 			purls := hostPortURLs(hostIP, st.Containers[i].Ports)
 			st.Containers[i].URLs = mergeURLs(st.Containers[i].URLs, purls, 5)
+			alts := hostAltURLs(altAddrs, st.Containers[i].Ports)
+			st.Containers[i].AltURLs = alts
 			if !stackHasExplicit {
 				st.URLs = mergeURLs(st.URLs, purls, 10)
+				st.AltURLs = append(st.AltURLs, alts...)
 			}
 		}
 		st.Containers[i].ProxyURLs = nil
@@ -1315,7 +1344,7 @@ func (s *Server) runAction(w http.ResponseWriter, r *http.Request) {
 	name, action, user := r.PathValue("name"), r.PathValue("action"), currentUser(r).Username
 	action = s.deployAction(r.Context(), r.PathValue("host"), name, action, r.URL.Query().Get("strategy"))
 	if actionEvent[action] == "deploy" || actionEvent[action] == "update" {
-		if b := s.deployBlocked(r.Context(), h, name); b != nil {
+		if b := s.deployBlocked(r.Context(), r.PathValue("host"), h, name); b != nil {
 			writeErr(w, http.StatusUnprocessableEntity, "Can't deploy: "+b.Message)
 			return
 		}

@@ -234,6 +234,10 @@ func (ts *taskScheduler) runTask(parentCtx context.Context, task store.Scheduled
 	if err != nil {
 		s.notifyEvent(ctx, notify.EventDeployFailed, notify.Message{
 			Status: "down",
+			Event:  notify.EventDeployFailed,
+			HostID: task.HostID,
+			Stack:  task.Stack,
+			Cause:  err.Error(),
 			Title:  fmt.Sprintf("Scheduled task failed: %s", task.Name),
 			Text:   fmt.Sprintf("Task %s (%s on %s/%s) failed: %v", task.Name, task.Action, task.HostID, task.Stack, err),
 			URL:    s.stackLink(task.HostID, task.Stack),

@@ -102,6 +102,12 @@ func (s *Server) watchOp(h host.Host, hostID, stack, action, opID string) {
 		}
 		s.notifyEvent(ctx, notify.EventDeployFailed, notify.Message{
 			Status: "down",
+			Event:  notify.EventDeployFailed,
+			HostID: hostID,
+			Host:   hostName,
+			Stack:  stack,
+			Cause:  opErr,
+			Until:  time.Now(),
 			Title:  fmt.Sprintf("%s failed: %s", capitalize(action), stack),
 			Text:   fmt.Sprintf("%s on %s: %s", stack, hostName, opErr),
 			URL:    s.stackLink(hostID, stack),

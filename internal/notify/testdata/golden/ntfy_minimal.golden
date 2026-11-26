@@ -1,0 +1,12 @@
+POST https://ntfy.sh/moorage-alerts
+Content-Type: text/plain; charset=utf-8
+Actions: view, Open, https://moorage.example.com/#/h/nas/stacks/web
+Authorization: Bearer nt-token
+Click: https://moorage.example.com/#/h/nas/stacks/web
+Icon: https://cdn.jsdelivr.net/gh/Literally-davca/moorage@main/docs/assets/notify/agent.png
+Markdown: yes
+Priority: 5
+Tags: rotating_light
+Title: =?utf-8?b?bmFzIOKAoiBNb29yYWdlIGFnZW50OiBET1dOOiB3ZWIgKnByb2QqIChzdGFj?= =?utf-8?b?ayB3ZWIgb24gbmFzKQ==?=
+
+**Host:** nas

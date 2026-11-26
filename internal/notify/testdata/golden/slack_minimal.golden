@@ -1,0 +1,27 @@
+POST https://hooks.slack.com/services/T/B/secret
+Content-Type: application/json
+
+{
+  "attachments": [
+    {
+      "color": "#F2555A",
+      "fallback": "DOWN: web *prod* (stack web on nas)",
+      "fields": [
+        {
+          "short": true,
+          "title": "Host",
+          "value": "nas"
+        }
+      ],
+      "footer": "Moorage · Checks",
+      "mrkdwn_in": [
+        "text"
+      ],
+      "title": "DOWN: web *prod* (stack web on nas)",
+      "title_link": "https://moorage.example.com/#/h/nas/stacks/web"
+    }
+  ],
+  "icon_url": "https://cdn.jsdelivr.net/gh/Literally-davca/moorage@main/docs/assets/notify/agent.png",
+  "text": "DOWN: web *prod* (stack web on nas)",
+  "username": "nas • Moorage agent"
+}

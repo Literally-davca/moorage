@@ -1,0 +1,19 @@
+POST https://gotify.example.com/message
+Content-Type: application/json
+X-Gotify-Key: gt-token
+
+{
+  "extras": {
+    "client::display": {
+      "contentType": "text/markdown"
+    },
+    "client::notification": {
+      "click": {
+        "url": "https://moorage.example.com/#/h/nas/stacks/web"
+      }
+    }
+  },
+  "message": "**nas • Moorage agent**\n\n**Host:** nas\n\n[Open in Moorage](\u003chttps://moorage.example.com/#/h/nas/stacks/web\u003e)",
+  "priority": 8,
+  "title": "DOWN: web *prod* (stack web on nas)"
+}
