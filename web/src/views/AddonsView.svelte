@@ -24,6 +24,8 @@
   let error = $state('');
   let busy = $state<Record<string, boolean>>({});
   let rowError = $state<Record<string, string>>({});
+  // M17B: what zero-config install filled into add-ons/.env (shown once under the row)
+  let rowNotice = $state<Record<string, string>>({});
   let targetHosts = $state<string[]>([]);
   let removing = $state<AddonInfo | null>(null);
   let confirmOpen = $state(false);
@@ -202,7 +204,14 @@
         rowError = { ...rowError, [key]: 'Already installed on all selected hosts.' };
         return;
       }
-      await api.installAddon(entry.id, hosts, entry.sourceUrl);
+      const res = await api.installAddon(entry.id, hosts, entry.sourceUrl);
+      const gen = [...new Set(res?.generatedSecrets ?? [])];
+      const added = [...new Set(res?.envAdded ?? [])].filter((k) => !gen.includes(k));
+      const notes: string[] = [];
+      if (added.length) notes.push(`Filled in add-ons/.env: ${added.join(', ')}.`);
+      if (gen.length) notes.push(`Generated ${gen.join(', ')}: keep a copy, backups can't be restored without it.`);
+      if (entry.kind === 'sidecar') notes.push('The add-ons stack updates automatically; switch it to notify in Updates if you prefer.');
+      rowNotice = { ...rowNotice, [key]: notes.join(' ') };
       await load();
     } catch (e) {
       rowError = { ...rowError, [key]: (e as Error).message };
@@ -787,6 +796,7 @@
                 </p>
               {/if}
               {#if rowError[key]}<p class="error-text" role="alert">{rowError[key]}</p>{/if}
+              {#if rowNotice[key]}<p class="meta notice" role="status">{rowNotice[key]}</p>{/if}
             </div>
             <button
               type="button"
@@ -825,6 +835,10 @@
 />
 
 <style>
+  .notice {
+    color: var(--info-text);
+    text-wrap: pretty;
+  }
   .page {
     display: grid;
     grid-template-columns: minmax(0, 1fr);

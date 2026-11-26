@@ -4,6 +4,7 @@
   import { app, canEdit, currentHost, isAdmin, link, setHost } from '../lib/state.svelte';
   import { checkStatusLabel } from '../lib/checks';
   import Icon from '../lib/Icon.svelte';
+  import AltUrls from '../lib/AltUrls.svelte';
   import OpPanel from './OpPanel.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
 
@@ -264,6 +265,7 @@
                     <Icon name="external" /> <span>{shortUrl(u)}</span>
                   </a>
                 {/each}
+                <AltUrls urls={s.altUrls} compact />
               </div>
             </li>
           {/each}
