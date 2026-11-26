@@ -423,6 +423,15 @@
   }
   // Docker outside the stacks folder (MOORAGE_MANAGE_EXTERNAL on the host)
   const manageExternal = $derived(!!currentHost()?.locks?.manageExternal && isAdmin() && !currentHost()?.readOnly);
+  // MOORAGE_MANAGE_EXTERNAL is on but the compose folder isn't mounted into Moorage: the
+  // sandbox stays, so the stack keeps Start/Stop/Restart only. The hint names the exact
+  // bind mount (same path inside and outside) to add to Moorage's compose.yaml.
+  const externalMountLine = $derived.by(() => {
+    const dir = stack?.location?.trim() ?? '';
+    if (!dir) return '';
+    const vol = `${dir}:${dir}`;
+    return /[\s:#"']/.test(dir) || dir.startsWith('-') ? `- "${vol.replace(/"/g, '\\"')}"` : `- ${vol}`;
+  });
   async function runExternal(action: string) {
     actionError = '';
     try {
@@ -771,6 +780,16 @@
         {#if stack.selfResult && !stack.selfResult.ok}
           <p class="error-text" role="alert">Last Apply & restart ({new Date(stack.selfResult.at).toLocaleString()}): {stack.selfResult.message}</p>
         {/if}
+      {/if}
+      {#if !stack.managed && !isCoolify && manageExternal && !stack.self && externalMountLine}
+        <div style="margin-top:10px">
+          <SetupHint
+            tone="warn"
+            title="Moorage can't reach this stack's files"
+            detail={`MOORAGE_MANAGE_EXTERNAL is on, but the compose folder ${stack.location} isn't mounted into the Moorage container, so only Start, Stop and Restart work here. To edit and deploy this stack from Moorage, add this line under volumes of the Moorage service in its compose.yaml and recreate Moorage.`}
+            snippet={externalMountLine}
+          />
+        </div>
       {/if}
       {#if !stack.managed && !isCoolify && !manageExternal && !stack.self && userPrefs().guidesMode === 'extended'}
         <div style="margin-top:10px">

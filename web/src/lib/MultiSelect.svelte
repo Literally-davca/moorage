@@ -96,9 +96,11 @@
           {@const on = selected.includes(it.value)}
           <label class="opt" class:off={!!it.disabled && !on}>
             <input type="checkbox" checked={on} disabled={!!it.disabled && !on} onchange={(e) => toggle(it.value, e.currentTarget.checked)} />
-            <span class="olabel">{it.label}</span>
-            {#if it.meta}<span class="ometa">{it.meta}</span>{/if}
-            {#if it.disabled}<span class="why">{it.disabled}</span>{/if}
+            <span class="otext">
+              <span class="olabel">{it.label}</span>
+              {#if it.meta}<span class="ometa">{it.meta}</span>{/if}
+              {#if it.disabled}<span class="why">{it.disabled}</span>{/if}
+            </span>
           </label>
         {:else}
           <p class="meta none">{items.length ? 'Nothing matches.' : 'Nothing to choose from.'}</p>
@@ -148,9 +150,11 @@
     position: absolute;
     z-index: 30;
     left: 0;
-    right: 0;
     top: calc(100% + 4px);
-    min-width: 240px;
+    /* Wider than the trigger when names are long, never wider than the screen. */
+    min-width: max(100%, 280px);
+    width: max-content;
+    max-width: min(420px, calc(100vw - 32px));
     padding: 6px;
     background: var(--pier-raised);
     box-shadow: var(--lift-raised);
@@ -185,14 +189,16 @@
   .opts {
     max-height: 260px;
     overflow-y: auto;
-    display: grid;
+    /* A flex column, not a grid: Chromium collapsed grid rows when labels wrapped. */
+    display: flex;
+    flex-direction: column;
     gap: 1px;
   }
   .opt {
+    flex-shrink: 0;
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 4px 10px;
+    align-items: flex-start;
+    gap: 10px;
     min-height: 34px;
     padding: 4px 8px;
     border-radius: var(--r-sm);
@@ -211,6 +217,18 @@
   .opt.off:hover {
     background: transparent;
   }
+  .opt input {
+    flex-shrink: 0;
+    margin: 3px 0 0;
+  }
+  .otext {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px 0;
+  }
   .olabel {
     min-width: 0;
     overflow-wrap: anywhere;
@@ -220,8 +238,6 @@
     color: var(--haze);
   }
   .why {
-    flex-basis: 100%;
-    padding-left: 26px;
     font-size: 12px;
     color: var(--haze);
   }

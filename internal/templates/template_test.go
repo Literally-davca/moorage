@@ -275,14 +275,15 @@ func TestLocalFolder(t *testing.T) {
 		t.Fatalf("get missing: %v", err)
 	}
 
-	// A missing folder is an empty source with a hint, not a failure.
+	// A missing or empty folder is an empty source and no problem (M17: Moorage creates
+	// it at start, so an empty one is the normal state).
 	s = New(nil, filepath.Join(dir, "nope"), quietLog())
 	c, err = s.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, src := range c.Sources {
-		if src.Key == SourceLocal && (src.Count != 0 || src.Error == "") {
+		if src.Key == SourceLocal && (src.Count != 0 || src.Error != "") {
 			t.Fatalf("missing folder: %+v", src)
 		}
 	}

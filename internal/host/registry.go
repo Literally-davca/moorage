@@ -184,13 +184,16 @@ func (r *Registry) Attach(id string, remote *Remote, info AgentInfo, closeFn fun
 	}
 }
 
-// Detach forgets a connection if it is still the current one.
-func (r *Registry) Detach(id string, remote *Remote) {
+// Detach forgets a connection if it is still the current one, and reports whether it was
+// (false: a newer connection of the same agent replaced it).
+func (r *Registry) Detach(id string, remote *Remote) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if c := r.conns[id]; c != nil && c.remote == remote {
 		delete(r.conns, id)
+		return true
 	}
+	return false
 }
 
 // Disconnect drops a live connection (used when an agent is removed).

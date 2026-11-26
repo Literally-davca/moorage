@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -251,12 +253,49 @@ func newAgentRemote(t *testing.T, h http.Handler) *host.Remote {
 	})
 }
 
+// termTicketFor asks POST /api/terminal/ticket for a ticket as the session token. A refused
+// request returns its response (status) and an error.
+func termTicketFor(ctx context.Context, baseURL, token string, req terminalTicketReq) (string, *http.Response, error) {
+	body, _ := json.Marshal(req)
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/terminal/ticket", bytes.NewReader(body))
+	if err != nil {
+		return "", nil, err
+	}
+	hr.Close = true // no keep-alive goroutines left behind (the leak checks count them)
+	hr.Header.Set(csrfHeader, "1")
+	hr.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		hr.Header.Set("Cookie", cookieName+"="+token)
+	}
+	resp, err := http.DefaultClient.Do(hr)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", resp, fmt.Errorf("ticket: %s", resp.Status)
+	}
+	var out struct{ Ticket string }
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", resp, err
+	}
+	return out.Ticket, resp, nil
+}
+
+// dialTermWS opens a stack terminal the way the UI does: a ticket first, then the upgrade
+// with ?ticket=. A refused ticket request returns its response like a refused upgrade.
 func dialTermWS(ctx context.Context, baseURL, hostID, stack, query, token, origin string) (*websocket.Conn, *http.Response, error) {
+	q, _ := url.ParseQuery(query)
+	tk, resp, err := termTicketFor(ctx, baseURL, token, terminalTicketReq{Kind: "stack", Host: hostID, Stack: stack, Container: q.Get("container")})
+	if err != nil {
+		return nil, resp, err
+	}
+	return dialTermWSTicket(ctx, baseURL, hostID, stack, query+"&ticket="+tk, origin)
+}
+
+func dialTermWSTicket(ctx context.Context, baseURL, hostID, stack, query, origin string) (*websocket.Conn, *http.Response, error) {
 	wsURL := "ws" + strings.TrimPrefix(baseURL, "http") + "/api/hosts/" + hostID + "/stacks/" + stack + "/terminal?" + query
 	hdr := http.Header{}
-	if token != "" {
-		hdr.Set("Cookie", cookieName+"="+token)
-	}
 	if origin != "" {
 		hdr.Set("Origin", origin)
 	}

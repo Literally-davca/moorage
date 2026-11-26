@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,8 @@ type Server struct {
 	termSem chan struct{}
 	termCfg TerminalLimits
 	termWG  sync.WaitGroup // open terminal handlers, so shutdown can close their audit rows
+	tickets termTickets    // one-time terminal tickets (wslive.go)
+	live    liveConns      // open WebSockets, closed when their sign-in is revoked (wslive.go)
 
 	routes []string // registered route patterns, for the audit mapping test
 
@@ -249,10 +252,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/setup/start", s.setupStart)
 	mux.HandleFunc("POST /api/setup/finish", s.setupFinish)
 	mux.HandleFunc("POST /api/login", s.login)
-	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("POST /api/logout", s.revokes(s.logout))
 	mux.HandleFunc("POST /api/invite/inspect", s.inviteInspect)
 	mux.HandleFunc("POST /api/invite/start", s.inviteStart)
-	mux.HandleFunc("POST /api/invite/finish", s.inviteFinish)
+	mux.HandleFunc("POST /api/invite/finish", s.revokes(s.inviteFinish))
 	mux.HandleFunc("GET /api/auth/oidc/start", s.oidcStart)
 	mux.HandleFunc("GET "+sso.CallbackPath, s.oidcCallback)
 
@@ -297,11 +300,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/settings/shared-vars", s.user(s.listSharedVars))
 	mux.Handle("GET /api/account", s.user(s.getAccount))
 	mux.Handle("PUT /api/account/preferences", s.user(s.setAccountPreferences))
-	mux.Handle("PUT /api/account/password", s.user(s.changePassword))
+	mux.Handle("PUT /api/account/password", s.user(s.revokes(s.changePassword)))
 	mux.Handle("POST /api/account/totp/start", s.user(s.totpStart))
-	mux.Handle("PUT /api/account/totp", s.user(s.totpFinish))
-	mux.Handle("DELETE /api/account/sessions", s.user(s.revokeOtherSessions))
-	mux.Handle("DELETE /api/account/sessions/{id}", s.user(s.revokeOwnSession))
+	mux.Handle("PUT /api/account/totp", s.user(s.revokes(s.totpFinish)))
+	mux.Handle("DELETE /api/account/sessions", s.user(s.revokes(s.revokeOtherSessions)))
+	mux.Handle("DELETE /api/account/sessions/{id}", s.user(s.revokes(s.revokeOwnSession)))
 
 	// admin only
 	mux.Handle("POST /api/hosts/{host}/stacks", s.admin(s.createStack))
@@ -319,6 +322,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{host}/external/{name}/actions/{action}", s.admin(s.externalAction))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/restore", s.admin(s.restore))
 	mux.Handle("POST /api/agents", s.admin(s.addAgent))
+	mux.Handle("GET /api/agents/join-tokens", s.admin(s.listJoinTokens))
+	mux.Handle("DELETE /api/agents/join-tokens/{id}", s.admin(s.cancelJoinToken))
 	mux.Handle("PATCH /api/hosts/{host}", s.admin(s.renameHost))
 	mux.Handle("DELETE /api/hosts/{host}", s.admin(s.removeHost))
 	mux.Handle("POST /api/checks", s.admin(s.saveCheck))
@@ -345,9 +350,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/images/update", s.admin(s.updateStackImagesNow))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/images/change-tag", s.admin(s.changeStackImageTag))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/images/rollback", s.admin(s.rollbackStackImages))
-	mux.Handle("GET /api/hosts/{host}/stacks/{name}/terminal", s.admin(s.wsTerminal))
-	mux.Handle("GET /api/hosts/{host}/containers/{id}/terminal", s.admin(s.wsContainerTerminal))
-	mux.Handle("GET /api/hosts/{host}/ws/host-terminal", s.admin(s.wsHostTerminal))
+	// Terminal upgrades sign in with a one-time ticket from POST /api/terminal/ticket
+	// (wslive.go), not with the cookie; the Origin check still applies.
+	mux.Handle("POST /api/terminal/ticket", s.admin(s.terminalTicket))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/terminal", s.ticketed(s.wsTerminal))
+	mux.Handle("GET /api/hosts/{host}/containers/{id}/terminal", s.ticketed(s.wsContainerTerminal))
+	mux.Handle("GET /api/hosts/{host}/ws/host-terminal", s.ticketed(s.wsHostTerminal))
 	mux.Handle("GET /api/hosts/{host}/stacks/{name}/terminal/sessions", s.admin(s.listStackTerminals))
 	mux.Handle("GET /api/terminal/sessions", s.admin(s.listTerminalSessions))
 	mux.Handle("GET /api/audit", s.admin(s.listAudit))
@@ -372,7 +380,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/users", s.admin(s.listUsers))
 	mux.Handle("GET /api/tokens", s.admin(s.listAPITokens))
 	mux.Handle("POST /api/tokens", s.admin(s.createAPIToken))
-	mux.Handle("DELETE /api/tokens/{id}", s.admin(s.deleteAPIToken))
+	mux.Handle("DELETE /api/tokens/{id}", s.admin(s.revokes(s.deleteAPIToken)))
 	mux.Handle("GET /api/addons", s.admin(s.listAddons))
 	mux.Handle("POST /api/addons/install", s.admin(s.installAddon))
 	mux.Handle("POST /api/addons/custom", s.admin(s.createCustomAddon))
@@ -433,12 +441,12 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/auto-rollbacks", s.user(s.listAutoRollbacks))
 	mux.Handle("POST /api/auto-rollbacks/{id}/ack", s.admin(s.ackAutoRollback))
 	mux.Handle("POST /api/users", s.admin(s.createUser))
-	mux.Handle("PUT /api/users/{id}/role", s.admin(s.setUserRole))
-	mux.Handle("POST /api/users/{id}/disable", s.admin(s.disableUser))
+	mux.Handle("PUT /api/users/{id}/role", s.admin(s.revokes(s.setUserRole)))
+	mux.Handle("POST /api/users/{id}/disable", s.admin(s.revokes(s.disableUser)))
 	mux.Handle("POST /api/users/{id}/enable", s.admin(s.enableUser))
-	mux.Handle("DELETE /api/users/{id}", s.admin(s.deleteUser))
+	mux.Handle("DELETE /api/users/{id}", s.admin(s.revokes(s.deleteUser)))
 	mux.Handle("POST /api/users/{id}/reset", s.admin(s.resetUser))
-	mux.Handle("DELETE /api/users/{id}/sessions", s.admin(s.revokeUserSessions))
+	mux.Handle("DELETE /api/users/{id}/sessions", s.admin(s.revokes(s.revokeUserSessions)))
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "Unknown API endpoint.")
@@ -517,6 +525,7 @@ func (s *Server) requireRole(h http.HandlerFunc, admin bool) http.Handler {
 				st.req = r
 			}
 			ctx := context.WithValue(r.Context(), ctxKey{}, u)
+			ctx = context.WithValue(ctx, authRefKey{}, authRef{kind: "local", username: u.Username})
 			h(w, r.WithContext(ctx))
 			return
 		}
@@ -535,6 +544,7 @@ func (s *Server) requireRole(h http.HandlerFunc, admin bool) http.Handler {
 				st.req = r
 			}
 			ctx := context.WithValue(r.Context(), ctxKey{}, u)
+			ctx = context.WithValue(ctx, authRefKey{}, authRef{kind: "bearer", secret: bearerSecret(r), userID: u.ID, username: u.Username})
 			h(w, r.WithContext(ctx))
 			return
 		}
@@ -564,6 +574,7 @@ func (s *Server) requireRole(h http.HandlerFunc, admin bool) http.Handler {
 			st.req = r
 		}
 		ctx := context.WithValue(context.WithValue(r.Context(), ctxKey{}, u), tokenKey{}, tok)
+		ctx = context.WithValue(ctx, authRefKey{}, authRef{kind: "session", secret: tok, userID: u.ID, username: u.Username})
 		h(w, r.WithContext(ctx))
 	})
 }
@@ -847,6 +858,37 @@ func (s *Server) addAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("agent join token created", "name", name, "user", currentUser(r).Username)
 	writeJSON(w, http.StatusCreated, map[string]any{"token": tok, "expires": exp, "agentPort": s.agentPort()})
+}
+
+// listJoinTokens lists the join tokens still open: unused, or used by an agent that
+// hasn't connected yet (its retry window, see store.JoinRetryWindow).
+func (s *Server) listJoinTokens(w http.ResponseWriter, r *http.Request) {
+	toks, err := s.store.JoinTokens(r.Context())
+	if err != nil {
+		s.engErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"tokens": toks, "agentPort": s.agentPort(), "agentPortOff": s.hub == nil})
+}
+
+// cancelJoinToken deletes an open join token (and a never-connected agent it created).
+func (s *Server) cancelJoinToken(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		writeErr(w, http.StatusNotFound, "Join token not found.")
+		return
+	}
+	name, err := s.store.DeleteJoinToken(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "Join token not found.")
+		return
+	}
+	if err != nil {
+		s.engErr(w, err)
+		return
+	}
+	setAuditTarget(r, name)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) renameHost(w http.ResponseWriter, r *http.Request) {

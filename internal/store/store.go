@@ -565,6 +565,11 @@ var migrations = []string{
 		expires_at   INTEGER NOT NULL DEFAULT 0,
 		last_used_at INTEGER NOT NULL DEFAULT 0
 	);`,
+	// M17A: a join token is no longer burnt by the enrolment answer alone. It remembers the
+	// agent it created and stays usable for a retry until that agent first connects (the
+	// answer with the certificate may have been lost), then it is deleted.
+	`ALTER TABLE join_tokens ADD COLUMN agent_id TEXT NOT NULL DEFAULT '';
+	ALTER TABLE join_tokens ADD COLUMN redeemed_at INTEGER NOT NULL DEFAULT 0;`,
 }
 
 // Open opens (and migrates) moorage.db in dataDir.

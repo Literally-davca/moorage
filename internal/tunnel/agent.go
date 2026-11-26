@@ -40,16 +40,70 @@ type Agent struct {
 // errRejected means the hub refused this agent; retrying soon won't help.
 var errRejected = errors.New("rejected by hub")
 
+// DefaultAgentPort is the hub's agent port (MOORAGE_AGENT_LISTEN default).
+const DefaultAgentPort = "5081"
+
+// CleanHubAddr turns what people paste into MOORAGE_HUB into host:port: spaces, quotes,
+// a scheme (even twice: "https://wss://hub"), a path and a trailing slash are dropped,
+// and a missing port becomes the default agent port 5081. The agent port speaks its own
+// TLS, never through the UI's reverse proxy, so a URL there is always a mistake.
+func CleanHubAddr(s string) string {
+	s = strings.Trim(strings.TrimSpace(s), `"'`)
+	for {
+		lower := strings.ToLower(s)
+		cut := false
+		for _, p := range []string{"https://", "http://", "wss://", "ws://"} {
+			if strings.HasPrefix(lower, p) {
+				s, cut = s[len(p):], true
+				break
+			}
+		}
+		if !cut {
+			break
+		}
+	}
+	if i := strings.IndexAny(s, "/?#"); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if _, _, err := net.SplitHostPort(s); err != nil {
+		// No port (or a bare IPv6 address): add the default.
+		host := strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
+		s = net.JoinHostPort(host, DefaultAgentPort)
+	}
+	return s
+}
+
 // Run pairs the agent if needed and then stays connected until ctx ends.
 func (a *Agent) Run(ctx context.Context) error {
+	if clean := CleanHubAddr(a.Hub); clean != a.Hub {
+		if a.Log != nil {
+			a.Log.Info("using cleaned-up hub address", "MOORAGE_HUB", a.Hub, "hub", clean)
+		}
+		a.Hub = clean
+	}
 	if err := os.MkdirAll(a.Dir, 0o700); err != nil {
 		return err
 	}
+	paired := true
 	if _, err := os.Stat(a.path("agent.crt")); errors.Is(err, os.ErrNotExist) {
-		if a.JoinToken == "" {
-			return errors.New("this agent isn't paired yet: set MOORAGE_JOIN_TOKEN to a token from the hub (Hosts → Add host)")
+		paired = false
+	}
+	switch {
+	case !paired && a.JoinToken == "":
+		return errors.New("this agent isn't paired yet: set MOORAGE_JOIN_TOKEN to a token from the hub (Hosts → Add host)")
+	case !paired:
+		if err := a.enrollRetry(ctx); err != nil {
+			return fmt.Errorf("pairing with %s failed: %w", a.Hub, err)
 		}
-		if err := a.enroll(ctx); err != nil {
+	case a.tokenForOtherHub():
+		// The stored certificate is from another hub (or another CA of this one) and the
+		// token names the hub to use now: pair again instead of failing the TLS check.
+		a.Log.Info("join token is for another hub than the stored certificate, pairing again", "hub", a.Hub)
+		if err := a.enrollRetry(ctx); err != nil {
 			return fmt.Errorf("pairing with %s failed: %w", a.Hub, err)
 		}
 	}
@@ -79,6 +133,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	go a.Watchdog.Run(ctx) //nolint:errcheck
 
 	backoff := time.Second
+	reenrolled := false
 	for ctx.Err() == nil {
 		start := time.Now()
 		err := a.session(ctx, tlsCfg)
@@ -88,6 +143,20 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 		if time.Since(start) > time.Minute {
 			backoff = time.Second
+		}
+		// Removed on the hub (403) with an old certificate, but a new MOORAGE_JOIN_TOKEN is
+		// set: pair again once with it instead of waiting for someone to delete the volume.
+		if errors.Is(err, errRejected) && a.JoinToken != "" && !reenrolled {
+			reenrolled = true
+			a.Log.Info("hub refused the stored certificate, pairing again with MOORAGE_JOIN_TOKEN", "hub", a.Hub)
+			if perr := a.enroll(ctx); perr == nil {
+				if cfg, cerr := a.clientTLS(); cerr == nil {
+					tlsCfg = cfg
+					continue
+				}
+			} else {
+				a.Log.Warn("pairing again failed", "hub", a.Hub, "err", perr)
+			}
 		}
 		wait := backoff
 		if errors.Is(err, errRejected) {
@@ -115,7 +184,7 @@ func (a *Agent) session(ctx context.Context, tlsCfg *tls.Config) error {
 	cancel()
 	if err != nil {
 		if resp != nil && (resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized) {
-			return fmt.Errorf("%w: this agent was removed on the hub, delete %s and pair it again", errRejected, a.Dir)
+			return fmt.Errorf("%w: this agent was removed on the hub; set a new MOORAGE_JOIN_TOKEN to pair it again (or delete %s)", errRejected, a.Dir)
 		}
 		return err
 	}
@@ -154,13 +223,56 @@ func (a *Agent) session(ctx context.Context, tlsCfg *tls.Config) error {
 	return err
 }
 
+// tokenForOtherHub reports whether MOORAGE_JOIN_TOKEN names another hub CA than the
+// stored ca.crt. A malformed token or an unreadable CA is not a reason to pair again.
+func (a *Agent) tokenForOtherHub() bool {
+	if a.JoinToken == "" {
+		return false
+	}
+	_, fp, err := ParseJoinToken(a.JoinToken)
+	if err != nil {
+		return false
+	}
+	ca, err := readCert(a.path("ca.crt"))
+	return err == nil && fingerprint(ca.Raw) != fp
+}
+
+// permanentError is an enrolment failure that retrying can't fix (the hub refused the
+// token, or the hub isn't the one the token names).
+type permanentError struct{ err error }
+
+func (e permanentError) Error() string { return e.err.Error() }
+func (e permanentError) Unwrap() error { return e.err }
+
+// enrollRetry pairs with the hub, retrying network, DNS, TLS and server errors with an
+// exponential backoff (2 s up to 1 min) instead of ending the process: the hub may still
+// be starting, or the network not up yet after a reboot. A refused token or a hub with
+// another CA ends it at once.
+func (a *Agent) enrollRetry(ctx context.Context) error {
+	wait := 2 * time.Second
+	for attempt := 1; ; attempt++ {
+		err := a.enroll(ctx)
+		var perm permanentError
+		if err == nil || errors.As(err, &perm) || ctx.Err() != nil {
+			return err
+		}
+		a.Log.Warn("pairing with the hub failed, retrying", "hub", a.Hub, "attempt", attempt, "err", err, "in", wait)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, time.Minute)
+	}
+}
+
 // enroll creates a key, sends a certificate request with the join token and
 // stores the signed certificate. The hub is authenticated by the CA fingerprint
 // inside the token, so the token can't be redeemed by a fake hub.
 func (a *Agent) enroll(ctx context.Context) error {
 	secret, fp, err := ParseJoinToken(a.JoinToken)
 	if err != nil {
-		return err
+		return permanentError{err}
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -175,7 +287,10 @@ func (a *Agent) enroll(ctx context.Context) error {
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, // replaced by the fingerprint check below
 		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
-			return verifyPinned(raw, fp)
+			if err := verifyPinned(raw, fp); err != nil {
+				return permanentError{err}
+			}
+			return nil
 		},
 	}
 	body, _ := json.Marshal(enrollReq{Secret: secret, CSR: csr, Hostname: hostname})
@@ -192,14 +307,18 @@ func (a *Agent) enroll(ctx context.Context) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return errors.New(strings.TrimSpace(string(msg)))
+		err := errors.New(strings.TrimSpace(string(msg)))
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+			return permanentError{err}
+		}
+		return fmt.Errorf("hub answered %d: %w", resp.StatusCode, err)
 	}
 	var er enrollResp
 	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
 		return err
 	}
 	if fingerprint(er.CA) != fp {
-		return errors.New("the hub sent a different CA than the token names")
+		return permanentError{errors.New("the hub sent a different CA than the token names")}
 	}
 	if err := writeKey(a.path("agent.key"), key); err != nil {
 		return err

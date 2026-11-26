@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -71,10 +72,11 @@ func (s *Server) listStackTerminals(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) wsTerminal(w http.ResponseWriter, r *http.Request) {
-	// Upgrade first: a browser can't read the HTTP status of a refused WebSocket, so every
-	// refusal after this point is an error frame the terminal shows. Accept refuses a
-	// cross-origin Origin with 403 itself (cross-site WebSocket hijacking).
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
+	// The ticket was checked before (ticketed). Upgrade first: a browser can't read the
+	// HTTP status of a refused WebSocket, so every refusal after this point is an error
+	// frame the terminal shows. acceptWS refuses a foreign Origin with 403 itself
+	// (cross-site WebSocket hijacking).
+	ws, err := s.acceptWS(w, r, websocket.CompressionDisabled)
 	if err != nil {
 		return
 	}
@@ -133,10 +135,6 @@ func (s *Server) wsTerminal(w http.ResponseWriter, r *http.Request) {
 
 	user := currentUser(r).Username
 	ip := clientIP(r)
-	cookieVal := ""
-	if c, err := r.Cookie(cookieName); err == nil {
-		cookieVal = c.Value
-	}
 	ctrName := ctr.Name
 	if ctrName == "" {
 		ctrName = containerRef
@@ -176,11 +174,11 @@ func (s *Server) wsTerminal(w http.ResponseWriter, r *http.Request) {
 		"container", ctrName, "service", svcName, "shell", shell,
 	)
 
-	s.serveTerminalSession(r.Context(), ws, ts, auditID, cookieVal, user, ip, hostID, stack, ctrName, shell, startedAt)
+	s.serveTerminalSession(r, ws, ts, auditID, user, ip, hostID, stack, ctrName, shell, startedAt)
 }
 
 func (s *Server) wsContainerTerminal(w http.ResponseWriter, r *http.Request) {
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
+	ws, err := s.acceptWS(w, r, websocket.CompressionDisabled)
 	if err != nil {
 		return
 	}
@@ -241,10 +239,6 @@ func (s *Server) wsContainerTerminal(w http.ResponseWriter, r *http.Request) {
 
 	user := currentUser(r).Username
 	ip := clientIP(r)
-	cookieVal := ""
-	if c, err := r.Cookie(cookieName); err == nil {
-		cookieVal = c.Value
-	}
 	ctrName := ctr.Name
 	if ctrName == "" {
 		ctrName = containerRef
@@ -284,11 +278,11 @@ func (s *Server) wsContainerTerminal(w http.ResponseWriter, r *http.Request) {
 		"container", ctrName, "service", svcName, "shell", shell,
 	)
 
-	s.serveTerminalSession(r.Context(), ws, ts, auditID, cookieVal, user, ip, hostID, stack, ctrName, shell, startedAt)
+	s.serveTerminalSession(r, ws, ts, auditID, user, ip, hostID, stack, ctrName, shell, startedAt)
 }
 
 func (s *Server) wsHostTerminal(w http.ResponseWriter, r *http.Request) {
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
+	ws, err := s.acceptWS(w, r, websocket.CompressionDisabled)
 	if err != nil {
 		return
 	}
@@ -348,10 +342,6 @@ func (s *Server) wsHostTerminal(w http.ResponseWriter, r *http.Request) {
 
 	user := currentUser(r).Username
 	ip := clientIP(r)
-	cookieVal := ""
-	if c, err := r.Cookie(cookieName); err == nil {
-		cookieVal = c.Value
-	}
 	hostLabel := s.hostNames(r.Context())[hostID]
 	if hostLabel == "" {
 		hostLabel = hostID
@@ -379,18 +369,21 @@ func (s *Server) wsHostTerminal(w http.ResponseWriter, r *http.Request) {
 		"user", user, "ip", ip, "host", hostID, "shell", shell,
 	)
 
-	s.serveTerminalSession(r.Context(), ws, ts, auditID, cookieVal, user, ip, hostID, "@host", hostLabel, shell, startedAt)
+	s.serveTerminalSession(r, ws, ts, auditID, user, ip, hostID, "@host", hostLabel, shell, startedAt)
 }
 
 func (s *Server) serveTerminalSession(
-	reqCtx context.Context,
+	r *http.Request,
 	ws *websocket.Conn,
 	ts engine.TerminalSession,
 	auditID int64,
-	cookieVal, user, ip, hostID, stack, ctrName, shell string,
+	user, ip, hostID, stack, ctrName, shell string,
 	startedAt time.Time,
 ) {
-	baseCtx := reqCtx
+	// The sign-in the ticket was issued for. It is checked again periodically and on
+	// every revocation, never through the cookie: a forward-auth session may have none.
+	signIn := authRefOf(r)
+	baseCtx := r.Context()
 	hubCtx := s.termCfg.HubCtx
 	ctx, cancel := context.WithCancel(baseCtx)
 
@@ -424,15 +417,43 @@ func (s *Server) serveTerminalSession(
 		_ = writeFrame(websocket.MessageText, b)
 	}
 
-	var cleanOnce sync.Once
+	var (
+		cleanOnce sync.Once
+		revoked   bool // closes with closeSessionEnded instead of dropping the socket
+	)
+	var ending atomic.Bool // set once any path ends the session
 	cleanup := func(r string, code *int) {
 		setOutcome(r, code)
+		ending.Store(true)
 		cleanOnce.Do(func() {
+			mu.Lock()
+			rv := revoked
+			mu.Unlock()
+			if rv {
+				// End the shell first, then send the 4401 close frame before cancel: a
+				// Read whose context ends drops the socket without a close frame, and
+				// the browser needs the code to say "Session ended".
+				_ = ts.Close()
+				_ = ws.Close(closeSessionEnded, sessionEndedReason)
+			}
 			cancel()
 			_ = ts.Close()
 			_ = ws.CloseNow()
 		})
 	}
+	revoke := func() {
+		mu.Lock()
+		revoked = true
+		mu.Unlock()
+		sendCtrl(host.TermControl{Type: "error", Message: sessionEndedReason})
+		cleanup(store.TermReasonRevoked, nil)
+	}
+	kind := "terminal"
+	if stack == "@host" {
+		kind = "host-terminal"
+	}
+	untrack := s.trackWS(r, kind, true, revoke)
+	defer untrack()
 
 	idleTimeout := s.termCfg.IdleTimeout
 	hardLimit := s.termCfg.HardLimit
@@ -483,11 +504,10 @@ func (s *Server) serveTerminalSession(
 				return
 			case <-revokeTick.C:
 				cctx, ccancel := context.WithTimeout(ctx, 5*time.Second)
-				u, err := s.auth.SessionUser(cctx, cookieVal)
+				ok := s.stillAllowed(cctx, signIn, true)
 				ccancel()
-				if err != nil || u.Role != "admin" {
-					sendCtrl(host.TermControl{Type: "error", Message: "Your session ended or is no longer an admin."})
-					cleanup(store.TermReasonRevoked, nil)
+				if !ok && ctx.Err() == nil {
+					revoke()
 					return
 				}
 			}
@@ -537,7 +557,7 @@ func (s *Server) serveTerminalSession(
 		}
 		if rerr != nil {
 			switch {
-			case ctx.Err() != nil:
+			case ctx.Err() != nil || ending.Load():
 				// Ended by another path (browser, timer, revocation); it set the reason.
 			case !errors.Is(rerr, io.EOF):
 				// The stream broke (agent or tunnel gone), the shell did not exit.
@@ -578,4 +598,89 @@ func (s *Server) serveTerminalSession(
 		"duration", endedAt.Sub(startedAt).Round(time.Millisecond).String(),
 		"reason", finalReason,
 	)
+}
+
+// ---- tickets -------------------------------------------------------------------
+
+type terminalTicketReq struct {
+	Kind      string `json:"kind"` // stack, container or host
+	Host      string `json:"host"`
+	Stack     string `json:"stack,omitempty"`
+	Container string `json:"container,omitempty"` // stack: optional service container; container: its id or name
+}
+
+// terminalTicket issues a one-time ticket for one terminal upgrade (POST /api/terminal/ticket).
+// It is an ordinary signed-in call, so it works with the cookie, OIDC, forward-auth and API
+// tokens alike; problems it can see early (unknown or offline host) come back as plain
+// HTTP errors the panel shows.
+func (s *Server) terminalTicket(w http.ResponseWriter, r *http.Request) {
+	var req terminalTicketReq
+	if !readJSON(w, r, &req) {
+		return
+	}
+	req.Host = strings.TrimSpace(req.Host)
+	req.Stack = strings.TrimSpace(req.Stack)
+	req.Container = strings.TrimSpace(req.Container)
+	var target string
+	switch req.Kind {
+	case "stack":
+		if req.Stack == "" {
+			writeErr(w, http.StatusBadRequest, "Name the stack.")
+			return
+		}
+		target = stackTermTarget(req.Host, req.Stack, req.Container)
+	case "container":
+		if req.Container == "" {
+			writeErr(w, http.StatusBadRequest, "Name the container.")
+			return
+		}
+		target = containerTermTarget(req.Host, req.Container)
+	case "host":
+		target = hostTermTarget(req.Host)
+	default:
+		writeErr(w, http.StatusBadRequest, "Choose the terminal kind stack, container or host.")
+		return
+	}
+	r.SetPathValue("host", req.Host)
+	if h, code, msg := s.resolveHost(r, false); h == nil {
+		writeErr(w, code, msg)
+		return
+	}
+	tok, exp := s.tickets.issue(authRefOf(r), currentUser(r), target)
+	writeJSON(w, http.StatusOK, map[string]any{"ticket": tok, "expiresAt": exp})
+}
+
+// termTargetOf is the ticket target an upgrade request asks for.
+func termTargetOf(r *http.Request) string {
+	hostID := r.PathValue("host")
+	switch {
+	case r.PathValue("id") != "":
+		return containerTermTarget(hostID, strings.TrimSpace(r.PathValue("id")))
+	case r.PathValue("name") != "":
+		return stackTermTarget(hostID, r.PathValue("name"), strings.TrimSpace(r.URL.Query().Get("container")))
+	}
+	return hostTermTarget(hostID)
+}
+
+// ticketed signs a terminal upgrade in with its ?ticket=. A missing, used, expired or
+// foreign ticket, or one whose sign-in has since ended or lost admin, is refused with 401
+// before the upgrade; the panel then asks for a new ticket once.
+func (s *Server) ticketed(h http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t, ok := s.tickets.redeem(r.URL.Query().Get("ticket"), termTargetOf(r))
+		if !ok || !s.stillAllowed(r.Context(), t.auth, true) {
+			writeErr(w, http.StatusUnauthorized, "The terminal ticket expired or was already used. Open the terminal again.")
+			return
+		}
+		if st := auditStateOf(r); st != nil {
+			st.actor = t.user.Username
+			st.req = r
+		}
+		ctx := context.WithValue(r.Context(), ctxKey{}, t.user)
+		ctx = context.WithValue(ctx, authRefKey{}, t.auth)
+		if t.auth.kind == "session" {
+			ctx = context.WithValue(ctx, tokenKey{}, t.auth.secret)
+		}
+		h(w, r.WithContext(ctx))
+	})
 }

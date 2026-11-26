@@ -364,10 +364,37 @@ func (e *Engine) checkService(ctx context.Context, b ImageBackend, sp stackServi
 		} else {
 			si.Status = ImageUpToDate
 		}
-	} else {
+		return si
+	}
+	// No match with the index digest. Before reporting an update, ask (once, cached) for
+	// the index's platform digests: an image pulled by its platform digest (self-update)
+	// is current too. Both the local tag and the running image count: after a self-update
+	// the container runs image@<platform digest> while the tag may still name the old one.
+	// When the lookup fails or there is no index, platforms is nil: the plain comparison.
+	var platforms []string
+	if found || si.RunningID != "" {
+		platforms = e.platformDigests(ctx, b, sp.Ref, rem.digest)
+	}
+	switch {
+	case found && matchesRemote(repoDigests, rem.digest, platforms):
+		si.LocalDigest = repoDigestFor(sp.Ref, repoDigests)
+		if si.RunningID != "" && si.LocalID != "" && si.RunningID != si.LocalID && !e.runningMatches(ctx, b, si.RunningID, rem.digest, platforms) {
+			si.Status = ImagePulledNotApplied
+		} else {
+			si.Status = ImageUpToDate
+		}
+	case si.RunningID != "" && si.RunningID != si.LocalID && e.runningMatches(ctx, b, si.RunningID, rem.digest, platforms):
+		si.Status = ImageUpToDate
+	default:
 		si.Status = ImageUpdateAvailable
 	}
 	return si
+}
+
+// runningMatches tells whether the image a container runs (by ID) is the remote one.
+func (e *Engine) runningMatches(ctx context.Context, b ImageBackend, runningID, indexDigest string, platforms []string) bool {
+	_, digests, found, err := b.InspectLocal(ctx, runningID)
+	return err == nil && found && matchesRemote(digests, indexDigest, platforms)
 }
 
 func (e *Engine) lookupRemoteImage(ctx context.Context, b ImageBackend, ref string) cachedRemoteImage {

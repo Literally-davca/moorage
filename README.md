@@ -50,6 +50,12 @@ docker compose logs moorage | grep setup_token   # first run only
 
 To build from source instead: `docker build -t moorage:dev .` and set `image: moorage:dev`.
 
+The CLI is in the image too: `docker compose exec moorage moorage stacks ls`. To run `moorage …` straight from the host's terminal, install the wrapper once (or `… | sh -s -- --native` for the release binary), see [docs/cli.md](docs/cli.md#running-moorage-on-the-docker-host-moorage-in-a-container):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Literally-davca/moorage/main/scripts/install-cli.sh | sh
+```
+
 Open http://localhost:5080, enter the setup token, create the admin and scan the QR code with an authenticator app.
 
 ## Modes
@@ -125,6 +131,8 @@ Open an interactive shell in a running stack container directly from the stack's
 - **Who can use it:** only signed-in **admins**, and only on running containers that belong to a stack on a host where the terminal is enabled. Fixed shell choices (`sh`, `bash`, `ash`) run as the container's default user; arbitrary command strings are rejected. Access to a container terminal equals root-level control inside that container.
 - **What is logged (and what never is):** every session is recorded at start and end in the 1-year audit log (visible on **Hosts → Terminal sessions** and in the stack's **History** Logbook) and in the server log, with the username, client IP, host, stack, container, shell, start time, duration, end reason (`exit`, `closed`, `idle`, `limit`, `revoked`, `error`, `hub-stopped`), and exit code. **Nothing typed or printed in the terminal is ever recorded**, because commands and output often contain passwords and secrets.
 - **Limits:** at most 4 concurrent terminal sessions per hub, 15-minute idle timeout (measured on keyboard input, not output), 8-hour maximum session duration, and automatic termination within 30 seconds if the admin signs out, loses the admin role or the session expires.
+- **One-time tickets and Origin check:** the browser first asks `POST /api/terminal/ticket` for a ticket (30 s, one use, bound to the user, the session and the container or host) and opens the WebSocket with it; the cookie alone never opens a terminal. The upgrade's `Origin` must match the request `Host`, the host of `MOORAGE_PUBLIC_URL`, or `X-Forwarded-Host` from a proxy in `MOORAGE_TRUSTED_PROXIES`. Behind a reverse proxy that rewrites `Host`, set `MOORAGE_PUBLIC_URL` to the address you open Moorage at; the panel names the reason when a terminal can't open.
+- **Revoked sign-ins close live connections at once:** signing out, a password change, removing or disabling a user, a role change to viewer and revoking a session or an API token close the affected terminals and log streams immediately (WebSocket close code `4401`, "Session ended, sign in again"); the terminal output stays on screen.
 - **Ending a session ends the shell:** closing the tab, **Disconnect**, a timeout, a stopped hub or agent all end the shell and everything started from it (HUP, then KILL a second later). Docker can't do this by itself: closing a terminal's connection leaves the shell running. Moorage finds the processes by a variable it sets in the shell (`MOORAGE_TERMINAL_SESSION`), so a process started with a cleared environment (`env -i …`), or any shell when the agent is killed with `SIGKILL`, can outlive the session.
 
 ### Users and sign-in
@@ -301,6 +309,16 @@ cd web && npm install && npm run build && cd ..   # builds the UI into internal/
 go test ./...
 MOORAGE_DATA_DIR=./.dev/data MOORAGE_STACKS_DIR=$PWD/.dev/stacks go run ./cmd/moorage
 # UI with hot reload: (cd web && npm run dev) → http://localhost:5173, API proxied to :5080
+```
+
+Run the same full check as GitHub Actions CI (`svelte-check`, `vite build`, native `<select>` audit, dual-OS `go vet ./...`, all-package test compilation, `go test -count=1`, and static cross-platform builds for Linux & Windows; pass `-Quick` / `--quick` to skip cross-builds):
+
+```sh
+./scripts/dev/check.sh       # Linux / macOS
+```
+
+```bat
+.\scripts\dev\check.cmd      # Windows (pass -AllTests to force Linux-centric suites too)
 ```
 
 ## Layout

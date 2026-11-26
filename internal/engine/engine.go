@@ -64,6 +64,8 @@ type Engine struct {
 	imgSem   chan struct{}
 	imgCache map[string]cachedRemoteImage
 	imgBusy  map[string]chan struct{} // refs being looked up right now; others wait for the result
+	// platforms caches the platform manifest digests of image indexes (image_index.go).
+	platforms platformCache
 
 	termMu     sync.Mutex
 	terms      map[*mobyTerminalSession]struct{} // open container shells, ended on Close

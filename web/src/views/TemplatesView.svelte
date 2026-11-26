@@ -60,20 +60,13 @@
   {#if problems.length}
     <section class="problems-wrap" aria-label="Source problems">
       {#each problems as p (p.key)}
-        {#if p.key === 'local' && catalog?.localDir}
+        {#if p.key === 'local'}
+          <!-- Moorage creates the folder at start and an empty one is normal; this only
+               shows when it exists but can't be read (permissions, a file in the way). -->
           <SetupHint
             tone="warn"
-            title="{p.label}: {catalog.localDir}"
-            detail="Create this folder on the hub (or set MOORAGE_TEMPLATES_DIR) and add one subfolder per template with a compose.yaml inside."
-            snippet="mkdir -p {catalog.localDir}"
-            actionLabel={isAdmin() ? 'Template sources' : ''}
-            actionHref={isAdmin() ? '#/settings/templates' : ''}
-          />
-        {:else if p.key === 'local'}
-          <SetupHint
-            tone="warn"
-            title={p.label}
-            detail={p.error ?? 'Local templates folder does not exist yet.'}
+            title="{p.label}{catalog?.localDir ? `: ${catalog.localDir}` : ''}"
+            detail="{p.error} Check that Moorage's user can read this folder (or set MOORAGE_TEMPLATES_DIR)."
             actionLabel={isAdmin() ? 'Template sources' : ''}
             actionHref={isAdmin() ? '#/settings/templates' : ''}
           />

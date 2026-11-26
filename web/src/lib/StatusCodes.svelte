@@ -7,7 +7,8 @@
   import Icon from './Icon.svelte';
   import { commonStatusCodes, splitStatus, validStatusToken } from './checks';
 
-  let { value = $bindable(''), id = 'codes' }: { value?: string; id?: string } = $props();
+  // No default on $bindable: Svelte 5 throws props_invalid_value when a parent binds undefined.
+  let { value = $bindable(), id = 'codes' }: { value?: string; id?: string } = $props();
 
   let draft = $state('');
   let bad = $state('');

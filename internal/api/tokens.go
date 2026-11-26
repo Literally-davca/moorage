@@ -131,12 +131,17 @@ func (s *Server) deleteAPIToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) authenticateBearer(r *http.Request) (auth.User, []string, bool) {
+// bearerSecret is the API token of an "Authorization: Bearer" header, or "".
+func bearerSecret(r *http.Request) string {
 	hdr := strings.TrimSpace(r.Header.Get("Authorization"))
 	if len(hdr) <= 7 || !strings.EqualFold(hdr[:7], "Bearer ") {
-		return auth.User{}, nil, false
+		return ""
 	}
-	secret := strings.TrimSpace(hdr[7:])
+	return strings.TrimSpace(hdr[7:])
+}
+
+func (s *Server) authenticateBearer(r *http.Request) (auth.User, []string, bool) {
+	secret := bearerSecret(r)
 	if secret == "" {
 		return auth.User{}, nil, false
 	}

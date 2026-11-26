@@ -236,9 +236,8 @@ func (s *Service) List(ctx context.Context) (Catalog, error) {
 	if s.dir != "" {
 		items, err := loadFolders(os.DirFS(s.dir), false)
 		info := SourceInfo{Key: SourceLocal, Kind: "local", Label: "Local folder", Dir: s.dir}
-		if _, serr := os.Stat(s.dir); errors.Is(serr, fs.ErrNotExist) {
-			info.Error = "The folder doesn't exist yet. Create it and add one subfolder per template."
-		}
+		// Moorage creates the folder at start; an empty (or, if creating it failed,
+		// missing) folder only means no local templates, not a problem to show.
 		c.add(info, items, err)
 	}
 	if s.st == nil {

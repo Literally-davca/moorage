@@ -136,6 +136,13 @@ jobs:
       - name: Run Go tests
         run: go test -count=1 ./...
 
+      # The same PSS memory gate as CI (scripts/dev/pss-gate.sh); its result line goes into
+      # the release notes. Over the limit, or a failed measurement, stops the release.
+      - name: PSS memory gate
+        env:
+          PSS_RESULT_FILE: dist/PSS.md
+        run: bash ./scripts/dev/pss-gate.sh
+
       - name: Build static Linux binaries
         env:
           CGO_ENABLED: "0"
@@ -306,6 +313,9 @@ jobs:
 
           \`images.json\` and all release binaries are listed in \`SHA256SUMS\` and signed in \`SHA256SUMS.sig\`.
           EOF
+          if [ -f dist/PSS.md ]; then
+            { printf '\n## Memory\n\n'; cat dist/PSS.md; } >> dist/NOTES.md
+          fi
 
       - name: Publish GitHub Release
         env:

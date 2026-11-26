@@ -73,6 +73,13 @@ func (m MobyEngine) NetworkConnect(ctx context.Context, networkID string, option
 func (m MobyEngine) ImageInspect(ctx context.Context, imageID string, opts ...client.ImageInspectOption) (client.ImageInspectResult, error) {
 	return m.API.ImageInspect(ctx, imageID, opts...)
 }
+
+// ImageTag points targetRef at the image source (an optional ContainerEngine method, see imageTagger).
+func (m MobyEngine) ImageTag(ctx context.Context, source, targetRef string) error {
+	_, err := m.API.ImageTag(ctx, client.ImageTagOptions{Source: source, Target: targetRef})
+	return err
+}
+
 func (m MobyEngine) ImagePull(ctx context.Context, refStr string, options client.ImagePullOptions) error {
 	rc, err := m.API.ImagePull(ctx, refStr, options)
 	if err != nil {
@@ -180,6 +187,7 @@ func (c *ContainerApplier) PrepareAndLaunchHelper(ctx context.Context, m host.Se
 	if err != nil {
 		return err
 	}
+	retagFloating(ctx, c.Eng, selfInsp, imgManifest.Image, resolvedRef)
 
 	clearRollbackNote(c.DataDir)
 	return c.launchHelper(ctx, selfInsp, resolvedRef, m.Version, false)
@@ -397,6 +405,37 @@ func helperNetwork(target *container.InspectResponse) (container.NetworkMode, *n
 	return container.NetworkMode(primary), &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{primary: {}},
 	}
+}
+
+// imageTagger is the optional ContainerEngine method retagFloating needs (MobyEngine has it).
+type imageTagger interface {
+	ImageTag(ctx context.Context, source, targetRef string) error
+}
+
+// retagFloating moves the floating tag the running container was created from (e.g.
+// ghcr.io/…/moorage:latest) to the image just pulled by its platform digest. Without it
+// the tag kept naming the old image: the update check then reported the installed
+// version as an update, and a later `docker compose up` could start the old image again.
+// Version tags (1.4.2, v2) are never moved, nor tags of another repository. Best effort:
+// the update itself never depends on it.
+func retagFloating(ctx context.Context, eng ContainerEngine, self *container.InspectResponse, image, pulledRef string) {
+	tg, ok := eng.(imageTagger)
+	if !ok || self == nil || self.Config == nil {
+		return
+	}
+	cur := strings.TrimSpace(self.Config.Image)
+	if cur == "" || strings.Contains(cur, "@") {
+		return // created from a digest: no tag to move
+	}
+	reg, repo, tag := engine.ParseImageRef(cur)
+	wreg, wrepo, _ := engine.ParseImageRef(image)
+	if reg != wreg || repo != wrepo || tag == "" {
+		return
+	}
+	if _, isVersion := engine.ParseVersionTag(tag); isVersion {
+		return
+	}
+	_ = tg.ImageTag(ctx, pulledRef, cur)
 }
 
 func ensureImagePresent(ctx context.Context, eng ContainerEngine, imageRef, wantDigest string) (string, error) {

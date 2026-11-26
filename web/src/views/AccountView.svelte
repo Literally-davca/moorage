@@ -266,6 +266,23 @@
     }
   }
 
+  // Host CLI help (docs/cli.md): the commands people copy onto the Docker host.
+  const installCLI = 'curl -fsSL https://raw.githubusercontent.com/Literally-davca/moorage/main/scripts/install-cli.sh | sh';
+  const cliSnippets = [
+    { id: 'exec', label: "Inside the container, no install (in the folder of Moorage's compose.yaml)", cmd: 'docker compose exec moorage moorage stacks ls' },
+    { id: 'wrapper', label: 'On the host: a moorage command that runs docker exec for you', cmd: installCLI },
+    { id: 'native', label: 'Or the native binary from GitHub Releases', cmd: `${installCLI} -s -- --native` },
+  ];
+  let cliCopied = $state('');
+  async function copyCLI(id: string, cmd: string) {
+    if (!navigator.clipboard) return;
+    await navigator.clipboard.writeText(cmd);
+    cliCopied = id;
+    setTimeout(() => {
+      if (cliCopied === id) cliCopied = '';
+    }, 2000);
+  }
+
   async function copySecret() {
     if (!tokSecret || !navigator.clipboard) return;
     await navigator.clipboard.writeText(tokSecret);
@@ -520,6 +537,25 @@
     <PushToggle />
 
     {#if isAdmin()}
+      <section class="card card-pad grid1" aria-label="Command line on the host">
+        <p class="section-title">Command line on the host</p>
+        <p class="meta">
+          Run <code>moorage</code> commands (<code>stacks ls</code>, <code>stacks logs -f</code>, <code>cli</code> for the full-screen view) from
+          the server's own terminal. The wrapper needs no token: it uses Moorage's local socket inside the container. The native binary
+          uses the socket in Moorage's data folder, or <code>MOORAGE_URL</code> and an API token from below for another machine.
+        </p>
+        {#each cliSnippets as c (c.id)}
+          <div class="cli-snip">
+            <span class="meta">{c.label}</span>
+            <div class="cli-row">
+              <code class="secret">{c.cmd}</code>
+              <button type="button" class="btn btn-ghost" onclick={() => copyCLI(c.id, c.cmd)}>{cliCopied === c.id ? 'Copied' : 'Copy'}</button>
+            </div>
+          </div>
+        {/each}
+        <p class="meta">Details: <code>docs/cli.md</code> in the Moorage repository.</p>
+      </section>
+
       <section class="card card-pad grid1" aria-label="API tokens">
         <p class="section-title">API tokens (CLI &amp; remote access)</p>
         <p class="meta">
@@ -758,6 +794,20 @@
     padding: 8px 10px;
     border-radius: var(--r-sm);
     background: var(--well);
+  }
+  .cli-snip {
+    display: grid;
+    gap: 4px;
+  }
+  .cli-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .cli-row .secret {
+    flex: 1;
+    min-width: 0;
+    margin-top: 0;
   }
   .token-reveal {
     display: grid;

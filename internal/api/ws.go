@@ -23,15 +23,17 @@ const maxLogDownloadBytes = 50 << 20 // 50 MiB cap per FEATURE-DESIGN 1.4.3
 
 var safeLogNameRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 
-// accept upgrades to a WebSocket. coder/websocket rejects a cross-origin Origin
-// by default, which blocks cross-site WebSocket hijacking (an issue Dozzle had).
-func accept(w http.ResponseWriter, r *http.Request) (*websocket.Conn, bool) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: websocket.CompressionContextTakeover})
+// accept upgrades to a WebSocket with the Origin rules of acceptWS, which block
+// cross-site WebSocket hijacking (an issue Dozzle had), and registers it as a live
+// connection, so a revoked sign-in closes it (4401). Call the returned func when done.
+func (s *Server) accept(w http.ResponseWriter, r *http.Request, kind string) (*websocket.Conn, func(), bool) {
+	c, err := s.acceptWS(w, r, websocket.CompressionContextTakeover)
 	if err != nil {
-		return nil, false
+		return nil, nil, false
 	}
 	c.SetReadLimit(4096)
-	return c, true
+	untrack := s.trackWS(r, kind, false, func() { _ = c.Close(closeSessionEnded, sessionEndedReason) })
+	return c, untrack, true
 }
 
 // wsLogs streams log lines of a stack or across the host, batched every 150 ms.
@@ -57,10 +59,11 @@ func (s *Server) wsLogs(w http.ResponseWriter, r *http.Request) {
 	} else if f == "1" || f == "true" {
 		follow = true
 	}
-	c, ok := accept(w, r)
+	c, untrack, ok := s.accept(w, r, "logs")
 	if !ok {
 		return
 	}
+	defer untrack()
 	defer c.CloseNow()
 	ctx := c.CloseRead(r.Context()) // client messages are not expected; this tracks disconnects
 
@@ -331,10 +334,11 @@ func (s *Server) wsOp(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	c, ok := accept(w, r)
+	c, untrack, ok := s.accept(w, r, "op")
 	if !ok {
 		return
 	}
+	defer untrack()
 	defer c.CloseNow()
 	ctx := c.CloseRead(r.Context())
 	err := h.FollowOp(ctx, r.PathValue("id"), func(ev host.OpEvent) error {

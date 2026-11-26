@@ -1343,6 +1343,30 @@ let onUnauthorized: () => void = () => {};
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
+/** signInAgain shows the sign-in page, e.g. after a live connection closed with 4401. */
+export function signInAgain() {
+  onUnauthorized();
+}
+
+/** A pairing token that is still open: not used yet, or used by an agent that hasn't connected. */
+export type JoinToken = {
+  id: number;
+  name: string;
+  createdAt: string;
+  expiresAt: string;
+  agentId?: string;
+  redeemedAt?: string;
+};
+
+/** Close code of a WebSocket whose sign-in was revoked (sign-out, password or role change). */
+export const CLOSE_SESSION_ENDED = 4401;
+
+export type TerminalTicketReq = {
+  kind: 'stack' | 'container' | 'host';
+  host: string;
+  stack?: string;
+  container?: string;
+};
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
@@ -1407,6 +1431,8 @@ export const api = {
   hosts: () =>
     request<{ hosts: HostEntry[]; agentPort?: string; agentPublicAddr?: string; acceptsAgents?: boolean; metrics?: MetricsInfo }>('GET', '/api/hosts'),
   addAgent: (name: string) => request<{ token: string; expires: string; agentPort: string }>('POST', '/api/agents', { name }),
+  joinTokens: () => request<{ tokens: JoinToken[]; agentPort: string; agentPortOff: boolean }>('GET', '/api/agents/join-tokens'),
+  cancelJoinToken: (id: number) => request<void>('DELETE', `/api/agents/join-tokens/${id}`),
   renameHost: (id: string, name: string) => request<void>('PATCH', `/api/hosts/${enc(id)}`, { name }),
   updateHost: (id: string, patch: { name?: string; hostIp?: string; baseDomain?: string }) =>
     request<void>('PATCH', `/api/hosts/${enc(id)}`, patch),
@@ -1768,6 +1794,9 @@ export const api = {
   createAPIToken: (body: { name: string; role: Role; scopes: string[]; expiresDays: number }) =>
     request<{ token: APIToken; secret: string }>('POST', '/api/tokens', body),
   deleteAPIToken: (id: number) => request<void>('DELETE', `/api/tokens/${id}`),
+  /** A one-time ticket (30 s) for one terminal WebSocket; the upgrade sends it as ?ticket=. */
+  terminalTicket: (req: TerminalTicketReq) =>
+    request<{ ticket: string; expiresAt: string }>('POST', '/api/terminal/ticket', req),
 };
 
 export function wsURL(path: string): string {

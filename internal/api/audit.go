@@ -36,6 +36,7 @@ var auditActions = map[string]string{
 	"POST /api/hosts/{host}/external/{name}/actions/{action}": "external.{action}",
 	"POST /api/convert":              auditSkip,
 	"POST /api/image-lookup":         auditSkip, // reads registries, changes nothing
+	"POST /api/terminal/ticket":      auditSkip, // the terminal it opens is audited (terminal.open)
 	"POST /api/checks/test":          auditSkip, // a one-off probe, nothing is stored
 	"POST /api/status-pages/preview": auditSkip,
 	"POST /api/templates/render":     auditSkip, // fills variables, writes nothing; the create is audited
@@ -48,6 +49,7 @@ var auditActions = map[string]string{
 	"POST /api/hosts/{host}/stacks/{name}/actions/{action}":      "stack.{action}",
 	"POST /api/hosts/{host}/stacks/{name}/restore":               "stack.restore",
 	"POST /api/agents":                                           "host.add",
+	"DELETE /api/agents/join-tokens/{id}":                        "host.join_token_cancel",
 	"PATCH /api/hosts/{host}":                                    "host.rename",
 	"DELETE /api/hosts/{host}":                                   "host.remove",
 	"POST /api/checks":                                           "check.create",

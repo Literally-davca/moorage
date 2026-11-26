@@ -17,6 +17,9 @@ type Agent struct {
 	Watchdog     bool
 	WatchdogAddr string
 	WatchdogCert []byte
+	// Retried is set by RedeemJoinToken when a join token was used again by an agent
+	// that never connected (its first answer was lost).
+	Retried bool
 }
 
 // WatchdogSettings holds the hub's coordinated watchdog configuration.
@@ -34,29 +37,145 @@ func (s *Store) CreateJoinToken(ctx context.Context, tokenHash, name string, exp
 	return err
 }
 
-// RedeemJoinToken creates the agent and burns the token in one transaction.
-// It returns ErrNotFound for an unknown, used or expired token.
+// JoinRetryWindow is how long after its first use a join token can be used again by an
+// agent that never connected: the hub's answer with the certificate may have been lost
+// (network, proxy timeout), and without a retry the token was burnt and the host stuck.
+const JoinRetryWindow = 15 * time.Minute
+
+// RedeemJoinToken creates the agent for a join token. A token is used once: the first
+// redeem creates the agent and remembers it; a second redeem within JoinRetryWindow, while
+// that agent has never connected, returns the same agent again (so the hub signs a new
+// certificate for it). The token is deleted when the agent first connects
+// (ConfirmAgentPaired). It returns ErrNotFound for an unknown, used or expired token.
 func (s *Store) RedeemJoinToken(ctx context.Context, tokenHash, agentID, hostname string) (Agent, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Agent{}, err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	var name string
-	err = tx.QueryRowContext(ctx, `DELETE FROM join_tokens WHERE token_hash = ? AND expires_at > ? RETURNING name`,
-		tokenHash, time.Now().Unix()).Scan(&name)
+	now := time.Now()
+	var (
+		name, prevID string
+		redeemed     int64
+	)
+	err = tx.QueryRowContext(ctx, `SELECT name, agent_id, redeemed_at FROM join_tokens WHERE token_hash = ? AND expires_at > ?`,
+		tokenHash, now.Unix()).Scan(&name, &prevID, &redeemed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Agent{}, ErrNotFound
 	}
 	if err != nil {
 		return Agent{}, err
 	}
-	now := time.Now()
+	if prevID != "" {
+		// A retry: only for an agent that never connected, and only for a short while.
+		a, err := scanAgent(tx.QueryRowContext(ctx, `SELECT `+agentCols+` FROM agents WHERE id = ?`, prevID))
+		if err != nil || !a.LastSeen.IsZero() || now.Sub(time.Unix(redeemed, 0)) > JoinRetryWindow {
+			return Agent{}, ErrNotFound
+		}
+		if hostname != "" && hostname != a.Hostname {
+			if _, err := tx.ExecContext(ctx, `UPDATE agents SET hostname = ? WHERE id = ?`, hostname, a.ID); err != nil {
+				return Agent{}, err
+			}
+			a.Hostname = hostname
+		}
+		a.Retried = true
+		return a, tx.Commit()
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO agents (id, name, hostname, created_at) VALUES (?, ?, ?, ?)`,
 		agentID, name, hostname, now.Unix()); err != nil {
 		return Agent{}, err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE join_tokens SET agent_id = ?, redeemed_at = ? WHERE token_hash = ?`,
+		agentID, now.Unix(), tokenHash); err != nil {
+		return Agent{}, err
+	}
 	return Agent{ID: agentID, Name: name, Hostname: hostname, CreatedAt: now}, tx.Commit()
+}
+
+// ReleaseJoinToken undoes a first redeem whose certificate could not be signed: the
+// agent row goes and the token is unused again.
+func (s *Store) ReleaseJoinToken(ctx context.Context, tokenHash, agentID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	if _, err := tx.ExecContext(ctx, `UPDATE join_tokens SET agent_id = '', redeemed_at = 0 WHERE token_hash = ? AND agent_id = ?`, tokenHash, agentID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE id = ? AND last_seen = 0`, agentID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ConfirmAgentPaired deletes the join token of an agent once it connected with its
+// certificate: from now on the token can't be used again.
+func (s *Store) ConfirmAgentPaired(ctx context.Context, agentID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM join_tokens WHERE agent_id = ?`, agentID)
+	return err
+}
+
+// JoinToken is a pairing token that is still open: not used yet, or used by an agent
+// that hasn't connected yet.
+type JoinToken struct {
+	ID         int64     `json:"id"`
+	Name       string    `json:"name"`
+	CreatedAt  time.Time `json:"createdAt"`
+	ExpiresAt  time.Time `json:"expiresAt"`
+	AgentID    string    `json:"agentId,omitempty"`
+	RedeemedAt time.Time `json:"redeemedAt,omitzero"`
+}
+
+// JoinTokens lists the open join tokens, newest first. Expired ones are deleted here.
+func (s *Store) JoinTokens(ctx context.Context) ([]JoinToken, error) {
+	now := time.Now().Unix()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM join_tokens WHERE expires_at <= ?`, now); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT rowid, name, created_at, expires_at, agent_id, redeemed_at FROM join_tokens ORDER BY created_at DESC, rowid DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []JoinToken{}
+	for rows.Next() {
+		var t JoinToken
+		var created, expires, redeemed int64
+		if err := rows.Scan(&t.ID, &t.Name, &created, &expires, &t.AgentID, &redeemed); err != nil {
+			return nil, err
+		}
+		t.CreatedAt, t.ExpiresAt = time.Unix(created, 0), time.Unix(expires, 0)
+		if redeemed > 0 {
+			t.RedeemedAt = time.Unix(redeemed, 0)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// DeleteJoinToken cancels an open join token. An agent it created that never connected
+// goes with it (it could only ever be a dead entry). It returns the token's name.
+func (s *Store) DeleteJoinToken(ctx context.Context, id int64) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback() //nolint:errcheck
+	var name, agentID string
+	err = tx.QueryRowContext(ctx, `DELETE FROM join_tokens WHERE rowid = ? RETURNING name, agent_id`, id).Scan(&name, &agentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	if agentID != "" {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agents WHERE id = ? AND last_seen = 0`, agentID); err != nil {
+			return "", err
+		}
+	}
+	return name, tx.Commit()
 }
 
 const agentCols = `id, name, hostname, created_at, last_seen, watchdog, watchdog_addr, watchdog_cert`
@@ -190,6 +309,9 @@ func (s *Store) RenameAgent(ctx context.Context, id, name string) error {
 
 // DeleteAgent removes the agent; its certificate stops working on the next connect.
 func (s *Store) DeleteAgent(ctx context.Context, id string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM join_tokens WHERE agent_id = ?`, id); err != nil {
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE id = ?`, id)
 	return err
 }

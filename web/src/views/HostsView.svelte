@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, engineLabel, formatBytes, type Channel, type HostEntry, type PrunePreview, type WatchdogAgent } from '../lib/api';
+  import { api, engineLabel, formatBytes, type Channel, type HostEntry, type JoinToken, type PrunePreview, type WatchdogAgent } from '../lib/api';
   import { app, isAdmin, setHost } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
@@ -22,6 +22,10 @@
   let adding = $state(false);
   let addError = $state('');
   let joined = $state<{ name: string; token: string; expires: string } | null>(null);
+  // open join tokens: unused, or used by an agent that hasn't connected yet
+  let pending = $state<JoinToken[]>([]);
+  let cancelling = $state<number | null>(null);
+  let pendingError = $state('');
   let hubAddr = $state('');
   let readOnly = $state(false);
   let copied = $state('');
@@ -112,6 +116,9 @@
       .then((sl) => (beszelUrl = sl.beszelUrl))
       .catch(() => {});
     if (isAdmin()) {
+      api.joinTokens()
+        .then((r) => (pending = r.tokens))
+        .catch(() => {});
       try {
         const [w, chs] = await Promise.all([
           api.watchdog(),
@@ -154,6 +161,26 @@
     } finally {
       adding = false;
     }
+  }
+
+  async function cancelToken(t: JoinToken) {
+    cancelling = t.id;
+    pendingError = '';
+    try {
+      await api.cancelJoinToken(t.id);
+      pending = pending.filter((p) => p.id !== t.id);
+      await load();
+      onChanged();
+    } catch (err) {
+      pendingError = (err as Error).message;
+    } finally {
+      cancelling = null;
+    }
+  }
+
+  function tokenState(t: JoinToken): string {
+    if (t.redeemedAt) return 'Agent paired, waiting for its first connection';
+    return 'Waiting for the agent';
   }
 
   function startEdit(h: HostEntry) {
@@ -498,6 +525,7 @@ volumes:
           <label class="lbl" for="hub">Hub address the agent connects to</label>
           <input id="hub" class="field mono" bind:value={hubAddr} spellcheck="false" />
           <p class="meta">Port {agentPort} of this server must be reachable from the host. Don't put it behind your HTTPS proxy: the agent needs a direct TLS connection.</p>
+          <p class="meta">Moorage in Docker: publish the port in its compose file (<code>- "{agentPort}:{agentPort}"</code> under <code>ports</code>) and allow it in the firewall. Behind a reverse proxy, use this server's own address or IP here, not the proxy's domain.</p>
 
           <label class="check">
             <input type="checkbox" bind:checked={readOnly} />
@@ -522,6 +550,26 @@ volumes:
         </div>
       {/if}
     </section>
+    {/if}
+
+    {#if pending.length}
+      <section class="card card-pad pending" aria-label="Open join tokens">
+        <h2 class="section-title">Open join tokens</h2>
+        <ul class="pending-list">
+          {#each pending as t (t.id)}
+            <li>
+              <div class="pending-copy">
+                <strong>{t.name}</strong>
+                <span class="meta">{tokenState(t)} · expires {new Date(t.expiresAt).toLocaleString()}</span>
+              </div>
+              <button type="button" class="btn btn-ghost" disabled={cancelling === t.id} aria-busy={cancelling === t.id}
+                aria-label="Cancel join token for {t.name}" onclick={() => cancelToken(t)}>Cancel</button>
+            </li>
+          {/each}
+        </ul>
+        <p class="meta">An agent that doesn't connect usually can't reach port {agentPort} of this server: publish it (<code>- "{agentPort}:{agentPort}"</code>) and check the hub address in <code>MOORAGE_HUB</code>. A token whose answer got lost can be used again for 15 minutes, until the agent first connects.</p>
+        {#if pendingError}<p class="error-text" role="alert">{pendingError}</p>{/if}
+      </section>
     {/if}
 
     <form class="card card-pad watchdog" onsubmit={saveWatchdog}>
@@ -642,7 +690,7 @@ volumes:
 </div>
 
 <Confirm bind:open={confirmRemove} title="Remove {removing?.name}?" danger confirmLabel="Remove host"
-  body="The agent is disconnected and its certificate stops working. Stacks on that host keep running. To add it again, create a new join token and delete the agent's data folder."
+  body="The agent is disconnected and its certificate stops working. Stacks on that host keep running. To add it again, create a new join token and set it as MOORAGE_JOIN_TOKEN on the agent: it pairs again on its own."
   onConfirm={remove} />
 
 <style>
@@ -765,6 +813,34 @@ volumes:
   .add {
     display: grid;
     gap: 12px;
+  }
+  .pending {
+    display: grid;
+    gap: 10px;
+  }
+  .pending-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 1px;
+  }
+  .pending-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rope);
+    flex-wrap: wrap;
+  }
+  .pending-list li:last-child {
+    border-bottom: 0;
+  }
+  .pending-copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
   }
   .addform,
   .joined {

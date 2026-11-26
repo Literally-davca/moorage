@@ -38,7 +38,7 @@ export function emptyCheck(): CheckInput {
     interval: 60,
     timeout: 10,
     retries: 2,
-    settings: { threshold: 1, window: 300 },
+    settings: { threshold: 1, window: 300, status: '' },
     enabled: true,
     channels: [],
     locations: [],
@@ -120,6 +120,7 @@ export function toInput(c: Check): CheckInput {
   const settings = { ...c.settings };
   if (settings.urls) settings.urls = [...settings.urls];
   if (settings.stacks) settings.stacks = settings.stacks.map((s) => ({ ...s }));
+  settings.status ??= '';
   if (c.kind === 'log') {
     settings.threshold ??= 1;
     settings.window ??= 300;

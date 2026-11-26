@@ -18,6 +18,31 @@ By default in bare binary deployments:
 - Local CLI invocations (`moorage stacks ls`, `moorage cli`, etc.) automatically auto-discover `<MOORAGE_DATA_DIR>/moorage.sock` (default `/data/moorage.sock`) and authenticate locally as `cli:local` with `admin` role—no password or token required for local host root/service users with socket access.
 - On **Windows**, Unix domain sockets are not used; connect over HTTP(S) using `--url` + `--token` (`MOORAGE_URL` + `MOORAGE_TOKEN`).
 
+### Running `moorage` on the Docker host (Moorage in a container)
+
+The image links `/usr/local/bin/moorage` to `/moorage`, so the CLI works inside the container right away and uses the container's own socket as admin `cli:local`:
+
+```sh
+docker compose exec moorage moorage stacks ls      # in the folder of Moorage's compose.yaml
+docker exec -it <container-name> moorage cli       # full-screen TUI
+```
+
+To type just `moorage …` on the host, install it once with [`scripts/install-cli.sh`](../scripts/install-cli.sh):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Literally-davca/moorage/main/scripts/install-cli.sh | sh
+moorage stacks ls
+```
+
+The script has two modes:
+
+| Mode | What it installs | Connects through | Needs |
+|---|---|---|---|
+| **Docker wrapper** (default) | a small `/usr/local/bin/moorage` script that runs `docker exec` into the Moorage container (found by its compose service `moorage`, or `--container NAME` / `MOORAGE_CONTAINER`) | the container's local socket, as admin | `docker` on the host (root or the `docker` group); no socket mount, no token |
+| **Native binary** (`… \| sh -s -- --native`) | the static `moorage-linux-<arch>` from GitHub Releases, checked against the release's `SHA256SUMS` | `MOORAGE_SOCKET=<Moorage data dir on the host>/moorage.sock` (bind-mount `/data`, e.g. `./data:/data`; a named volume lives under `/var/lib/docker/volumes/<volume>/_data`), or `MOORAGE_URL` + `MOORAGE_TOKEN` | read/write access to the socket (`0600`, usually root), or an API token |
+
+The wrapper passes `-it` only when both stdin and stdout are a terminal, so `moorage stacks ls --json | jq` and cron jobs work too. Options: `--prefix DIR` (default `/usr/local/bin`; uses `sudo` when the folder isn't writable), `--version vX.Y.Z` for the native binary, `MOORAGE_REPO=owner/name` for a fork.
+
 ---
 
 ## 2. Remote Access & Bearer API Tokens

@@ -202,6 +202,8 @@
     } else {
       form.settings = {};
     }
+    // StatusCodes binds this field; it must never be undefined.
+    form.settings.status ??= '';
     if (k === 'stack') form.target = form.stack || '';
     else if (k !== 'log' && form.target === form.stack) form.target = '';
   }

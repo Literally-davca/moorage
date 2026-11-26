@@ -24,8 +24,9 @@ type HostShellBackend interface {
 // HostTerminal opens an interactive PTY in the host operating system when
 // MOORAGE_HOST_TERMINAL=true (and MOORAGE_READ_ONLY=false).
 // Native binary installs open a local PTY directly; container installs spawn a short-lived
-// helper container (moorage.role=host-shell, AutoRemove, pid:host) entering PID 1's
-// namespaces via nsenter without requiring SSH keys.
+// helper container (moorage.role=host-shell, pid:host) entering PID 1's namespaces via
+// nsenter without requiring SSH keys. The helper is not AutoRemove: Moorage reads its exit
+// code, error and last output first (so a failed start says why) and removes it on Close.
 func (e *Engine) HostTerminal(ctx context.Context, shell string, cols, rows int) (TerminalSession, error) {
 	if e.cfg.ReadOnly || !e.cfg.HostTerminal {
 		return nil, ErrHostTerminalLocked
@@ -151,6 +152,7 @@ func (e *Engine) startContainerHostShell(ctx context.Context, shell string, cols
 	if err != nil {
 		return nil, err
 	}
+	e.sweepHostShellHelpers(ctx)
 	marker := termMarker()
 	created, err := e.api.ContainerCreate(ctx, client.ContainerCreateOptions{
 		Config: &container.Config{
@@ -168,7 +170,6 @@ func (e *Engine) startContainerHostShell(ctx context.Context, shell string, cols
 			},
 		},
 		HostConfig: &container.HostConfig{
-			AutoRemove:  true,
 			Privileged:  true,
 			PidMode:     "host",
 			NetworkMode: "host",
@@ -200,7 +201,7 @@ func (e *Engine) startContainerHostShell(ctx context.Context, shell string, cols
 	if _, err := e.api.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
 		attached.Close()
 		_, _ = e.api.ContainerRemove(context.Background(), created.ID, client.ContainerRemoveOptions{Force: true})
-		return nil, fmt.Errorf("start host shell helper: %w", err)
+		return nil, fmt.Errorf("start host shell helper (it needs a privileged container with pid: host): %w", err)
 	}
 	_, _ = e.api.ContainerResize(ctx, created.ID, client.ContainerResizeOptions{
 		Height: uint(rows),
@@ -239,24 +240,89 @@ func (s *containerHostShellSession) Resize(ctx context.Context, cols, rows int) 
 	return err
 }
 
+// quickExit is how soon after its start a helper that exits with an error counts as one
+// that never came up (nsenter refused, missing privileges): then its last output is the
+// reason the terminal shows.
+const quickExit = 3 * time.Second
+
 func (s *containerHostShellSession) Wait(ctx context.Context) (int, error) {
 	for {
 		insp, err := s.api.ContainerInspect(ctx, s.containerID, client.ContainerInspectOptions{})
 		if err != nil {
-			// AutoRemove already cleaned up the exited container.
-			if strings.Contains(strings.ToLower(err.Error()), "no such container") || strings.Contains(strings.ToLower(err.Error()), "not found") {
-				return 0, nil
+			if isNotFound(err) {
+				// Removed by someone else; the exit code is gone with it.
+				return 0, errors.New("the host shell helper container was removed before Moorage could read its exit code")
 			}
 			return 0, err
 		}
-		if insp.Container.State != nil && !insp.Container.State.Running {
-			return insp.Container.State.ExitCode, nil
+		st := insp.Container.State
+		if st != nil && !st.Running {
+			return st.ExitCode, helperFailure(ctx, s.api, s.containerID, st)
 		}
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		case <-time.After(50 * time.Millisecond):
 		}
+	}
+}
+
+// helperFailure explains why a helper ended, or returns nil for a normal shell exit.
+func helperFailure(ctx context.Context, api client.APIClient, id string, st *container.State) error {
+	switch {
+	case st.OOMKilled:
+		return errors.New("the host shell helper ran out of memory")
+	case st.Error != "":
+		return fmt.Errorf("the host shell helper failed: %s", st.Error)
+	case st.ExitCode == 0:
+		return nil
+	}
+	started, err1 := time.Parse(time.RFC3339Nano, st.StartedAt)
+	finished, err2 := time.Parse(time.RFC3339Nano, st.FinishedAt)
+	if err1 != nil || err2 != nil || finished.Sub(started) > quickExit {
+		return nil // a shell that ran and exited non-zero: the code says it all
+	}
+	tail := helperLogTail(ctx, api, id)
+	if tail == "" {
+		return fmt.Errorf("the host shell helper exited with code %d right after it started", st.ExitCode)
+	}
+	return fmt.Errorf("the host shell helper exited with code %d: %s", st.ExitCode, tail)
+}
+
+// helperLogTail is the last few lines the helper printed (TTY, so one stream).
+func helperLogTail(ctx context.Context, api client.APIClient, id string) string {
+	lctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	rc, err := api.ContainerLogs(lctx, id, client.ContainerLogsOptions{ShowStdout: true, ShowStderr: true, Tail: "5"})
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	b, _ := io.ReadAll(io.LimitReader(rc, 4<<10))
+	out := strings.Join(strings.Fields(string(b)), " ")
+	if r := []rune(out); len(r) > 300 {
+		out = string(r[len(r)-300:])
+	}
+	return out
+}
+
+func isNotFound(err error) bool {
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "no such container") || strings.Contains(m, "not found")
+}
+
+// sweepHostShellHelpers removes helpers left behind by a hub that stopped mid-session
+// (they are no longer AutoRemove). Only exited ones: a running helper is someone's shell.
+func (e *Engine) sweepHostShellHelpers(ctx context.Context) {
+	f := make(client.Filters)
+	f.Add("label", LabelRole+"="+RoleHostShell)
+	f.Add("status", "exited") // not "created": that may be another session starting now
+	list, err := e.api.ContainerList(ctx, client.ContainerListOptions{All: true, Filters: f})
+	if err != nil {
+		return
+	}
+	for _, c := range list.Items {
+		_, _ = e.api.ContainerRemove(ctx, c.ID, client.ContainerRemoveOptions{Force: true})
 	}
 }
 

@@ -58,7 +58,8 @@ func TestFromEnvProbesDefault(t *testing.T) {
 	}
 }
 
-// MOORAGE_TEMPLATES_DIR defaults to <data dir>/templates and is not created.
+// MOORAGE_TEMPLATES_DIR defaults to <data dir>/templates; it and <data dir>/backups are
+// created at start, so an empty folder is the normal state (M17).
 func TestFromEnvTemplatesDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MOORAGE_DATA_DIR", dir+"/data")
@@ -68,12 +69,42 @@ func TestFromEnvTemplatesDir(t *testing.T) {
 	if err != nil || c.TemplatesDir != filepath.Join(dir, "data", "templates") {
 		t.Fatalf("default: %q %v", c.TemplatesDir, err)
 	}
-	if _, err := os.Stat(c.TemplatesDir); !os.IsNotExist(err) {
-		t.Fatalf("the templates folder must not be created: %v", err)
+	for _, d := range []string{c.TemplatesDir, c.BackupsDir} {
+		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
+			t.Fatalf("%s must be created: %v", d, err)
+		}
+	}
+	if c.BackupsDir != filepath.Join(dir, "data", "backups") || len(c.DirWarnings) != 0 {
+		t.Fatalf("backups %q warnings %v", c.BackupsDir, c.DirWarnings)
 	}
 	t.Setenv("MOORAGE_TEMPLATES_DIR", dir+"/mine")
 	if c, err := FromEnv(); err != nil || c.TemplatesDir != filepath.Join(dir, "mine") {
 		t.Fatalf("set: %q %v", c.TemplatesDir, err)
+	}
+}
+
+// A subfolder that can't be created (here a file is in the way) is a warning, never a
+// failed start; an existing folder (e.g. mounted :ro) is left alone.
+func TestFromEnvDataSubfolderProblems(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MOORAGE_DATA_DIR", dir+"/data")
+	t.Setenv("MOORAGE_STACKS_DIR", dir+"/stacks")
+	if err := os.MkdirAll(dir+"/data", 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/data/backups", []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MOORAGE_TEMPLATES_DIR", "")
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatalf("a blocked subfolder stopped the start: %v", err)
+	}
+	if len(c.DirWarnings) != 1 || !strings.Contains(c.DirWarnings[0], "backups") {
+		t.Fatalf("warnings: %v", c.DirWarnings)
+	}
+	if err := ensureDir(c.TemplatesDir); err != nil {
+		t.Fatalf("existing folder: %v", err)
 	}
 }
 

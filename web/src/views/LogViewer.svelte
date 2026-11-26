@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, hostPath, wsURL, type Container, type ContainerInfo, type LogLine } from '../lib/api';
+  import { api, CLOSE_SESSION_ENDED, hostPath, wsURL, type Container, type ContainerInfo, type LogLine } from '../lib/api';
   import { app, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
@@ -196,7 +196,10 @@
     follow = shouldFollow;
     const ws = new WebSocket(wsURL(hostPath('/ws/logs?' + params.toString())));
     ws.onopen = () => (connected = true);
-    ws.onclose = () => (connected = false);
+    ws.onclose = (ev) => {
+      connected = false;
+      if (ev.code === CLOSE_SESSION_ENDED) ended = 'Session ended, sign in again.';
+    };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data) as { lines?: LogLine[]; end?: string };
       if (msg.lines?.length) {

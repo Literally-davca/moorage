@@ -30,6 +30,10 @@ type Config struct {
 	StatusListen string // MOORAGE_STATUS_LISTEN, optional separate listen address for public status pages only (e.g. ":5085")
 	MetricsToken string // MOORAGE_METRICS_TOKEN, enables GET /metrics for Prometheus with this bearer token (min 16 chars)
 	TemplatesDir string // MOORAGE_TEMPLATES_DIR, local stack templates (one subfolder each), default <data dir>/templates
+	BackupsDir   string // <data dir>/backups, the default local target of backup add-ons (created at start)
+	// DirWarnings are data subfolders that could not be created. They never stop Moorage
+	// (the feature that needs the folder says so); main logs them at start.
+	DirWarnings []string
 
 	// agent
 	Hub            string // MOORAGE_HUB, host:port of the hub's agent port
@@ -252,11 +256,18 @@ func FromEnv() (Config, error) {
 			return c, fmt.Errorf("create %s: %w", abs, err)
 		}
 	}
-	// The templates folder is not created: it is the admin's, and a missing folder only
-	// means no local templates (the catalogue says so).
 	c.TemplatesDir = env("MOORAGE_TEMPLATES_DIR", filepath.Join(c.DataDir, "templates"))
 	if c.TemplatesDir, err = filepath.Abs(c.TemplatesDir); err != nil {
 		return c, fmt.Errorf("MOORAGE_TEMPLATES_DIR: %w", err)
+	}
+	c.BackupsDir = filepath.Join(c.DataDir, "backups")
+	// Subfolders Moorage owns are created at start, so an empty folder is the normal
+	// state and nobody has to mkdir them by hand. MkdirAll is a no-op on a folder that
+	// already exists, so one mounted read-only (:ro) never stops the start.
+	for _, d := range []string{c.TemplatesDir, c.BackupsDir} {
+		if err := ensureDir(d); err != nil {
+			c.DirWarnings = append(c.DirWarnings, err.Error())
+		}
 	}
 	sock := strings.TrimSpace(os.Getenv("MOORAGE_SOCKET"))
 	switch {
@@ -270,6 +281,20 @@ func FromEnv() (Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// ensureDir creates dir (0750) unless it already exists. The error says what to fix.
+func ensureDir(dir string) error {
+	if fi, err := os.Stat(dir); err == nil {
+		if !fi.IsDir() {
+			return fmt.Errorf("%s exists but is not a folder", dir)
+		}
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("could not create %s (%v): create it on the host or make its parent writable for Moorage's user", dir, err)
+	}
+	return nil
 }
 
 // MinMetricsToken is the shortest accepted MOORAGE_METRICS_TOKEN. The endpoint has no

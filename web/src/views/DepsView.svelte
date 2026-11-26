@@ -27,7 +27,7 @@
   let onlyUnhealthy = $state(false);
   let hideExternal = $state(false);
   let showStandalone = $state(true);
-  let hideIgnored = $state(false);
+  let hideIgnored = $state(true);
 
   // Selection & hover (blast radius)
   let hoverKey = $state<string | null>(null);

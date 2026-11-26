@@ -23,13 +23,15 @@ ARG VERSION=dev
 ARG TARGETOS TARGETARCH TARGETVARIANT
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH GOARM=${TARGETVARIANT#v} \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /moorage ./cmd/moorage
-RUN mkdir -p /out/data /out/tmp && chmod 1777 /out/tmp
+RUN mkdir -p /out/data /out/tmp /out/usr/local/bin && chmod 1777 /out/tmp     && ln -s /moorage /out/usr/local/bin/moorage
 
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /out/ /
 COPY --from=build /moorage /moorage
-ENV MOORAGE_DATA_DIR=/data MOORAGE_STACKS_DIR=/opt/stacks MOORAGE_LISTEN=:5080 TMPDIR=/tmp
+# /usr/local/bin/moorage links to /moorage, so `docker exec -it moorage moorage stacks ls`
+# works (and scripts/install-cli.sh can wrap it on the host).
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin MOORAGE_DATA_DIR=/data MOORAGE_STACKS_DIR=/opt/stacks MOORAGE_LISTEN=:5080 TMPDIR=/tmp
 EXPOSE 5080 5081
 VOLUME ["/data"]
 ENTRYPOINT ["/moorage"]

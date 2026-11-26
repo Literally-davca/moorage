@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { hostPath, wsURL, type ShellName } from '../lib/api';
+  import { api, ApiError, CLOSE_SESSION_ENDED, signInAgain, wsURL, type ShellName } from '../lib/api';
+  import { app } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
 
   let {
@@ -26,7 +27,24 @@
   let shell = $state<ShellName>(untrack(() => (mode === 'host' ? 'bash' : 'sh')));
   let phase = $state<'connecting' | 'connected' | 'ended'>('connecting');
   let endText = $state('');
+  let sessionEnded = $state(false);
   let box: HTMLDivElement;
+
+  /** explain turns a refusal from the hub or host into what to change, where we know it. */
+  function explain(msg: string): string {
+    const m = msg.toLowerCase();
+    if (m.includes('web terminal is disabled'))
+      return 'The web terminal is off on this host. Set MOORAGE_TERMINAL=true in its environment and restart it (it stays off while MOORAGE_READ_ONLY=true).';
+    if (m.includes('runs read-only'))
+      return 'This host runs read-only (MOORAGE_READ_ONLY=true), so terminals are off.';
+    if (m.startsWith('moorage runs from this stack'))
+      return "This is Moorage's own container. Its image has no shell (it is built from scratch); open the host terminal instead.";
+    return msg;
+  }
+
+  /** Why an upgrade was refused before it opened: the browser can't see the HTTP status. */
+  const refusedBeforeOpen =
+    'Moorage refused the connection before it opened. Behind a reverse proxy, forward WebSocket upgrades and set MOORAGE_PUBLIC_URL to the address you open Moorage at: the browser Origin must match it (or the Host header). The proxy may also block WebSockets itself (403).';
 
   const shells = $derived<ShellName[]>(mode === 'host' ? ['bash', 'sh', 'ash'] : ['sh', 'bash', 'ash']);
 
@@ -44,6 +62,7 @@
 
     phase = 'connecting';
     endText = '';
+    sessionEnded = false;
 
     let disposed = false;
     let ws: WebSocket | null = null;
@@ -103,113 +122,127 @@
 
       const cols = Math.max(1, Math.min(500, t.cols || 80));
       const rows = Math.max(1, Math.min(500, t.rows || 24));
-      let url = '';
+      const hostID = hid || app.host;
+      const enc2 = encodeURIComponent;
+      const q = new URLSearchParams({ shell: sh, cols: String(cols), rows: String(rows) });
+      let path = '';
+      let ticketReq: Parameters<typeof api.terminalTicket>[0];
       if (m === 'host') {
-        const q = new URLSearchParams({
-          shell: sh,
-          cols: String(cols),
-          rows: String(rows),
-        });
-        const path = hid ? `/api/hosts/${encodeURIComponent(hid)}/ws/host-terminal?${q.toString()}` : hostPath(`/ws/host-terminal?${q.toString()}`);
-        url = wsURL(path);
+        path = `/api/hosts/${enc2(hostID)}/ws/host-terminal`;
+        ticketReq = { kind: 'host', host: hostID };
       } else if (m === 'container') {
         const ref = cid || ctr;
-        const q = new URLSearchParams({
-          shell: sh,
-          cols: String(cols),
-          rows: String(rows),
-        });
-        const path = hid
-          ? `/api/hosts/${encodeURIComponent(hid)}/containers/${encodeURIComponent(ref)}/terminal?${q.toString()}`
-          : hostPath(`/containers/${encodeURIComponent(ref)}/terminal?${q.toString()}`);
-        url = wsURL(path);
+        path = `/api/hosts/${enc2(hostID)}/containers/${enc2(ref)}/terminal`;
+        ticketReq = { kind: 'container', host: hostID, container: ref };
       } else {
-        const q = new URLSearchParams({
-          container: ctr,
-          shell: sh,
-          cols: String(cols),
-          rows: String(rows),
-        });
-        url = wsURL(hostPath(`/stacks/${encodeURIComponent(st)}/terminal?${q.toString()}`));
+        q.set('container', ctr);
+        path = `/api/hosts/${enc2(hostID)}/stacks/${enc2(st)}/terminal`;
+        ticketReq = { kind: 'stack', host: hostID, stack: st, container: ctr };
       }
 
-      const sock = new WebSocket(url);
-      sock.binaryType = 'arraybuffer';
-      ws = sock;
-
-      let sawExit = false;
-      let sawError = '';
-
-      sock.onopen = () => {
-        if (disposed) return;
-        phase = 'connected';
-        try {
-          fit.fit();
-          sock.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
-        } catch {
-          /* ignore */
-        }
+      let sock: WebSocket | null = null;
+      const send = (data: string | Uint8Array<ArrayBuffer>) => {
+        if (sock && sock.readyState === WebSocket.OPEN) sock.send(data);
+      };
+      const end = (text: string) => {
+        phase = 'ended';
+        if (!endText) endText = text;
       };
 
-      sock.onmessage = (ev) => {
-        if (disposed) return;
-        if (ev.data instanceof ArrayBuffer) {
-          t.write(new Uint8Array(ev.data));
+      // A ticket per attempt: it works once, for 30 s. A refusal before the socket opens
+      // (expired ticket, Origin, proxy) gets one fresh try, then the reason.
+      const connect = async (attempt: number) => {
+        let ticket = '';
+        try {
+          ticket = (await api.terminalTicket(ticketReq)).ticket;
+        } catch (e) {
+          if (disposed) return;
+          const msg = e instanceof ApiError ? explain(e.message) : 'Could not open the terminal.';
+          t.write(`\r\n\x1b[31m${msg}\x1b[0m\r\n`);
+          end(msg);
           return;
         }
-        if (typeof ev.data === 'string') {
+        if (disposed) return;
+        q.set('ticket', ticket);
+        const s = new WebSocket(wsURL(`${path}?${q.toString()}`));
+        s.binaryType = 'arraybuffer';
+        sock = s;
+        ws = s;
+
+        let opened = false;
+        let sawExit = false;
+        let sawError = '';
+
+        s.onopen = () => {
+          if (disposed) return;
+          opened = true;
+          phase = 'connected';
           try {
-            const ctrl = JSON.parse(ev.data) as { type: string; code?: number; message?: string };
-            if (ctrl.type === 'error' && ctrl.message) {
-              sawError = ctrl.message;
-              t.write(`\r\n\x1b[31m${ctrl.message}\x1b[0m\r\n`);
-            } else if (ctrl.type === 'exit') {
-              sawExit = true;
-              const code = ctrl.code ?? 0;
-              phase = 'ended';
-              endText = sawError ? `${sawError} (exit ${code})` : `Ended (exit ${code})`;
-            }
+            fit.fit();
+            s.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
           } catch {
-            /* ignore malformed control frame */
+            /* ignore */
           }
-        }
-      };
+        };
 
-      sock.onerror = () => {
-        if (disposed) return;
-        if (!sawExit && !sawError) {
-          sawError = 'Connection refused or closed.';
-        }
-      };
+        s.onmessage = (ev) => {
+          if (disposed) return;
+          if (ev.data instanceof ArrayBuffer) {
+            t.write(new Uint8Array(ev.data));
+            return;
+          }
+          if (typeof ev.data === 'string') {
+            try {
+              const ctrl = JSON.parse(ev.data) as { type: string; code?: number; message?: string };
+              if (ctrl.type === 'error' && ctrl.message) {
+                sawError = explain(ctrl.message);
+                t.write(`\r\n\x1b[31m${sawError}\x1b[0m\r\n`);
+              } else if (ctrl.type === 'exit') {
+                sawExit = true;
+                const code = ctrl.code ?? 0;
+                end(sawError ? `${sawError} (exit ${code})` : `Ended (exit ${code})`);
+              }
+            } catch {
+              /* ignore malformed control frame */
+            }
+          }
+        };
 
-      sock.onclose = () => {
-        if (disposed) return;
-        phase = 'ended';
-        if (!endText) {
-          endText = sawError || 'Disconnected';
-        }
+        s.onclose = (ev) => {
+          if (disposed) return;
+          if (ev.code === CLOSE_SESSION_ENDED) {
+            // The output stays on screen; only the connection is gone.
+            sessionEnded = true;
+            t.write('\r\n\x1b[33mSession ended, sign in again.\x1b[0m\r\n');
+            end('Session ended');
+            return;
+          }
+          if (!opened && !sawExit && !sawError) {
+            if (attempt === 0) {
+              void connect(1);
+              return;
+            }
+            t.write(`\r\n\x1b[31m${refusedBeforeOpen}\x1b[0m\r\n`);
+            end('Connection refused');
+            return;
+          }
+          end(sawError || 'Disconnected');
+        };
       };
+      void connect(0);
 
-      t.onData((data) => {
-        if (sock.readyState === WebSocket.OPEN) {
-          sock.send(enc.encode(data));
-        }
-      });
+      t.onData((data) => send(enc.encode(data)));
       t.onBinary((data) => {
-        if (sock.readyState === WebSocket.OPEN) {
-          const bytes = new Uint8Array(data.length);
-          for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
-          sock.send(bytes);
-        }
+        const bytes = new Uint8Array(data.length);
+        for (let i = 0; i < data.length; i++) bytes[i] = data.charCodeAt(i) & 0xff;
+        send(bytes);
       });
 
       ro = new ResizeObserver(() => {
         if (disposed || !term) return;
         try {
           fit.fit();
-          if (sock.readyState === WebSocket.OPEN) {
-            sock.send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
-          }
+          send(JSON.stringify({ type: 'resize', cols: t.cols, rows: t.rows }));
         } catch {
           /* ignore */
         }
@@ -267,8 +300,11 @@
         </span>
       </span>
 
+      {#if sessionEnded}
+        <button type="button" class="btn btn-primary" onclick={signInAgain}>Sign in</button>
+      {/if}
       <button type="button" class="btn" onclick={onClose}>
-        Disconnect
+        {phase === 'ended' ? 'Close' : 'Disconnect'}
       </button>
     </div>
   </header>

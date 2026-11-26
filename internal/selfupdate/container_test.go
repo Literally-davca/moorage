@@ -532,3 +532,46 @@ func TestContainerCloneHelperRollbackAndModeDetect(t *testing.T) {
 		t.Fatalf("hub helper should confirm via healthy mark fallback: %v", err)
 	}
 }
+
+// tagRecorder is a ContainerEngine with the optional ImageTag method.
+type tagRecorder struct {
+	ContainerEngine
+	tags [][2]string
+}
+
+func (t *tagRecorder) ImageTag(_ context.Context, source, target string) error {
+	t.tags = append(t.tags, [2]string{source, target})
+	return nil
+}
+
+// After a self-update the floating tag the container was created from follows the new
+// image (so the update check and a later compose up agree with what runs); version tags,
+// digests and other repositories are left alone.
+func TestRetagFloatingAfterSelfUpdate(t *testing.T) {
+	pulled := "ghcr.io/x/moorage@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	for _, tc := range []struct {
+		cfgImage string
+		want     bool
+	}{
+		{"ghcr.io/x/moorage:latest", true},
+		{"ghcr.io/x/moorage", true},
+		{"ghcr.io/x/moorage:stable", true},
+		{"ghcr.io/x/moorage:1.4.2", false},
+		{"ghcr.io/x/moorage:v2", false},
+		{"ghcr.io/x/moorage@sha256:1111111111111111111111111111111111111111111111111111111111111111", false},
+		{"docker.io/other/moorage:latest", false},
+		{"", false},
+	} {
+		rec := &tagRecorder{}
+		self := &container.InspectResponse{Config: &container.Config{Image: tc.cfgImage}}
+		retagFloating(context.Background(), rec, self, "ghcr.io/x/moorage", pulled)
+		if got := len(rec.tags) == 1; got != tc.want {
+			t.Errorf("%q: retagged=%v (%v), want %v", tc.cfgImage, got, rec.tags, tc.want)
+		}
+		if tc.want && len(rec.tags) == 1 && (rec.tags[0][0] != pulled || rec.tags[0][1] != tc.cfgImage) {
+			t.Errorf("%q: tag %v", tc.cfgImage, rec.tags[0])
+		}
+	}
+	// An engine without ImageTag is fine (best effort).
+	retagFloating(context.Background(), &fakeContainerEngine{}, &container.InspectResponse{Config: &container.Config{Image: "ghcr.io/x/moorage:latest"}}, "ghcr.io/x/moorage", pulled)
+}

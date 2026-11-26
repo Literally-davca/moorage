@@ -133,8 +133,8 @@ func (h *Hub) enroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	id := newAgentID()
-	a, err := h.St.RedeemJoinToken(r.Context(), HashSecret(req.Secret), id, cleanHostname(req.Hostname))
+	hash := HashSecret(req.Secret)
+	a, err := h.St.RedeemJoinToken(r.Context(), hash, newAgentID(), cleanHostname(req.Hostname))
 	if errors.Is(err, store.ErrNotFound) {
 		h.Log.Warn("agent enrolment refused", "remote", r.RemoteAddr)
 		http.Error(w, "the join token is unknown, used or expired; create a new one on the hub", http.StatusForbidden)
@@ -145,10 +145,20 @@ func (h *Hub) enroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// A retry after a lost answer gets the same agent (and a new certificate for it).
+	id, retry := a.ID, a.Retried
 	der, err := h.CA.SignAgent(req.CSR, id)
 	if err != nil {
-		h.St.DeleteAgent(r.Context(), id) //nolint:errcheck
+		if !retry {
+			h.St.ReleaseJoinToken(r.Context(), hash, id) //nolint:errcheck
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if retry {
+		h.Log.Info("agent pairing retried", "agent", id, "name", a.Name, "remote", r.RemoteAddr)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(enrollResp{AgentID: id, Cert: der, CA: h.CA.Cert.Raw}) //nolint:errcheck
 		return
 	}
 	h.Log.Info("agent paired", "agent", id, "name", a.Name, "hostname", a.Hostname, "remote", r.RemoteAddr)
@@ -176,6 +186,10 @@ func (h *Hub) connect(w http.ResponseWriter, r *http.Request) {
 		h.Log.Warn("connection from removed agent refused", "agent", id, "remote", r.RemoteAddr)
 		http.Error(w, "this agent was removed from the hub; pair it again", http.StatusForbidden)
 		return
+	}
+	// The agent proved it holds its certificate: its join token can't be used again.
+	if err := h.St.ConfirmAgentPaired(r.Context(), id); err != nil {
+		h.Log.Warn("confirm pairing", "agent", id, "err", err)
 	}
 	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -215,7 +229,12 @@ func (h *Hub) connect(w http.ResponseWriter, r *http.Request) {
 	case <-sess.CloseChan():
 	case <-ctx.Done():
 	}
-	h.Reg.Detach(id, remote)
+	// A reconnect may have attached a new session for this agent already: then this old
+	// one is not the agent going away, and OnDisconnect (offline alerts) must not run.
+	if !h.Reg.Detach(id, remote) {
+		h.Log.Debug("old agent session ended after a reconnect", "agent", id)
+		return
+	}
 	h.St.TouchAgent(context.Background(), id, "", time.Now()) //nolint:errcheck
 	if h.OnDisconnect != nil {
 		h.OnDisconnect(id)

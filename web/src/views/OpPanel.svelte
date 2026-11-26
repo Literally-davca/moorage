@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { hostPath, wsURL, type Op } from '../lib/api';
+  import { CLOSE_SESSION_ENDED, hostPath, wsURL, type Op } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
 
   let { op, onDone, onClose }: { op: Op; onDone: (ok: boolean) => void; onClose: () => void } = $props();
@@ -26,6 +26,9 @@
     };
     ws.onerror = () => {
       if (!done) error = 'Lost the connection to the operation. It keeps running on the server.';
+    };
+    ws.onclose = (ev) => {
+      if (!done && ev.code === CLOSE_SESSION_ENDED) error = 'Session ended, sign in again. The operation keeps running on the server.';
     };
     return () => ws.close();
   });

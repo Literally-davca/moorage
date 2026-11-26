@@ -182,6 +182,9 @@ func run(mode string, log *slog.Logger) (func() error, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, w := range cfg.DirWarnings {
+		log.Warn("data folder", "problem", w)
+	}
 	// A freshly installed binary that keeps failing to come up (crash loop under systemd,
 	// where the watcher dies with the service) restores moorage.prev and execs it here.
 	startedAt := time.Now()

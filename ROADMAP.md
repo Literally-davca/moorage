@@ -13,7 +13,14 @@ Položky schválené k realizaci do jádra Moorage:
 |---|---|---|---|
 | **Hodinové agregace výsledků kontrol (1 rok)** | Dlouhodobý uptime bez růstu DB (M4 drží jen 30 dní surových dat). | Zbývá z M11 (`v1.0`). | agent |
 | **Podman podpora (dokončení a ověření)** | Ověřit rozpracovanou podporu z R8 proti reálnému Podmanu 4.9 / 5.x (rootful i rootless). | Částečně hotovo v R8. | uživatel + agent |
-| **Přehled obsazených portů (Port map)** | Přehled TCP/UDP portů na hostu a varování před kolizí před `up`. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
+| **Přehled obsazených portů (Port map)** | Přehled TCP/UDP portů na hostu a varování před kolizí před `up`. | Přesunuto z M15 do M17B (`PLAN.md`). | agent + uživatel |
+| **Bohatá oznámení (embedy, předvolby obsahu, odesílatel `<host> • Moorage <role>`)** | Přehlednější alerty a volba, kolik toho zpráva obsahuje. | Zařazeno do M17B (`PLAN.md`). | uživatel + agent |
+| **Bezpečnostní balík WebSocketů, CI pojistky a PSS Memory Gate** | Tiket pro terminál, ukončení živých spojení při revokaci, hlídání limitu 100 MB PSS v CI. | Zařazeno do M17A (`PLAN.md`). | agent (analýza konkurence) |
+| **Incidenty s časovou osou a Rollback & Verify** | Co se změnilo před výpadkem a ověřený návrat na funkční verzi. | Zařazeno do M18A (`PLAN.md`). | agent (analýza konkurence) |
+| **Passkeys, SBOM + cosign, threat model** | Pilíře důvěry před veřejným vydáním. | Zařazeno do M18B (`PLAN.md`). | agent (analýza konkurence) |
+| **Importéry (Portainer, Uptime Kuma, Gatus) a demo instance** | Snadný přechod od konkurence. | Zařazeno do M18C (`PLAN.md`). | agent (analýza konkurence) |
+| **Klíčová slova `@generate` / Coolify `SERVICE_*`, volné porty a recepty služeb** | Hesla, klíče a nekolizní porty se vygenerují při uložení do `.env`; linter podle image napoví, co služba potřebuje. | Zařazeno do M18E (`PLAN.md`). | uživatel + agent |
+| **Statický snapshot status stránky, oddělení logů v tunelu** | Status stránka přežije výpadek serveru; logy nebrzdí řídicí provoz. | Zařazeno do M18D (`PLAN.md`). | agent (analýza konkurence) |
 | **Prohlížeč a editor souborů stacku** | Úprava doprovodných souborů (`Caddyfile`, `nginx.conf`…) přímo ze stacku s git historií. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
 | **Hlídání volného disku a RAM hosta** | Včasné varování před zaplněním disku nebo paměti hosta. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
 | **Hromadné operace nad stacky (Bulk actions)** | Hromadný start, stop, restart a update vybraných stacků ve frontě. | Zařazeno do M15 (`PLAN.md`). | agent + uživatel |
@@ -42,7 +49,9 @@ Vestavěné (`builtin`) funkce a integrace mimo univerzální jádro, zapínatel
 | **Official template catalog (`official-templates`)** | Připojení repozitáře `Literally-davca/moorage-templates` s denní obnovou. | implementováno | uživatel + agent |
 | **Prometheus & Grafana metrics (`prometheus-grafana`)** | Export metrik na `/metrics` a hotový Grafana dashboard. | implementováno | uživatel + agent |
 | **Automatické povyšování tagů verzí** | Volitelné přepsání tagu v `compose.yaml` (patch/minor) v časovém okně s git commitem. | nápad | agent + uživatel |
-| **MCP server pro AI agenty** | Volitelné HTTP/SSE MCP rozhraní nad API tokeny pro vzdálenou správu, vytváření a zastavování stacků agenty (pro lokální agenty stačí CLI/soubory). | nápad | uživatel + agent |
+| **MCP server pro AI agenty (`mcp-server`)** | Volitelné HTTP/SSE MCP rozhraní nad API tokeny pro vzdálenou správu, vytváření a zastavování stacků agenty (pro lokální agenty stačí CLI/soubory). | implementováno (`addon_mcp.go`, ACL read/write) | uživatel + agent |
+| **Označení rolí v Discordu / Slacku při DOWN** | Volitelný ping `@role` jen u DOWN kritických kontrol (logy nikdy nikoho neoznačí). | nápad (po M17B) | agent |
+| **Wasm (`wazero`) sandbox pro uživatelské add-ony** | Vlastní notifikátory a sondy bez nafukování jádra a bez spouštění cizích procesů. | nápad (z analýzy konkurence) | agent |
 | **API tokeny a CLI `moorage` + TUI `moorage cli`** | Automatizace (CI nasadí stack, skript zjistí stav) přes Unix socket / token a interaktivní TUI layout; headless režim bez web portu. | zařazeno do `M16B` (`PLAN.md`) | uživatel + agent |
 | **Shell completions a multi-profil CLI (`~/.config/moorage/config.json`)** | Automatické doplňování pro bash/zsh/fish a přepínání více vzdálených hubů bez opakování `--url` a `--token`. | nápad (po M16B) | agent |
 | **Windows Named Pipe pro lokální CLI** | Lokální CLI připojení bez TCP portu i na Windows hostech (v M16B lokálně přes Unix socket na Linuxu/macOS, na Windows přes `--url` + token). | nápad (po M16B) | agent |

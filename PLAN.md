@@ -669,14 +669,12 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 
 ## M15 – Přehled hostů, soubory stacků, hromadné akce, VPN add-on a sidecary (návrh 2026-11-24, čeká na schválení)
 
-**Cíl:** Doplnit do jádra praktické nástroje pro každodenní správu hostů a stacků (porty, soubory, disk/RAM, hromadné operace), přidat volitelný add-on pro Tailscale/NetBird a rozšířit `moorage-addons` o `log-shipper` a `node-exporter`.
+**Cíl:** Doplnit do jádra praktické nástroje pro každodenní správu hostů a stacků (soubory, disk/RAM, hromadné operace; přehled portů přesunut do M17B), přidat volitelný add-on pro Tailscale/NetBird a rozšířit `moorage-addons` o `log-shipper` a `node-exporter`.
 
 > **[U] Architektonický princip:** Snažíme se **co nejméně zatěžovat jádro** (udržet nízkou paměť nadále hluboko pod limitem 100 MB PSS, malou binárku a nízké CPU). Věci pro užší skupinu uživatelů patří do **Add-ons** / **Sidecar add-ons**, a nové pohledy v jádru (porty, soubory, disk/RAM) čtou data **na vyžádání** nebo s lehkým intervalem bez zbytečných smyček na pozadí.
 
 ### 1. Jádro Moorage
-1. **Přehled obsazených portů (Port map):**
-   - **[A]** Nový endpoint `GET /api/hosts/{host}/ports` (a v UI karta/modal **Ports** na hostu + inline kontrola při ukládání/zakládání stacku), který čte publikované porty všech běžících i zastavených kontejnerů a porty deklarované v `compose.yaml` spravovaných stacků.
-   - **[A]** V editoru `compose.yaml` a při vytváření stacku (`NewStack`) upozornit varováním před kolizí hostitelského portu (`host_ip:port/proto`) ještě před `up`.
+1. **Přehled obsazených portů (Port map):** → **přesunuto do M17B (2026-11-26)**, protože se překrývá s kontrolou kolizí portů v linteru a se čtením nativních portů hosta. Specifikace je v M17 v sekci „Port map a kontrola kolize portů“.
 2. **Prohlížeč a editor souborů ve složce stacku (`Files` tab v `StackDetail`):**
    - **[A]** Nový tab **Files** vedle `Compose` / `Logs` / `History`: strom/seznam souborů uvnitř složky stacku (mimo `.git`), náhled a editace textových souborů (`Caddyfile`, `nginx.conf`, `prometheus.yml`, skripty…) s maximální velikostí souboru (např. 512 KiB) a detekcí binárek (ty jsou jen ke stažení/info, ne k editaci).
    - **[A]** Bezpečnost: striktní kontrola cesty (`filepath.Rel` + odmítnutí `..` a symlinků mířících mimo složku stacku); respektuje `readOnly` agenta; uložení/vytvoření/smazání souboru se zapíše jako verze do `history.git` (pokud nejde o velké/vyloučené datové soubory) a do auditu (`stack.file_save`, `stack.file_delete`).
@@ -690,6 +688,7 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 ### 2. Add-on: Tailscale / NetBird detekce a správa portů (`vpn-expose`)
 - **[U]** Volitelný vestavěný add-on v **Settings → Add-ons** (ve výchozím stavu vypnutý).
 - **Detekce:** Agent zjišťuje přítomnost síťového rozhraní `tailscale0` / `wt0` (NetBird) a jeho IPv4/IPv6 adresy (případně DNS jména z lokálního rozhraní, pokud je dostupné bez nutnosti privilegovaného socketu) a zobrazí je u hosta a u služeb stacku.
+  - **[A] (2026-11-26)** Detekci rozhraní a model adres hosta (`kind: vpn`) dodá už **M17B** (`engine/hostnet.go`, `host_addresses:<hostID>`). `vpn-expose` ji jen znovu použije a přidá akce nad `ports:`; vlastní detekci rozhraní nepíše.
 - **Snadné vystavení na jeden klik / omezení portů na VPN síť:**
   - **[U]** Základem je **čistá úprava `ports:` v `compose.yaml`** (přepnutí `PORT:PORT` ↔ `<vpn_ip>:PORT:PORT` nebo zrušení veřejného vystavení `0.0.0.0`, s git commitem a `up` – funguje stejně pro Tailscale i NetBird bez speciálních práv).
   - **[U]** Pokud je v kontejneru agenta dostupný `tailscaled.sock`, add-on navíc nabídne **Tailscale Serve** (HTTPS vystavení služby do tailnetu na jeden klik).
@@ -716,7 +715,7 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 - GitOps sync (pull z vlastního Git repozitáře) a správa přihlášení k privátním registrům → zůstávají v `ROADMAP.md` na další vlnu.
 
 ### Okrajové stavy
-- **Port map:** hostované kontejnery se sítí `network_mode: host` nemají mapování `Ports`, zobrazí se s poznámkou `host network`.
+- **Port map:** přesunuto do M17B (okrajové stavy tam).
 - **Files editor:** nikdy nezapisovat mimo `StacksDir/<stack>`; při souběžné úpravě mimo Moorage se před uložením provede `syncExternal` do `history.git`.
 - **VPN přepnutí portů:** pokud na hostu neběží Tailscale/NetBird (chybí IP rozhraní), tlačítko pro omezení na VPN zůstane neaktivní s vysvětlením.
 - **Bulk actions:** při selhání jednoho stacku pokračovat u dalších nebo zastavit podle volby, na konci ukázat souhrn úspěchů/chyb.
@@ -843,3 +842,243 @@ Uživatel chtěl všechny položky ROADMAP se stavem „líbí se“ hned. Děla
 ### Otevřené otázky
 - Žádné blokující otázky pro **Vlnu A**.
 - Pro **Vlnu B** při zahájení případně upřesníme preferované klávesové zkratky v TUI (`lazydocker` styl vs. vim `j/k` navigace – navrhneme obojí současně).
+
+---
+
+## M17 – Spolehlivost, bezpečnost, Host CLI, Zero-config Add-ons, Port map, Multi-IP URL a bohatá oznámení (návrh 2026-11-25, rozšířeno 2026-11-26)
+
+**Cíl:** Opravit nahlášené chyby v UI a provozu (Logs dropdown, přidání checku, výchozí `hideIgnored` v Dependencies, automatické složky v `/data`, webový terminál, falešný update `moorage` image, párování dalších hostů, nápověda k externím compose složkám a hostovské CLI), zpevnit bezpečnost WebSocketů a relací, hlídat paměťový limit v CI. Následně dotáhnout zero-config sidecar add-ony s automatickou aktualizací na `:latest`, přehled obsazených portů s kontrolou kolizí v linteru (převzato z M15), multi-IP adresy hosta (Ethernet / Wi-Fi / VPN) pro odkazy na služby a bohatá oznámení (embedy, předvolby obsahu, odesílatel `<host> • Moorage <role>` s logem Moorage).
+
+### Hlavní uživatelské toky
+1. **Vlna A (Opravy UI, stability, `/data`, terminálu, image updatů, párování hostů a Host CLI):**
+   Uživatel otevře `Logs` → dropdown `All host containers` bez překrývajících se řádků; v `Monitoring` bez chyby přidá nový check; v `Dependencies` má automaticky skryté ignorované hrany. Moorage si při startu sám vytvoří `/data/templates` i ostatní datové podsložky, po self-updatu nehlásí falešnou aktualizaci image `:latest`, spolehlivě připojí další hosty i při opakovaném párování, přes reverse proxy otevře webový terminál (nebo ukáže jasný důvod, proč nejde), u externích stacků mimo bind-mount napoví přesnou cestu k připojení a z terminálu hosta spustí `moorage` příkazy jednorázovým instalačním skriptem. Terminál se otevírá přes jednorázový tiket, odhlášení nebo změna hesla okamžitě ukončí otevřená živá spojení a CI hlídá, že Moorage nepřekročí 100 MB PSS.
+2. **Vlna B (Zero-config Add-ons, Port map, Multi-IP URL a bohatá oznámení):**
+   Uživatel klikne na sidecar add-on a rovnou ho spustí bez ručního vyplňování cest nebo `.env` — stack `add-ons` má automaticky zapnuté aktualizace (`policy=auto`) a používá `:latest` bez zbytečných varování linteru; built-in addony se aktualizují automaticky s Moorage. Na hostu otevře přehled **Ports** se všemi obsazenými porty a linter již při psaní `compose.yaml` upozorní na kolizi publikovaných portů proti ostatním stackům, standalone kontejnerům i nativním portům hosta. U každého hosta lze mít více pojmenovaných adres (Ethernet, Wi-Fi, VPN) s volbou výchozí adresy pro hlavní odkaz služby a rychlým výběrem ostatních adres. Alert v Discordu přijde jako přehledný embed od odesílatele `nas • Moorage agent` s logem Moorage a u každého kanálu jde zvolit, kolik toho zpráva obsahuje (Minimal / Standard / Detailed / Custom).
+
+### Rozdělení na vlny realizace
+- **M17A (Vlna A – Hotovo 2026-11-26, necommitováno):** všech 12 bodů níže implementováno; ověřeno `go test ./...` (na Windows jen stejné platformní chyby jako čistý `HEAD`), `svelte-check`, `vite build`, `{@html}` pojistka (bash i PowerShell). PSS gate na Windows nejde spustit (hlásí technickou chybu, exit 2), poběží v CI na Linux runneru. Ruční ověření v prohlížeči / na reálných hostech zbývá (párování, terminál za reverse proxy, Logs dropdown, přidání checku).
+- **M17A (Vlna A – Opravy, stabilita, bezpečnost & Host CLI):** `MultiSelect.svelte` + `LogViewer.svelte` dropdown, `StatusCodes.svelte` + `checks.ts` + `CheckForm.svelte` (blank page fix), `DepsView.svelte` (`hideIgnored = true`), automatické vytváření `/data/*` složek (`config.go`, `templates/service.go`, `TemplatesView.svelte`), oprava webového terminálu (`api/terminal.go`, `host_terminal.go`, `TerminalPanel.svelte`), oprava false update u self-updated image (`selfupdate/container.go`, `engine/images.go`), spolehlivé párování hostů (`tunnel/agent.go`, `tunnel/hub.go`, `store/agents.go`, `HostsView.svelte`), `<SetupHint>` pro externí compose složky (`StackDetail.svelte`), Host CLI (`Dockerfile` `/usr/local/bin/moorage` symlink, `scripts/install-cli.sh`, `docs/cli.md`, `README.md`, `AccountView.svelte`), bezpečnostní balík WebSocketů a relací (tiket pro terminál, ukončení živých spojení při revokaci, regresní testy cookies/CSP/Origin), CI pojistka proti `{@html}`, CI PSS Memory Gate.
+- **M17B (Vlna B – Add-ons, Port map, Multi-IP URL & oznámení):** Auto-update pro `add-ons` + potlačení `latest-tag` + zero-config instalace v `Moorage` i `moorage-addons` (výchozí cíl záloh `/data/backups`), Port map převzatá z M15 (`GET /api/hosts/{host}/ports` + karta **Ports**), zachování `HostIP` v portech kontejnerů + standalone/host port kolize už při živé editaci v linteru, multi-IP adresy hosta (`net.Interfaces()` pro nativní/host-network běh + ruční pojmenované adresy v `HostsView`) a víceadresové odkazy na služby, bohatá oznámení (embedy, předvolby obsahu, identita odesílatele s logem Moorage).
+
+---
+
+### Rozhodnutí
+
+#### Uživatelská rozhodnutí `[U]`
+- **[U] Automatické vytváření složek v `/data` (Vlna A):** `internal/config/config.go` (`FromEnv`) automaticky vytvoří nejen `DataDir` a `StacksDir`, ale i `TemplatesDir` (a případné další interní podsložky v `/data`) pomocí `os.MkdirAll(..., 0o750)`. Prázdná složka `/data/templates` je normální stav bez chybového nebo varovného banneru.
+- **[U] Používání `moorage` CLI na hostu mimo kontejner (Vlna A):**
+  1. V `Dockerfile` doplnit symlink `/usr/local/bin/moorage -> /moorage` (a `PATH`), aby fungovalo `docker exec -it moorage moorage ...`.
+  2. Přidat lehký instalační skript `scripts/install-cli.sh` + návod v `docs/cli.md`, `README.md` a in-app nápovědu v `AccountView` pro dva režimy:
+     - **Docker wrapper** (`/usr/local/bin/moorage` delegující na `docker exec` s automatickou detekcí TTY `-it` vs. neinteraktivní stdin — funguje ihned bez bind-mountu socketu a bez API tokenu na lokálním hostu),
+     - **Nativní binárka** z GitHub Releases (připojení přes bind-mountovaný `/data/moorage.sock` nebo vzdáleně přes `MOORAGE_URL` + `MOORAGE_TOKEN`).
+- **[U] Externí compose složky bez přístupu (`MOORAGE_MANAGE_EXTERNAL`) (Vlna A):** Moorage respektuje sandbox kontejneru a nedovolí upravovat compose soubory ze složky, ke které nemá v kontejneru přístup. Pokud je `MOORAGE_MANAGE_EXTERNAL=true` a projekt zůstane na Level 1 (read-only Docker API akce), zobrazí `StackDetail.svelte` srozumitelný `<SetupHint>` s konkrétní `working_dir` cestou z labelu a zkopírovatelným bind-mount řádkem (`- <working_dir>:<working_dir>`) pro `compose.yaml` Moorage.
+- **[U] Add-ons: auto-update, `:latest` a zero-config sidecary (Vlna B):**
+  - Built-in addony jsou součástí binárky Moorage a aktualizují se automaticky s ní (v UI bez matoucího ručního verzování).
+  - Při prvním vytvoření stacku `add-ons` se mu automaticky nastaví update policy na `auto` (`store.PolicyAuto`) s možností přepnout na `notify` v UI. Oficiální katalogové sidecary používají tag `:latest` a linter pro stack `add-ons` potlačí informační tip `latest-tag`.
+  - Zero-config instalace: `installAddon` automaticky předvyplní host-specifické proměnné do `add-ons/.env` (`MOORAGE_STACKS_DIR`, `TZ`, výchozí `HOST_IP`, výchozí lokální volumes/porty) a šablony v `moorage-addons` (`restic-backup`, `trivy-scanner` a další) budou mít rozumné funkční výchozí nastavení ihned po přidání a spuštění (pokročilé cíle jako S3/B2 zůstanou volitelným rozšířením).
+  - **(2026-11-26)** Výchozí lokální cíl záloh `restic-backup` je podsložka **`/data/backups`** (na hostu ve stejném bind-mountu jako ostatní data Moorage, takže je vidět a jde snadno zkopírovat jinam). Moorage ji vytváří spolu s ostatními podsložkami v `/data`. Named volume zůstává jako volba v `.env`.
+- **[U] Detekce síťových rozhraní, hostovských portů a více adres hosta (Vlna B):**
+  - Automatická detekce rozhraní hosta (`net.Interfaces()`) a nativních naslouchajících portů (`/proc/net/{tcp,tcp6,udp,udp6}`) běží tehdy, když Moorage nebo agent běží jako nativní binárka nebo v `network_mode: host`.
+  - Pro standardní Docker bridge kontejner je v `HostsView.svelte` k dispozici ruční správa pojmenovaných adres hosta (Ethernet / Wi-Fi / VPN / doména / vlastní) s označením jedné výchozí adresy.
+- **[U] Překryv s M15 (2026-11-26):** Přehled obsazených portů (Port map) se přesouvá z M15 do M17B, protože sdílí zdroje dat s kontrolou kolizí v linteru. Detekce VPN rozhraní pro `vpn-expose` (M15) znovu použije model adres hosta z M17B.
+- **[U] Bezpečnostní balík, CI pojistky a PSS gate do M17A (2026-11-26):** Převzato z doporučení po analýze konkurence. Konkrétní podoba je v architektonických rozhodnutích níže.
+- **[U] Platformní digesty pro falešný update (Vlna A, 2026-11-26):** Docker `DistributionInspect` vrací v `Platforms` jen os/arch bez digestů, proto Moorage při neshodě s index digestem jednou (cache podle index digestu) stáhne z registru image index a přijme shodu s kterýmkoli platformním manifestem; selhání registru = dnešní srovnání (bezpečný fallback).
+- **[U] Bohatá oznámení (Vlna B, 2026-11-26):**
+  - **Odesílatel = dotčený host + jeho role:** jméno webhooku je `<host> • Moorage agent` (událost na hostu s agentem), `<host> • Moorage hub` (událost na hostu hubu nebo událost celého hubu) a `<agent> • Moorage watchdog` (watchdog hlásí výpadek hubu). Jméno hosta je jeho název v Moorage (výchozí = hostname).
+  - **Ikona = jen logo Moorage**, ve variantách hub / agent / watchdog. Ikony jednotlivých služeb se nepoužívají.
+  - **Čtyři předvolby obsahu na každém kanálu:** Minimal / Standard / Detailed / **Custom**. Custom odemkne přepínače jednotlivých částí zprávy. Texty zůstávají pevně v kódu (žádné uživatelské šablony).
+  - **Embed tam, kde to služba umí**, s volbou „prostý text“ u kanálu.
+
+#### Architektonická rozhodnutí a opravy `[A]`
+- **[A] Logs dropdown (`MultiSelect.svelte` + `LogViewer.svelte`) (Vlna A):** Přepnout `.opts` z `display: grid` na `display: flex; flex-direction: column; gap: 1px;` (opraví kolaps výšky řádků v Chromiu při zalamování textu), dát `.opt` `flex-shrink: 0` a dvousloupcový layout (checkbox vlevo, `label` + `meta` v pravém sloupci) a povolit širší rozbalovací panel (`min-width: 280px; width: max-content; max-width: min(420px, calc(100vw - 32px))`).
+- **[A] Prázdná stránka při přidání checku (`StatusCodes.svelte`, `checks.ts`, `CheckForm.svelte`) (Vlna A):** Odebrat výchozí hodnotu z `$bindable()` v `StatusCodes.svelte` (`value = $bindable()`), aby Svelte 5 nevyhazoval fatální chybu `props_invalid_value` při `bind:value={undefined}`, a navíc inicializovat `status: ''` v `emptyCheck()`, `toInput()` i `setKind()`.
+- **[A] Dependencies výchozí filtr (Vlna A):** Změnit výchozí hodnotu `hideIgnored` v `DepsView.svelte` na `$state(true)`.
+- **[A] Webový terminál – spolehlivost a diagnostika (Vlna A):**
+  - V `internal/api/terminal.go` při `websocket.Accept` korektně ověřovat `Origin` i za reverse proxy (`X-Forwarded-Host` / povolené původy bez oslabení ochrany proti cross-site WebSocket hijacking). **Výchozí kontrola knihovny `coder/websocket` (Origin host == `Host`) zůstává.** Navíc se povolí jen host z `MOORAGE_PUBLIC_URL`; `X-Forwarded-Host` se bere v úvahu jen od důvěryhodné proxy (stejné pravidlo jako u forward-auth). Nikdy ne `InsecureSkipVerify` ani `*`.
+  - V `TerminalPanel.svelte` zobrazovat přesný důvod selhání spojení (zámek `MOORAGE_TERMINAL` / `MOORAGE_HOST_TERMINAL`, `MOORAGE_READ_ONLY`, ochrana vlastního kontejneru `ErrSelfStack`, proxy `403`, chybějící `/bin/sh` ve `scratch`/`distroless` image).
+  - V `internal/engine/host_terminal.go` odebrat slepé `AutoRemove: true` u helper kontejneru a před jeho explicitním smazáním přečíst exit code / stderr, aby se neztrácela skutečná příčina pádu.
+  - Opravit periodickou kontrolu session v `serveTerminalSession`, aby nerozpojovala forward-auth relace bez cookie.
+- **[A] Falešná aktualizace u `moorage` image (Vlna A):**
+  - Po úspěšném self-updatu v `internal/selfupdate/container.go` aktualizovat/re-tagnout lokální tag nebo vyhodnocovat stav přímo proti běžícímu kontejneru (`Container.ImageID` / `RepoDigests` běžícího image).
+  - V `internal/engine/images.go` (`InspectRemote` a `hasMatchingDigest`) porovnávat vedle manifest list / OCI index digestu také dílčí platform-specific digesty z `res.Platforms`, aby image pullnutý přes `@sha256:<platform-digest>` nevykazoval falešnou aktualizaci vůči multi-arch `:latest`.
+- **[A] Spolehlivé přidávání dalších hostů (Vlna A):**
+  - `agent.enroll()` v `internal/tunnel/agent.go` dostane retry smyčku s exponenciálním backoffem místo okamžitého ukončení procesu při přechodné chybě sítě/DNS/TLS.
+  - `RedeemJoinToken` v `internal/store/agents.go` a `hub.go` zajistí bezpečnější párování (token s krátkou tolerancí opakovaného pokusu do prvního navázání mTLS spojení nebo jasné oddělení stavu `pending` / `paired`), aby výpadek odpovědi nenechal v DB mrtvý záznam se spáleným tokenem.
+  - Pokud má agent v named volume starý `agent.crt` (odstraněný z hubu nebo z jiného hubu), ale má nastavený nový `MOORAGE_JOIN_TOKEN`, při `403` automaticky přepíše certifikát novým párováním.
+  - Sanitizovat `MOORAGE_HUB` (ořez mezer, odstranění zdvojeného `https://` / `wss://` a koncového `/`), opravit reconnect race v `hub.go` (nevolat `OnDisconnect(id)`, pokud se mezitím připojila nová session), a v `HostsView.svelte` zobrazit seznam čekajících join tokenů s možností zrušení i upozornění na publikaci portu `5081` / proxy adresu.
+- **[A] Bezpečnostní balík WebSocketů a relací (Vlna A, 2026-11-26):** Navazuje na úpravy terminálu; vychází z poučení z CVE konkurence (CSWSH u Dozzle a Nginx-UI).
+  - **Jednorázový tiket pro terminál:** `POST /api/terminal/ticket` (běžné autentizované API volání, takže funguje s cookie, OIDC i forward-auth) vrátí náhodný tiket platný 30 s, použitelný jednou a vázaný na uživatele, relaci a cíl (kontejner / host). Upgrade `/api/.../terminal` vyžaduje `?ticket=` **a** projde kontrolou `Origin`. Tím odpadá i problém periodické kontroly cookie u forward-auth relací: po otevření se relace ověřuje přes uloženého uživatele (zda nebyl odebrán / degradován na viewer), ne přes cookie.
+  - **Ukončení živých spojení při revokaci:** registr otevřených WebSocketů (`/api/ws` události, logy, terminál, host terminál) podle relace a uživatele. Změna hesla, odhlášení, odebrání uživatele, změna role na `viewer`, revokace API tokenu nebo relace v UI okamžitě zavře dotčená spojení (close kód `4401`, UI ukáže „Session ended, sign in again“).
+  - **Regresní testy místo přepisu:** session cookie už je `HttpOnly; SameSite=Strict; Secure` (za HTTPS) a CSP už existuje (`api.go`). Přidají se testy, které tyto hlavičky a kontrolu `Origin` u všech `websocket.Accept` v `internal/api` hlídají, aby je budoucí změna potichu neoslabila. OIDC state cookie (`users.go`) zůstává `Lax` kvůli redirectu z IdP.
+- **[A] Upřesnění při implementaci Vlny A (2026-11-26):**
+  - Origin: host z efektivní veřejné URL (`MOORAGE_PUBLIC_URL` nebo hodnota ze Settings), `X-Forwarded-Host` jen od `MOORAGE_TRUSTED_PROXIES` (forward-auth pravidlo); všechny upgrady v `internal/api` jdou přes `acceptWS` (`api/wslive.go`), hlídá test.
+  - Terminálový upgrade se přihlašuje jen tiketem (cookie samotná ho neotevře), neplatný tiket = `401` před upgradem; `POST /api/terminal/ticket` zároveň předem ověří host (neznámý / offline jako běžná HTTP chyba).
+  - Revokace: po každé úspěšné revokující akci (odhlášení, heslo, TOTP, role, zakázání/smazání uživatele, relace, API token, dokončený reset) se všechna živá spojení znovu ověří proti DB a neplatná zavřou `4401`; běžící terminál navíc dál periodicky (bez cookie, přes uložené přihlášení).
+  - `/data`: vytváří se `templates` a `backups` (`Config.BackupsDir`); selhání podsložky je varování v logu, ne pád startu.
+  - Párování: `join_tokens` + `agent_id`, `redeemed_at` (aditivní migrace); opakovaný pokus týmž tokenem do 15 min, dokud se agent poprvé nepřipojí, pak se token smaže; nové `GET` / `DELETE /api/agents/join-tokens`; zrušení smaže i nikdy nepřipojeného agenta. `MOORAGE_HUB` bez portu dostane `:5081`. Re-pair i při tokenu pro jiný hub (jiný CA otisk než uložený `ca.crt`).
+  - Self-update přetaguje jen plovoucí tag (`latest`, `stable` …) stejného repozitáře, nikdy verzi; kontrola updatu bere v úvahu i image běžícího kontejneru.
+  - Host shell helper už není `AutoRemove`; před dalším startem se uklidí skončené helpery (`moorage.role=host-shell`, `exited`).
+  - Host CLI: výchozí `compose.yaml` nemá `container_name`, proto návody používají `docker compose exec moorage moorage …` a wrapper hledá kontejner podle compose služby `moorage`.
+  - PSS gate běží i v `release.yml` (build job) a výsledek jde do release notes (sekce Memory); MB = MiB.
+- **[A] CI pojistka proti `{@html}` (Vlna A):** Krok v `.github/workflows/ci.yml` (a `scripts/dev/check.*`) selže, pokud se `{@html` objeví v jiném souboru než `web/src/lib/Icon.svelte` (statické SVG ikony). Text z kontejnerů, logů a labelů se vždy vykresluje jako text.
+- **[A] CI PSS Memory Gate (Vlna A):** Nový CI job spustí Moorage nad testovacím Docker daemonem se simulovanou zátěží (např. 15 fake agentů přes tunel, 100 kontrol, aktivní log stream do 2 klientů), po ustálení přečte `/proc/<pid>/smaps_rollup` a selže nad **100 MB PSS** (varování nad 80 MB). Naměřená hodnota se zapíše do souhrnu jobu a k release notes. Měřicí skript v `scripts/dev/pss-gate.sh`, zátěž v `internal/...` jako `go test -tags pssgate`.
+- **[A] Port map a kontrola kolize portů (Vlna B; Port map převzata z M15):**
+  - Nový endpoint `GET /api/hosts/{host}/ports` a v UI karta/modal **Ports** na hostu. Jeden sdílený sběr dat (`engine/ports.go`) vrací publikované porty všech běžících i zastavených kontejnerů (stacky i standalone, s `HostIP`), porty deklarované v `compose.yaml` spravovaných stacků (i zastavených) a nativní porty hosta z `/proc/net/*` (jen v host-network / nativním režimu). Každá položka nese zdroj (`stack`, `container`, `compose`, `host`), protokol, bind IP a stav. Data se čtou na vyžádání, bez smyčky na pozadí (princip M15).
+  - Stejný sběr používá linter (`port-taken`), takže přehled a varování nikdy neukazují rozdílné výsledky.
+  - V editoru `compose.yaml` i při vytváření stacku (`NewStack`) se kolize (`host_ip:port/proto`) ukáže ještě před `up`.
+  - V `internal/engine/containers.go` (`toContainer()`) přestat zahazovat `p.IP` z Docker `PortSummary` (zachovat bind IP např. `127.0.0.1:8080:80/tcp`).
+  - V `internal/api/lint.go` (`runningPorts`) zahrnout i standalone kontejnery (ne jen compose stacky) a při běhu mimo bridge / s host netns načíst i nativní porty z `/proc/net/{tcp,tcp6,udp,udp6}`.
+  - Spouštět `port-taken` kontrolu už při živé validaci v `ComposeEditor.svelte` (`deploy=false`), nejen při kliknutí na Deploy.
+- **[A] Multi-IP adresy hosta a získávání URL (Vlna B):**
+  - Rozšířit model sítě hosta o seznam adres `{id, label, kind: ethernet|wifi|vpn|domain|custom, address, isDefault, autoDetected}` při plném zachování zpětné kompatibility s `MOORAGE_HOST_IP` a `host_ip:<hostID>`.
+  - Při automatické detekci filtrovat loopback (`127.0.0.0/8`, `::1`), link-local i virtuální Docker rozhraní (`docker0`, `br-*`, `veth*`) a klasifikovat `eth*/en*` (Ethernet), `wl*` (Wi-Fi), `tailscale*/wg*/wt*/tun*` (VPN).
+  - V `hostPortURLs` (`internal/api/settings.go`) generovat primární URL s výchozí adresou hosta a přikládat alternativní URL pro ostatní adresy hosta (UI nabídne výchozí odkaz na klik a rozbalovací/popover seznam ostatních adres). Zachování `HostIP` v portech zároveň zprovozní přeskočení `127.0.0.1` portů.
+- **[A] Bohatá oznámení (Vlna B):**
+  - **Strukturovaná zpráva:** `notify.Message` dostane strukturované části vedle dnešních `Title`/`Text`: `Event` (checks / auto_update / rollback / deploy_failed / agents / watchdog / test), `Sender {Host, Role: hub|agent|watchdog}`, `Stack`, `Host`, `Cause`, `Duration`, `Since`, `Logs`, `Image {From, To}`, `CheckDetails` (kód, latence, hlasy agentů) a `URL`. Skládání zpráv v `monitor.compose`, `updater`, `tunnel/watchdog` a `api/events` je plní; `Text` zůstává pro prostý text a zpětnou kompatibilitu.
+  - **Předvolby (`Config.Preset`, `Config.Include`):**
+    - **Minimal:** stav, název, host, odkaz. Vhodné pro Pushover / telefon.
+    - **Standard (výchozí, odpovídá dnešnímu obsahu):** + stack, příčina, trvání, posledních 20 řádků logů.
+    - **Detailed:** + změna image (digest / tag), detaily kontroly (HTTP kód, latence, hlasy agentů), čas začátku a konce.
+    - **Custom:** přepínače `host`, `stack`, `cause`, `duration`, `logs`, `image`, `checkDetails`, `link`, `timestamps`. Stav a název jsou vždy zapnuté.
+    - Existující kanály dostanou `Standard`, takže se jim obsah nezmění.
+  - **Formát (`Config.Format: rich | plain`, výchozí `rich`)** a co který kanál umí:
+
+    | Kanál | Embed / formátování | Jméno odesílatele | Ikona |
+    |---|---|---|---|
+    | Discord | `embeds` (barva podle stavu, pole, patička, timestamp, logy v code blocku) | `username` | `avatar_url` |
+    | Slack | `attachments` s poli a barvou (Block Kit) | jen legacy webhooky (nové Slack apps přepsání ignorují) | jen legacy webhooky |
+    | Telegram | `parse_mode: HTML` s escapováním, tlačítko s odkazem | ne (jméno bota); host tučně na prvním řádku | ne |
+    | Matrix | `formatted_body` (escapované HTML) + `body` | ne (účet bota); host na prvním řádku | ne |
+    | Gotify | Markdown (`client::display`), `client::notification.click.url` | ne (jméno aplikace) | ne |
+    | ntfy | `Markdown: yes`, `Click`, akce „Open“ | v titulku | `Icon` |
+    | Pushover | `html=1` s escapováním, `url_title` | v titulku | ne |
+    | E-mail | `multipart/alternative` text + escapované HTML | zobrazované jméno v `From` (`nas • Moorage agent <alerts@…>`) | ne |
+    | Webhook (generic) | JSON se strukturovanými poli | pole `sender` | pole `sender.iconUrl` |
+
+    Generický webhook jen **přidává** pole (`sender`, `preset`, `fields`, `event`), stávající klíče zůstávají kvůli existujícím automatizacím.
+  - **Logo Moorage:** PNG 256×256 ve třech variantách (`hub`, `agent`, `watchdog`) v repozitáři Moorage (`docs/assets/notify/`). Výchozí URL míří na veřejný GitHub raw / jsDelivr; v **Settings → Notifications** jde přepsat vlastní základní URL (např. vlastní hosting nebo po rebrandingu). Discord neumí SVG, proto PNG.
+  - **Bezpečnost obsahu:** všechen text z kontejnerů, logů a labelů se escapuje podle cílového formátu (Discord Markdown, HTML pro Telegram / Matrix / Pushover / e-mail, Markdown pro Gotify / ntfy). `allowed_mentions` v Discordu zůstává prázdné, takže logy nikdy nikoho neoznačí. Uživatelské šablony se nezavádějí (zachovává rozhodnutí v `notify.go`).
+  - **Limity:** ořez podle limitů služby (Discord: popis 4096, pole 1024, celkem 6000 znaků, max. 25 polí; `username` max. 80 znaků a nesmí obsahovat „discord“ ani „clyde“, proto se jméno hosta sanitizuje; Telegram 4096; Slack pole 2000).
+  - **UI (`NotificationsView.svelte`):** u kanálu výběr předvolby (segmentový přepínač), při Custom přepínače částí, přepínač Rich / Plain (jen u kanálů, které embed umí) a **náhled** zprávy pro daný kanál. „Send test“ pošle testovací zprávu ve zvoleném formátu a předvolbě jako `<hub> • Moorage hub`.
+
+---
+
+### Okrajové stavy
+- **Bridge kontejner vs. host rozhraní a porty:** Pokud Moorage/agent běží v izolovaném Docker bridge kontejneru, UI u automatické detekce adres a nativních `/proc/net` portů jasně uvede, že v bridge režimu vidí jen Docker porty a ručně zadané adresy (s odkazem na `network_mode: host` jako volitelnou možnost).
+- **Chybějící práva nebo Read-only `/data`:** Pokud uživatel namountuje `/data/templates` jako `:ro`, startup nezhavaruje na `os.MkdirAll` pokud složka už existuje (a při reálné chybě zápisu vypíše jasnou diagnostiku).
+- **Multi-arch `:latest` a vlastní registry:** Pokud soukromý registr nevrací platformní digesty nebo má rate-limit, `hasMatchingDigest` nesmí falešně hlásit chybu ani spadnout — zachová stávající bezpečný fallback.
+- **Zero-config sidecar bez přístupu ke stacks složce:** Pokud `restic-backup` dostane výchozí cestu ze `MOORAGE_STACKS_DIR`, na agentovi v kontejneru může být cesta jiná na hostu vs. uvnitř kontejneru — `installAddon` předvyplní hostovskou cestu z mountu nebo bezpečný named volume pro data záloh.
+- **Změna výchozí adresy hosta:** Změna výchozí adresy v `HostsView` okamžitě přepočítá primární URL stacků bez zásahu do `compose.yaml` (explicitní `moorage.url` labely a proxy URL mají vždy přednost podle stávajících pravidel).
+- **Port map – host network:** kontejnery s `network_mode: host` nemají mapování `Ports`; zobrazí se s poznámkou `host network` (a jejich porty jsou vidět jen přes `/proc/net` v host-network režimu Moorage).
+- **Port map – zastavený stack:** porty z `compose.yaml` zastaveného stacku se ukazují jako „reserved (stopped)“, linter u nich hlásí varování, ne chybu.
+- **Terminálový tiket:** vypršelý nebo už použitý tiket → upgrade odmítnut s `401`; `TerminalPanel` si automaticky vyžádá nový jednou, při druhém selhání ukáže důvod. Otevření terminálu ve dvou panelech = dva různé tikety.
+- **Revokace během práce v terminálu:** spojení se zavře, výstup zůstane na obrazovce, panel ukáže „Session ended“ a nabídne přihlášení.
+- **PSS gate na CI runneru bez Dockeru / jiném jádře:** job se spouští jen na Linux runneru s Dockerem; když měření selže technicky (ne překročením), job skončí chybou s jasnou hláškou, nepovažuje se za „prošlo“.
+- **Oznámení o více hostech najednou** (seskupené „DOWN: 3 checks“ přes různé hosty, výpadek více agentů): odesílatel je `<hub> • Moorage hub`, hosté jsou v polích embedu.
+- **Watchdog z agenta:** agent nemá nastavení předvoleb z hubu, pokud hub nikdy nebyl dostupný. Předvolba a formát kanálu se replikují do `watchdog.json` spolu s konfigurací kanálu; starý `watchdog.json` bez nich = `Standard` + `rich`.
+- **Logo nedostupné** (soukromý repozitář, výpadek CDN, vlastní URL špatně): Discord zobrazí výchozí avatar, zpráva se doručí. Moorage URL loga neověřuje při každém odeslání.
+- **Kanál neumí rich formát** (Pushover bez HTML, starý Gotify klient): přepínač Rich / Plain se u něj nezobrazí nebo se automaticky použije prostý text.
+- **Embed přesáhne limit** (hodně skupinových alertů, dlouhé logy): nejdřív se zkracují logy, pak počet polí („…and 12 more“), zpráva se nikdy neodmítne kvůli délce.
+
+---
+
+### Databázové migrace, API a pořadí vydání
+
+1. **Vlna A (Opravy, `/data`, terminál, image updater, párování hostů, Host CLI):**
+   - **DB migrace:** Žádná nebo minimální aditivní úprava `join_tokens` (stav/tolerance opakovaného doručení certifikátu při ztrátě odpovědi).
+   - **Backend / Docker / Skripty:** `config.go`, `templates/service.go`, `api/terminal.go` (+ `POST /api/terminal/ticket`), `api/ws.go` (registr živých spojení), `api/users.go` / `api/api.go` (revokace → zavření spojení), `engine/host_terminal.go`, `selfupdate/container.go`, `engine/images.go`, `tunnel/agent.go`, `tunnel/hub.go`, `store/agents.go`, `Dockerfile`, `scripts/install-cli.sh`, `scripts/dev/pss-gate.sh`, `.github/workflows/ci.yml` (`{@html}` pojistka, PSS gate).
+   - **Frontend & Docs:** `MultiSelect.svelte`, `LogViewer.svelte`, `StatusCodes.svelte`, `checks.ts`, `CheckForm.svelte`, `DepsView.svelte`, `TemplatesView.svelte`, `TerminalPanel.svelte`, `HostsView.svelte`, `StackDetail.svelte`, `AccountView.svelte`, `docs/cli.md`, `README.md`.
+   - **Ověření A:** `go test ./...` (včetně testů tiketu, revokace a hlaviček cookies/CSP/Origin), `svelte-check`, `vite build`, zelený PSS gate, kontrola v prohlížeči a manuální ověření párování, terminálu (i za reverse proxy), `Logs` dropdownu a přidání checku.
+2. **Vlna B (Add-ons, Linter portů, Multi-IP URL):**
+   - **DB migrace (aditivní):** Rozšíření nastavení sítě hosta v `app_settings` (`host_addresses:<hostID>` JSON se zpětným fallbackem na `host_ip:<hostID>`), případně pomocný flag pro první inicializaci `add-ons` stacku s `policy=auto`.
+   - **Oznámení:** bez DB migrace – `preset`, `include` a `format` jsou nová volitelná pole v existujícím JSON konfiguraci kanálu (chybějící = `standard` + `rich`).
+   - **Backend & `moorage-addons`:** `api/addons.go`, `lint/lint.go`, `api/lint.go`, `engine/containers.go`, `engine/ports.go` (sdílený sběr portů) + `GET /api/hosts/{host}/ports`, `engine/hostnet.go` (`net.Interfaces` + `/proc/net` čtečka), `api/settings.go`, `notify/notify.go` (+ rozdělení na `notify/render_*.go` podle kanálu), `monitor/monitor.go`, `updater/updater.go`, `tunnel/watchdog.go`, `api/events.go`, `docs/assets/notify/*.png`, aktualizace `moorage-addons/*` (`restic-backup` → `/data/backups`).
+   - **Frontend:** `AddonsView.svelte`, `ComposeEditor.svelte`, `HostsView.svelte` (+ karta **Ports**), `NewStack`, `Home.svelte`, `StackDetail.svelte`, `CommandPalette.svelte`, `NotificationsView.svelte` (předvolby, formát, náhled).
+   - **Ověření B:** Unit testy pro multi-arch `hasMatchingDigest`, `port-taken` (s IP overlapem i `/proc/net` parserem), sdílený sběr portů, `net.Interfaces` klasifikaci a `hostPortURLs`; golden testy JSON / HTML výstupu každého kanálu pro všechny 4 předvolby, escapování (log s `@everyone`, `<script>`, Markdown znaky) a ořez limitů; `go test ./...`, `svelte-check`, `vite build`; ruční test do skutečného Discordu, Telegramu a ntfy.
+
+---
+
+### Mimo rozsah (odloženo do `ROADMAP.md`)
+- Automatické zakládání S3/B2/WebDAV vzdálených repozitářů mimo lokální zero-config defaulty v `restic-backup` (zůstává jako volitelná konfigurace).
+- Rozsáhlé přepínání bind portů existujících stacků na VPN rozhraní na jeden klik (řešeno samostatně v M15 `vpn-expose`).
+- Ikony jednotlivých služeb v oznámeních (rozhodnuto: jen logo Moorage).
+- Uživatelské šablony textu oznámení (pevné texty v kódu zůstávají kvůli bezpečnosti).
+- Označování rolí / uživatelů (`@role`) v Discordu při DOWN → `ROADMAP.md`.
+- Strategické směry z analýzy konkurence (Rollback & Verify, statický status, importéry, Passkeys/SBOM, transport) → **M18**.
+
+### Otevřené otázky
+- Žádné blokující otázky pro **Vlnu A** ani **Vlnu B**.
+
+---
+
+## M18 – Incidenty s Rollback & Verify, důvěra, migrace z konkurence a odolnost status stránky (návrh 2026-11-26, čeká na detailní návrh)
+
+**Cíl:** Proměnit to, že Moorage vlastní řízení stacků, logy, aktualizace i externí sondy v jednom uzlu, ve funkce, které poskládaná sada nástrojů (Arcane / Dockhand + Dozzle + Uptime Kuma) neumí. K tomu doplnit pilíře důvěry pro veřejné vydání a usnadnit přechod z Portaineru, Dockge a Uptime Kumy.
+
+> Zdroj: analýza konkurence z listopadu 2026 (`Analýza Aplikace Moorage a Konkurence.md`), ověřená proti současnému kódu. Body, které už Moorage má (SSRF ochrana `netguard`, oddělený `MOORAGE_STATUS_LISTEN`, MCP Server add-on, WebSocket transport hub–agent, watchdog hubu, auto-rollback, Logbook, sondy z více míst), se sem nepřebírají. Každá vlna před implementací projde vlastním feature designem (kolize, okrajové stavy, rozhodnutí).
+
+### Navrhované vlny
+1. **M18A – Kauzální časová osa incidentu a Rollback & Verify**
+   - Incident jako objekt: při DOWN kontroly se automaticky sestaví časová osa z existujících zdrojů v okně např. 15 minut zpět – změna `compose.yaml` (commit v `history.git`), auto-update image (digest před / po), Docker eventy (restart, `OOMKilled` / exit 137, unhealthy), shody log alertů a selhání sond (včetně hlasů agentů z R6).
+   - Zobrazení v detailu incidentu a v Logbooku stacku; v oznámení (Detailed předvolba z M17B) zkrácená osa „co se změnilo před výpadkem“.
+   - **Rollback & Verify:** jedno tlačítko (nebo politika u stacku) vrátí předchozí digest image nebo revizi `compose.yaml`, sleduje healthcheck, logy a externí sondu a incident uzavře, až sonda znovu vrátí úspěch. Při neúspěchu verifikace se nic dalšího automaticky nedělá a přijde eskalace. Staví na auto-rollbacku z M14 a `history.git` z M2.
+   - Uzavření incidentu se propíše i na veřejnou status stránku.
+2. **M18B – Pilíře důvěry pro veřejné vydání**
+   - **Passkeys (WebAuthn)** jako druhý faktor vedle TOTP, volitelně i přihlášení bez hesla.
+   - **SBOM** (SPDX / CycloneDX přes `syft`) ke každému release a Docker image, **podpis image přes cosign** (keyless přes GitHub OIDC) a attestace; doplňuje stávající Ed25519 podpis binárek z M12.
+   - **Veřejný threat model** (`docs/security/threat-model.md`) a `SECURITY.md`: Docker socket, CSWSH, SSRF, path traversal, status stránka, agenti, MCP; s odkazy na testy, které jednotlivé ochrany hlídají.
+3. **M18C – Migrace z konkurence a demo**
+   - **Import z Portaineru CE:** přes Portainer API (URL + token) stáhnout stacky a uložit je jako `compose.yaml` + `.env` do `StacksDir`, s náhledem a výběrem.
+   - **Dockge:** ověřit a zdokumentovat převzetí existující složky `/opt/stacks` beze změny souborů (pravděpodobně už funguje přes `MOORAGE_MANAGE_EXTERNAL` / nastavení `StacksDir`); doplnit průvodce.
+   - **Import monitorů a status stránek z Uptime Kuma (JSON záloha) a Gatus (YAML)** do kontrol, kanálů a status stránek, s reportem, co nešlo převést.
+   - **Veřejná demo instance** v read-only demo režimu s ukázkovými daty.
+4. **M18D – Odolnost status stránky a transportu**
+   - **Statický snapshot status stránky** (add-on): po každé změně stavu a periodicky publikuje HTML + JSON na S3 / R2, WebDAV nebo GitHub Pages, takže veřejná stránka přežije úplný výpadek serveru. Snapshot nese čas poslední aktualizace a při zastarání sám ukáže „data may be out of date“.
+   - **Watchdog jako externí sonda:** ověřit, co z „Mutual-Watch“ už pokrývá watchdog (M6) a sondy z více míst (R6); doplnit jen chybějící (např. DNS a latence měřené z agenta mimo domácí síť).
+   - **Oddělení logů od řídicího provozu v tunelu hub–agent:** nejdřív změřit head-of-line blocking při záplavě logů; pokud se potvrdí, priorita nebo samostatná yamux relace pro bulk logy.
+5. **M18E – Generované hodnoty, volné porty a „co služba potřebuje“ (návrh 2026-11-26)**
+
+   **Cíl:** Při psaní `compose.yaml` / `.env` stačí napsat klíčové slovo a Moorage při uložení vygeneruje heslo, klíč, uživatele nebo volný port a zapíše ho do `.env` jako obyčejnou proměnnou. Linter navíc podle image napoví, co služba potřebuje (povinné proměnné, trvalé volumes, porty, healthcheck), a nabídne opravu na klik.
+
+   **Hlavní tok:** Uživatel do compose napíše `POSTGRES_PASSWORD: "@generate(password, 32)"` a do druhé služby `DB_PASS: ${POSTGRES_PASSWORD}`, k portům `"${SERVICE_PORT_WEB:-8080}:80"` → klikne **Save**. V náhledu změn vidí „Generated: `POSTGRES_PASSWORD` (password, 32) · `SERVICE_PORT_WEB` = 8081 (8080 is taken by stack *jellyfin*)“ → potvrdí. Compose teď obsahuje `POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}`, `.env` skutečné hodnoty, vše je jedna git verze a stack jde spustit i obyčejným `docker compose`.
+
+   **Rozhodnutí uživatele `[U]`:**
+   - **Tři zápisy klíčových slov:**
+     1. **Coolify jména** v compose: `${SERVICE_PASSWORD_<NAME>}`, `${SERVICE_USER_<NAME>}`, `${SERVICE_BASE64_<NAME>}` a jejich délkové varianty (přesný podporovaný seznam se při implementaci ověří proti dokumentaci Coolify a zapíše do `docs/generated-values.md`). Díky tomu fungují i šablony služeb z Coolify.
+     2. **Vlastní zápis v `.env`:** `KEY=@generate(<kind>[, <param>])`.
+     3. **Vlastní zápis v compose u proměnné prostředí:** `KEY: "@generate(...)"` (mapa) nebo `- KEY=@generate(...)` (seznam). Při uložení se hodnota vygeneruje do `.env` a v compose se nahradí `${KEY}` – stejný mechanismus jako stávající oprava „Move values to .env“ (`lint.MoveEnv`).
+   - **Volný port:** klíčové slovo (`${SERVICE_PORT_<NAME>:-<preferovaný>}` v compose, `KEY=@generate(port, 8080)` v `.env`, `"@generate(port, 8080):80"` přímo v `ports:`) **i** rychlé opravy v editoru: akce **Add port** (nabídne porty z `EXPOSE` image a volný host port) a u varování `port-taken` oprava „Use free port 8081“.
+   - **Co služba potřebuje:** obecně z **metadat image** (`EXPOSE`, `VOLUME`, `HEALTHCHECK`, `USER`) **plus katalog „receptů“** pro populární image v repozitáři `moorage-templates`, obnovovaný stejně jako katalog šablon (add-on `official-templates`).
+
+   **Architektonická rozhodnutí `[A]`:**
+   - **Generuje se jednou, při uložení**, ve sdílené cestě pro ukládání stacku (UI editor, `NewStack`, šablony, CLI/API, MCP `create_stack`/`update_stack`). Hodnota vznikne jen tehdy, když klíč v `.env` chybí nebo obsahuje ještě klíčové slovo. Existující neprázdná hodnota se **nikdy nepřepíše** a deploy nic negeneruje (změna hesla by rozbila databázi).
+   - **Jeden generátor pro všechno:** rozšířit `templates.Generate` (crypto/rand, bez modulo biasu) a použít ho pro šablony (`generate:` v `template.yaml` zůstává), MCP `generateSecrets` i klíčová slova. Druhy: `password[, délka][, symbols]` (výchozí 32 znaků `[A-Za-z0-9]`, protože speciální znaky rozbíjí řadu služeb a URL), `alnum`, `hex[, bajty]`, `base64[, bajty]`, `base64key` (s prefixem `base64:` pro Laravel `APP_KEY`), `uuid`, `user` (náhodné `u_xxxxxxxx`), `port[, preferovaný]`. Délky omezené (8–256), neznámý druh = chyba linteru.
+   - **Stejný klíč = stejná hodnota:** `@generate` se stejným jménem proměnné ve více službách vytvoří jednu proměnnou (sémantika `MoveEnv`); sdílení mezi službami jinak přes `${KEY}`.
+   - **Volné porty:** výběr nejbližšího volného portu od preferovaného podle sdíleného sběru portů z M17B (`engine/ports.go`: běžící kontejnery, porty deklarované ve všech spravovaných stacích včetně zastavených, nativní porty hosta, kde jsou vidět), vynechá porty < 1024, pokud preferovaný port sám není < 1024. Výběr probíhá pod zámkem pro daný host, aby dvě současná uložení nedostala stejný port; uložený port se díky Port map hned počítá jako obsazený.
+   - **`SERVICE_URL_*` / `SERVICE_FQDN_*` (Coolify):** doplní se z výchozí adresy hosta (M17B) + portu, nebo z proxy URL, pokud ji Moorage zná. Uloží se jednou jako ostatní hodnoty; pozdější změna výchozí adresy je nepřepíše (linter jen upozorní na nesoulad).
+   - **Metadata image:** z lokálně staženého image, jinak z config blobu v registru přes stávající klienta s `netguard` (bez stahování vrstev); výsledek se cachuje podle digestu. Nové informační nálezy linteru s rychlými opravami: „Image exposes 5432/tcp – add port?“, „Image declares volume `/var/lib/postgresql/data` but the service has no volume: data is lost on recreate“ (varování), „Image has a healthcheck“ / návrh healthchecku.
+   - **Katalog receptů:** jen data (YAML), nic se nevyhodnocuje ani nespouští, stejný princip jako šablony. Recept = vzor jména image (např. `postgres`, `*/postgres`, `lscr.io/linuxserver/*`) + povinné proměnné s generátorem nebo výchozí hodnotou (`POSTGRES_PASSWORD: password`, `PUID: 1000`, `TZ: <host TZ>`), doporučené volumes, porty, healthcheck a krátká poznámka. Nálezy z receptu mají vždy opravu na klik, která vloží klíčová slova `@generate`, takže se recept a generátory nikdy nerozcházejí. Validace jako u `template.yaml` (neznámé klíče = chyba, limity velikosti).
+   - **Stacky spravované Coolify** (labely `coolify.*`) se nematerializují: Coolify si `SERVICE_*` generuje sám a Moorage by mu přepsala `.env`.
+
+   **Okrajové stavy:**
+   - **Read-only agent / externí stack na Level 1 / vlastní stack Moorage:** nic se negeneruje; linter ukáže, že klíčová slova zůstala nevyřešená, a proč.
+   - **Stack upravený mimo Moorage (souborový editor, git, ruční úprava):** klíčové slovo zůstane v souboru; při příštím deployi přes Moorage se nejdřív materializuje (s vlastní git verzí) a teprve pak `up`. Ruční `docker compose up` by dostal doslovný text `@generate(...)` nebo prázdnou proměnnou – proto linter chyba a varování v **Diagnostics**.
+   - **Klíčové slovo jinde než u proměnné** (např. v `command:`, `labels:`): chyba linteru „`@generate` works only in environment values and `ports:`“.
+   - **Žádný volný port v rozsahu** (preferovaný až +1000): uložení se neprovede, chyba s odkazem na kartu **Ports**.
+   - **Registr nedostupný nebo private bez přihlášení:** analýza metadat se tiše přeskočí (info „Image metadata unavailable“), generování a porty fungují dál.
+   - **Recept vs. vlastní nastavení uživatele:** když služba proměnnou už má (jakoukoli hodnotou), recept ji nenavrhuje. Nálezy z receptů jde u stacku ignorovat stejně jako ostatní nálezy linteru.
+   - **Tajemství v historii:** vygenerované hodnoty jsou v `.env`, a tedy v `history.git`, stejně jako dnes ručně zadaná hesla (šifrování `.env` v historii zůstává v `ROADMAP.md`). Náhled změn ukáže jen jména a druhy vygenerovaných hodnot, ne hodnoty.
+
+   **Data a API:** bez DB migrace (cache metadat image v paměti / malá tabulka podle digestu, rozhodne se při implementaci). Nové `lint` pravidla a opravy, rozšířený `templates.Generate`, materializace ve sdílené save cestě (`api/stacks`), endpoint pro recepty jako součást katalogu šablon. Závisí na M17B (Port map, adresy hosta).
+
+   **Mimo rozsah M18E:** generování TLS certifikátů a SSH klíčů; automatická rotace hesel; zápis vygenerovaných hodnot do externích správců tajemství.
+
+### Mimo rozsah M18 (→ `ROADMAP.md`)
+- Wasm (`wazero`) sandbox pro uživatelské add-ony.
+- Hluboká hardwarová telemetrie (S.M.A.R.T., GPU, teploty) – pokrývá sidecar `node-exporter` z M15.
+- Plná podpora Podman Quadletů (Podman jako takový je v „Schválené návrhy“).
+- LDAP a externí správci tajemství.
+
+### Otevřené otázky
+- **Pořadí vln M18** – doporučení: A (největší odlišení), pak B (nutné před veřejným vydáním), E (rychlá denní užitečnost, staví na M17B), C, D.
+- **Název projektu před veřejným vydáním:** analýza upozorňuje na kolizi názvu „Moorage“ (moorage.dev, github.com/moorage, macOS utilita Moorage, Docker PaaS Mooring). Rozhodnutí ovlivní URL loga v oznámeních (M17B), názvy image a dokumentaci; mělo by padnout před M18B.

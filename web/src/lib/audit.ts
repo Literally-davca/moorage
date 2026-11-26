@@ -27,6 +27,7 @@ const labels: Record<string, string> = {
   'update.failed': 'Moorage update failed',
   'update.rolled_back': 'Moorage update rolled back',
   'host.add': 'Created join token',
+  'host.join_token_cancel': 'Cancelled join token',
   'host.paired': 'Paired agent',
   'host.rename': 'Renamed host',
   'host.remove': 'Removed host',
