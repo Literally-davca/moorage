@@ -1,0 +1,89 @@
+name: CI
+
+# Runs the full UI check/build, go vet, go test, and cross-platform static builds
+# without publishing a release or creating tags. Pushes to main run release.yml instead.
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Fails fast, before any install: text from containers, logs and labels is always
+      # rendered as text, so {@html} is allowed only in Icon.svelte (static SVG icons).
+      # check.sh repeats this for local runs.
+      - name: Guard against {@html} outside Icon.svelte
+        run: |
+          hits="$(grep -rnF --include='*.svelte' --include='*.ts' --include='*.js' '{@html' web/src | grep -v '^web/src/lib/Icon\.svelte:' || true)"
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error title={@html} guard::{@html} found outside web/src/lib/Icon.svelte; render text as text instead."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run full verification suite
+        run: bash ./scripts/dev/check.sh --ci
+
+  # Moorage must stay under 100 MiB PSS (warning above 80 MiB) with 15 agents over the
+  # tunnel, 100 checks and 2 log streams, measured from /proc/<pid>/smaps_rollup of the
+  # Moorage process only. A measurement that fails technically fails the job; it never
+  # counts as a pass. Linux runner with Docker only.
+  pss-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build web UI
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+
+      - name: PSS memory gate
+        env:
+          PSS_RESULT_FILE: pss-result.md
+        run: bash ./scripts/dev/pss-gate.sh
