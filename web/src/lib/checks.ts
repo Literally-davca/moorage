@@ -8,6 +8,7 @@ export const kindName: Record<CheckKind, string> = {
   dns: 'DNS',
   stack: 'Stack',
   log: 'Log',
+  resources: 'Host resources',
 };
 
 export const checkStatusLabel: Record<CheckStatus, string> = {

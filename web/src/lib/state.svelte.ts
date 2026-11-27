@@ -30,9 +30,10 @@ export type Route =
   | { page: 'statusPageForm'; id: number | null }
   | { page: 'updates' }
   | { page: 'account' }
+  | { page: 'assistant' }
   | { page: 'maintenanceForm'; id: number | null };
 
-const globalPages = ['settings', 'monitoring', 'hosts', 'checks', 'status-pages', 'maintenance', 'updates', 'notifications', 'audit', 'template-sources', 'users', 'account'];
+const globalPages = ['settings', 'monitoring', 'hosts', 'checks', 'status-pages', 'maintenance', 'updates', 'notifications', 'audit', 'template-sources', 'users', 'account', 'assistant'];
 
 // Routes: #/h/<host>, #/h/<host>/new, #/h/<host>/stacks/<name>, #/settings/hosts.
 // Older links without a host (#/stacks/<name>) open on the current host.
@@ -56,6 +57,7 @@ function parse(hash: string): { route: Route; host?: string } {
   if (path === 'monitoring/maintenance' || path === 'maintenance') return { route: { page: 'monitoring', tab: 'maintenance' } };
   if (path === 'updates') return { route: { page: 'updates' } };
   if (path === 'account') return { route: { page: 'account' } };
+  if (path === 'assistant') return { route: { page: 'assistant' } };
   if (path === 'maintenance/new') return { route: { page: 'maintenanceForm', id: null } };
   const mm = /^maintenance\/(\d+)$/.exec(path);
   if (mm) return { route: { page: 'maintenanceForm', id: Number(mm[1]) } };
@@ -89,6 +91,14 @@ function parse(hash: string): { route: Route; host?: string } {
     return { route, host };
   }
   return { route: { page: 'home' }, host };
+}
+
+// isKnownRoute reports whether a hash is a page of this app (M19E: links in assistant
+// answers are clickable only then). Unknown paths fall back to the home page in parse.
+export function isKnownRoute(hash: string): boolean {
+  const path = hash.replace(/^#\/?/, '').split('?')[0];
+  if (path === '' || /^h\/[^/]+\/?$/.test(path)) return true;
+  return parse(hash).route.page !== 'home';
 }
 
 function savedHost(): string {

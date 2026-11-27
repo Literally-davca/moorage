@@ -237,6 +237,28 @@ func (s *Server) Updater() *updater.Updater {
 // SetSelfUpdate wires the Moorage self-update coordinator into the API server.
 func (s *Server) SetSelfUpdate(su *selfupdate.Service) {
 	s.sysUpd = su
+	if s.upd != nil && su != nil {
+		// M19C: a newer image of Moorage's own stack re-checks releases (at most hourly),
+		// so the image row and Moorage updates show the same thing.
+		var mu sync.Mutex
+		var last time.Time
+		s.upd.OnSelfImagePending = func(string) {
+			mu.Lock()
+			if time.Since(last) < time.Hour {
+				mu.Unlock()
+				return
+			}
+			last = time.Now()
+			mu.Unlock()
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				if _, err := su.CheckNow(ctx); err != nil {
+					s.log.Debug("release check after a new Moorage image", "err", err)
+				}
+			}()
+		}
+	}
 }
 
 // StatusHandler returns an HTTP handler that serves only public status pages
@@ -355,6 +377,19 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/hosts/{host}/stacks/{name}", s.admin(s.updateStack))
 	mux.Handle("DELETE /api/hosts/{host}/stacks/{name}", s.admin(s.deleteStack))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/self-apply", s.admin(s.selfApply))
+	mux.Handle("PUT /api/hosts/{host}/stacks/{name}/links", s.admin(s.putStackLinks))
+	mux.Handle("GET /api/hosts/{host}/service-links", s.user(s.hostServiceLinks))
+	mux.Handle("GET /api/hosts/{host}/containers/{id}/problems", s.user(s.standaloneProblems))
+	mux.Handle("GET /api/problems", s.user(s.problemsSummaryHandler))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/files", s.user(s.listStackFiles))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/files/content", s.admin(s.readStackFile)) // config files may hold secrets
+	mux.Handle("PUT /api/hosts/{host}/stacks/{name}/files/content", s.admin(s.writeStackFile))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/files/versions", s.admin(s.stackFileVersions))
+	mux.Handle("GET /api/hosts/{host}/stacks/{name}/files/versions/{id}", s.admin(s.stackFileVersion))
+	mux.Handle("GET /api/hosts/{host}/tailscale/serve", s.admin(s.tailscaleStatus))
+	mux.Handle("POST /api/hosts/{host}/tailscale/serve", s.admin(s.tailscaleServe))
+	mux.Handle("DELETE /api/hosts/{host}/tailscale/serve/{port}", s.admin(s.tailscaleStop))
+	mux.Handle("POST /api/hosts/{host}/stacks/{name}/ports/fix", s.admin(s.fixStackPorts))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/move-to-addons", s.admin(s.moveStackToAddons))
 	mux.Handle("POST /api/hosts/{host}/stacks/{name}/actions/{action}", s.admin(s.runAction))
 	mux.Handle("POST /api/hosts/{host}/coolify/{uuid}/actions/{action}", s.admin(s.coolifyAction))
@@ -382,6 +417,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/channels/preview", s.admin(s.previewNotification))
 	mux.Handle("GET /api/notifications/settings", s.admin(s.getNotifySettings))
 	mux.Handle("PUT /api/notifications/settings", s.admin(s.putNotifySettings))
+	mux.Handle("GET /api/notifications/logo", s.admin(s.notifyLogo))
 	mux.Handle("PUT /api/channels/{id}", s.admin(s.saveChannel))
 	mux.Handle("DELETE /api/channels/{id}", s.admin(s.deleteChannel))
 	mux.Handle("GET /api/watchdog", s.admin(s.getWatchdog))
@@ -460,6 +496,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/hosts/{host}/self-apply/ack", s.admin(s.ackSelfApply))
 	mux.Handle("GET /api/hosts/{host}/self-apply/log", s.admin(s.selfApplyLog))
 	mux.Handle("POST /api/assistant/chat", s.user(s.assistantChat))
+	mux.Handle("GET /api/assistant/commands", s.user(s.listAssistantCommands))
+	mux.Handle("PUT /api/assistant/commands/{name}", s.user(s.putAssistantCommand))
+	mux.Handle("DELETE /api/assistant/commands/{name}", s.user(s.deleteAssistantCommand))
+	mux.Handle("GET /api/addons/assistant/models", s.admin(s.assistantModels))
+	mux.Handle("POST /api/addons/assistant/test", s.admin(s.assistantTest))
 	mux.Handle("POST /api/assistant/actions/{id}/apply", s.admin(s.assistantApply))
 	mux.Handle("POST /api/assistant/actions/{id}/reject", s.admin(s.assistantReject))
 	mux.Handle("PUT /api/addons/status-snapshot/config", s.admin(s.putStatusSnapshot))
@@ -1278,31 +1319,11 @@ func (s *Server) getStack(w http.ResponseWriter, r *http.Request) {
 		}
 		s.enrichCoolifySummary(ctx, hostID, &st.StackSummary, lblMeta, deploying)
 	}
-	proxyOn, _ := s.store.AddonEnabled(ctx, addonProxyLabels)
-	hostIP, altAddrs := s.hostLinkAddresses(ctx, hostID)
-	stackHasExplicit := len(st.URLs) > 0
-	if proxyOn && len(st.ProxyURLs) > 0 {
-		st.URLs = mergeURLs(st.URLs, st.ProxyURLs, 10)
-	}
-	st.ProxyURLs = nil
-	for i := range st.Containers {
-		ctrExplicit := len(st.Containers[i].URLs) > 0
-		if proxyOn && len(st.Containers[i].ProxyURLs) > 0 {
-			st.Containers[i].URLs = mergeURLs(st.Containers[i].URLs, st.Containers[i].ProxyURLs, 5)
-		}
-		if !ctrExplicit && hostIP != "" {
-			purls := hostPortURLs(hostIP, st.Containers[i].Ports)
-			st.Containers[i].URLs = mergeURLs(st.Containers[i].URLs, purls, 5)
-			alts := hostAltURLs(altAddrs, st.Containers[i].Ports)
-			st.Containers[i].AltURLs = alts
-			if !stackHasExplicit {
-				st.URLs = mergeURLs(st.URLs, purls, 10)
-				st.AltURLs = append(st.AltURLs, alts...)
-			}
-		}
-		st.Containers[i].ProxyURLs = nil
-	}
-	writeJSON(w, http.StatusOK, st)
+	links := s.decorateStackLinks(ctx, hostID, h, &st)
+	writeJSON(w, http.StatusOK, struct {
+		engine.Stack
+		ServiceLinks []serviceLink `json:"serviceLinks"`
+	}{st, links})
 }
 
 func mergeURLs(base, extra []string, max int) []string {
@@ -1440,7 +1461,7 @@ func (s *Server) selfApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	if why := selfApplyBlocked(r, name, req.Compose, req.Env); why != "" {
+	if why := s.selfApplyBlocked(r, r.PathValue("host"), h, name, req.Compose, req.Env); why != "" {
 		writeErr(w, http.StatusUnprocessableEntity, why)
 		return
 	}
@@ -1620,6 +1641,8 @@ func (s *Server) errStatusQuiet(err error) (int, string) {
 		return http.StatusBadRequest, "Stack name: " + err.Error() + "."
 	case errors.Is(err, engine.ErrBusy), errors.Is(err, engine.ErrExists), errors.Is(err, engine.ErrHasRunning):
 		return http.StatusConflict, sentence(err)
+	case errors.Is(err, engine.ErrSelfUpdateLocked):
+		return http.StatusConflict, err.Error()
 	case errors.Is(err, engine.ErrSelfStack):
 		return http.StatusConflict, sentence(err)
 	case errors.Is(err, engine.ErrHistoryOff), errors.Is(err, host.ErrOffline):

@@ -40,7 +40,10 @@ const (
 )
 
 // Kinds lists the supported check kinds.
-var Kinds = map[string]bool{KindHTTP: true, KindTCP: true, KindPing: true, KindDNS: true, KindStack: true, KindLog: true}
+var Kinds = map[string]bool{KindHTTP: true, KindTCP: true, KindPing: true, KindDNS: true, KindStack: true, KindLog: true, KindResources: true}
+
+// KindResources watches a host's disk and memory (M19M); Target is the host id.
+const KindResources = "resources"
 
 // Settings are the kind-specific options of a check (stored as JSON).
 type Settings struct {
@@ -68,6 +71,10 @@ type Settings struct {
 	URLs []string `json:"urls,omitempty"`
 	// Stacks are the stacks of a multi-stack check (2+; one stack lives in Target only).
 	Stacks []StackTarget `json:"stacks,omitempty"`
+	// Host resources (M19M): used share in % that is a warning / goes down.
+	DiskWarnPct int `json:"diskWarnPct,omitempty"`
+	DiskCritPct int `json:"diskCritPct,omitempty"`
+	MemCritPct  int `json:"memCritPct,omitempty"`
 }
 
 // LogFilter builds the host filter for a log check.
@@ -148,6 +155,8 @@ func Probe(ctx context.Context, c store.Check, reg *host.Registry) Outcome {
 		out = probeStack(ctx, reg, c.HostID, c.Target)
 	case KindLog:
 		out = probeLogTail(ctx, reg, c.HostID, c.Stack, c.Target, st)
+	case KindResources:
+		out = probeResources(ctx, reg, c.Target, st)
 	default:
 		out = Outcome{Msg: "unknown check type " + c.Kind}
 	}

@@ -34,6 +34,8 @@ type Config struct {
 	// DirWarnings are data subfolders that could not be created. They never stop Moorage
 	// (the feature that needs the folder says so); main logs them at start.
 	DirWarnings []string
+	// ListenWarnings are listen addresses corrected at start (a bare port, M19B).
+	ListenWarnings []string
 
 	// agent
 	Hub            string // MOORAGE_HUB, host:port of the hub's agent port
@@ -51,6 +53,10 @@ type Config struct {
 	UpdateChannel    string // MOORAGE_UPDATE_CHANNEL: "stable" (default) or "pre"
 	UpdateChannelSet bool   // true when MOORAGE_UPDATE_CHANNEL was explicitly set in env
 	SelfUpdate       bool   // MOORAGE_SELF_UPDATE (default true), enforced on each node
+	// TailscaleServe lets admins publish services with Tailscale Serve through the
+	// mounted tailscaled socket (M19J); env only, the socket controls the whole node.
+	TailscaleServe  bool   // MOORAGE_TAILSCALE_SERVE (default false)
+	TailscaleSocket string // MOORAGE_TAILSCALE_SOCKET (default /var/run/tailscale/tailscaled.sock)
 
 	// OIDC sign-in (MOORAGE_OIDC_*). A broken setting never stops Moorage: it is kept in
 	// OIDC.Err, logged, and shown to admins, and the SSO button stays hidden.
@@ -85,7 +91,7 @@ type Config struct {
 
 // LockedVars are the host security locks that Settings shows but can never change.
 var LockedVars = []string{"MOORAGE_READ_ONLY", "MOORAGE_MANAGE_EXTERNAL", "MOORAGE_EXTRA_STACKS_DIRS", "MOORAGE_TERMINAL",
-	"MOORAGE_HOST_TERMINAL", "MOORAGE_EXEC", "MOORAGE_TRUSTED_PROXIES", "MOORAGE_LISTEN", "MOORAGE_WEB_UI", "MOORAGE_DEMO"}
+	"MOORAGE_HOST_TERMINAL", "MOORAGE_EXEC", "MOORAGE_TRUSTED_PROXIES", "MOORAGE_LISTEN", "MOORAGE_WEB_UI", "MOORAGE_DEMO", "MOORAGE_TAILSCALE_SERVE"}
 
 // RoleMapping turns external groups into a Moorage role: admin groups win over viewer
 // groups, then the default role ("none" refuses the sign-in, or "viewer").
@@ -182,6 +188,17 @@ func FromEnv() (Config, error) {
 	if c.AgentListen == "off" {
 		c.AgentListen = ""
 	}
+	// M19B: a bare port ("5080") would crash-loop with "missing port in address";
+	// take it as ":5080" and say so.
+	for _, l := range []struct {
+		name string
+		v    *string
+	}{{"MOORAGE_LISTEN", &c.Listen}, {"MOORAGE_AGENT_LISTEN", &c.AgentListen}, {"MOORAGE_STATUS_LISTEN", &c.StatusListen}, {"MOORAGE_WATCHDOG_LISTEN", &c.WatchdogListen}} {
+		if n, err := strconv.Atoi(strings.TrimSpace(*l.v)); err == nil && n > 0 && n < 65536 {
+			*l.v = ":" + strconv.Itoa(n)
+			c.ListenWarnings = append(c.ListenWarnings, fmt.Sprintf("%s=%d has no colon; using %q. Write %q (all addresses) or \"127.0.0.1:%d\".", l.name, n, *l.v, *l.v, n))
+		}
+	}
 	var err error
 	if strings.TrimSpace(os.Getenv("MOORAGE_SECURE_COOKIES")) != "" {
 		c.SecureCookiesSet = true
@@ -201,6 +218,10 @@ func FromEnv() (Config, error) {
 	if c.SelfUpdate, err = boolEnvDefault("MOORAGE_SELF_UPDATE", true); err != nil {
 		return c, err
 	}
+	if c.TailscaleServe, err = boolEnvDefault("MOORAGE_TAILSCALE_SERVE", false); err != nil {
+		return c, err
+	}
+	c.TailscaleSocket = env("MOORAGE_TAILSCALE_SOCKET", "/var/run/tailscale/tailscaled.sock")
 	if c.PUID, err = intEnv("MOORAGE_PUID", -1); err != nil {
 		return c, err
 	}

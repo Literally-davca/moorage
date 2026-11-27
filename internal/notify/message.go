@@ -41,6 +41,9 @@ type Message struct {
 	// LikelyCause is from the container diagnosis (M18F), e.g. "Out of memory
 	// (exit 137)". Detailed preset only; never log lines.
 	LikelyCause string `json:"likelyCause,omitempty"`
+	// Repeat marks a follow-up of an outage already alerted ("still down after …"):
+	// mention rules with FirstOnly skip it (M19L).
+	Repeat bool `json:"-"`
 }
 
 // Sender is who a message comes from: the affected host and the role of the Moorage

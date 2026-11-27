@@ -157,6 +157,8 @@ var codes = []struct {
 	{"not_running", engine.ErrContainerNotRunning, http.StatusConflict},
 	{"not_in_stack", engine.ErrContainerNotInStack, http.StatusNotFound},
 	{"probes_disabled", ErrProbesDisabled, http.StatusForbidden},
+	{"self_update_locked", engine.ErrSelfUpdateLocked, http.StatusConflict},
+	{"not_text", engine.ErrNotText, http.StatusUnprocessableEntity},
 	{"self_stack", engine.ErrSelfStack, http.StatusConflict},
 	{"self_update_disabled", ErrSelfUpdateDisabled, http.StatusForbidden},
 	{"self_update_busy", ErrSelfUpdateBusy, http.StatusConflict},

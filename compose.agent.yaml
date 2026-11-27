@@ -16,6 +16,8 @@ services:
       # The stacks folder must have the SAME path inside and outside the container,
       # because compose resolves relative paths (./data, env_file) on the host.
       - /opt/stacks:/opt/stacks
+      # Tailscale Serve for services (MOORAGE_TAILSCALE_SERVE below):
+      # - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
     environment:
       # ---- Pairing -----------------------------------------------------------------------
       # host:port of the hub's agent port (MOORAGE_AGENT_LISTEN on the hub), reached directly, not through an HTTPS proxy.
@@ -59,8 +61,22 @@ services:
       # MOORAGE_WATCHDOG_ADDR: 192.168.1.11:5082
 
       # ---- Moorage updates ---------------------------------------------------------------
-      # true | false. Allow updating this agent from the hub's UI.
+      # true | false. Allow updating this agent from the hub's UI. false = manual updates only:
+      # the hub can't update it, pull its image or change its image with Apply & restart;
+      # update it here with docker compose pull && docker compose up -d.
       MOORAGE_SELF_UPDATE: "true"
+
+      # ---- Tailscale ---------------------------------------------------------------------
+      # Tailscale runs on this host (not in this container).
+      # Hub in the tailnet: MOORAGE_HUB can be the hub's tailnet name (hub.<your-tailnet>.ts.net:5081).
+      # Tailscale Serve for services on this host (hub → Services card → Tailscale): admins
+      # publish a service's port in the tailnet as https://<this-host>.<your-tailnet>.ts.net:<port>,
+      # reachable by every device your tailnet ACLs allow; never Funnel (public internet).
+      # Turn it on here and mount the tailscaled socket (uncomment under volumes:). The socket
+      # controls the whole Tailscale node, so this is only set here, never from the hub.
+      # MOORAGE_TAILSCALE_SERVE: "false"
+      # Path of the tailscaled socket inside the container (keep it equal to the mount).
+      # MOORAGE_TAILSCALE_SOCKET: /var/run/tailscale/tailscaled.sock
 
       # ---- Logging -----------------------------------------------------------------------
       # debug | info | warn | error

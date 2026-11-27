@@ -22,6 +22,9 @@
   import ModeOnboarding from './ModeOnboarding.svelte';
   import CommandPalette from '../lib/CommandPalette.svelte';
   import AssistantPanel from '../lib/AssistantPanel.svelte';
+  import AssistantView from './AssistantView.svelte';
+  import { chat, open as openAssistant, ask as askAssistant } from '../lib/assistantStore.svelte';
+  import { noteToast } from '../lib/pageNotices.svelte';
 
   let { onSignedOut }: { onSignedOut: () => void } = $props();
   let paletteOpen = $state(false);
@@ -52,24 +55,45 @@
       selfLog = (e as Error).message;
     }
   }
-  // AI assistant (M18G): shown only when the add-on is on and configured
+  // AI assistant (M18G, M19E): shown only when the add-on is on and configured. The
+  // state is re-read on window focus and after its settings are saved (event), so Ctrl+J
+  // works without a reload.
   let assistantOn = $state(false);
-  let assistantOpen = $state(false);
   async function loadAssistant() {
     try {
       const st = await api.assistantStatus();
       assistantOn = st.enabled && st.configured;
+      chat.info = { ...(chat.info ?? {}), ...st };
     } catch {
       assistantOn = false;
     }
   }
   loadAssistant();
+  $effect(() => {
+    const h = () => void loadAssistant();
+    window.addEventListener('moorage-assistant-changed', h);
+    return () => window.removeEventListener('moorage-assistant-changed', h);
+  });
   function assistantKey(e: KeyboardEvent) {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j' && assistantOn) {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'j' && assistantOn) {
       e.preventDefault();
-      assistantOpen = !assistantOpen;
+      if (chat.open) chat.open = false;
+      else openAssistant();
     }
   }
+  // ?ask=explain on an incident or check opens the panel with a question (M19I)
+  $effect(() => {
+    void app.route;
+    const q = new URLSearchParams(location.hash.split('?')[1] ?? '');
+    if (q.get('ask') === 'explain' && assistantOn) {
+      const r = app.route as { page: string; id?: number; name?: string };
+      if (r.page === 'check' && r.id) askAssistant(`Explain this alert of check #${r.id}: what failed, why, and how do I fix it?`);
+      else if (r.page === 'stack' && r.name)
+        askAssistant(`Explain the latest alert of the stack ${r.name}: what failed, why, what changed before it, and how do I fix it?`);
+      // once: the question is filled in, nothing is sent; reloading doesn't ask again
+      history.replaceState(null, '', location.pathname + location.search + location.hash.split('?')[0]);
+    }
+  });
 
   let stacks = $state<StackSummary[] | null>(null);
   let listError = $state('');
@@ -149,6 +173,9 @@
   function pushToast(title: string, body: string) {
     const id = ++toastSeq;
     toasts = [...toasts.slice(-3), { id, title, body }];
+    // M19I: the assistant knows the alerts of the last 5 minutes (check messages quote
+    // outside services, so they count as outside content)
+    noteToast({ id: 'toast:' + id, severity: 'error', title, text: body, foreign: !!body });
     setTimeout(() => {
       toasts = toasts.filter((t) => t.id !== id);
     }, 8000);
@@ -618,7 +645,7 @@
         {/each}
       </div>
       {#if assistantOn}
-        <button type="button" class="tab pal-btn" onclick={() => (assistantOpen = !assistantOpen)} title="Assistant (Ctrl+J)" aria-label="Assistant" aria-expanded={assistantOpen}>
+        <button type="button" id="assistant-toggle" class="tab pal-btn" onclick={() => (chat.open ? (chat.open = false) : openAssistant())} title="Assistant (Ctrl+J)" aria-label="Assistant" aria-expanded={chat.open}>
           <Icon name="wand" />
         </button>
       {/if}
@@ -697,6 +724,8 @@
       <UpdatesView />
     {:else if app.route.page === 'account'}
       <AccountView />
+    {:else if app.route.page === 'assistant'}
+      <AssistantView />
     {:else if app.route.page === 'stack'}
       {#key app.route.name}
         <StackDetail name={app.route.name} onChanged={refresh} />
@@ -726,7 +755,7 @@
 </div>
 
 <CommandPalette bind:open={paletteOpen} />
-<AssistantPanel bind:open={assistantOpen} />
+<AssistantPanel />
 <svelte:window onkeydown={assistantKey} onfocus={loadAssistant} />
 
 {#if app.user && app.user.preferences && !app.user.preferences.onboardingDone}
@@ -1156,6 +1185,8 @@
   }
   .main {
     min-width: 0;
+    /* M19E: room for the docked assistant */
+    margin-right: var(--assistant-dock, 0px);
   }
   .nav-toggle {
     display: none;

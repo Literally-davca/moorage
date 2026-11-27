@@ -13,6 +13,7 @@
     type ImagePolicy,
     type ImageStatus,
     type ImageUpdate,
+    type NodeUpdateStatus,
     type Op,
     type Stack,
     type StackImages,
@@ -25,6 +26,10 @@
   import EnvEditor from '../lib/EnvEditor.svelte';
   import Confirm from '../lib/Confirm.svelte';
   import SetupHint from '../lib/SetupHint.svelte';
+  import QrLink from '../lib/QrLink.svelte';
+  import StackFiles from './StackFiles.svelte';
+  import { chat as assistantChat, ask as askAssistant } from '../lib/assistantStore.svelte';
+  import { notice } from '../lib/pageNotices.svelte';
   import LogViewer from './LogViewer.svelte';
   import OpPanel from './OpPanel.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
@@ -63,7 +68,7 @@
   // A link to the timeline (#/h/<host>/stacks/<name>/history?at=…) opens the History tab.
   const routeTab = $derived(app.route.page === 'stack' ? app.route.tab : undefined);
   const routeAt = $derived(app.route.page === 'stack' ? app.route.at : undefined);
-  let tab = $state<'overview' | 'compose' | 'logs' | 'deps' | 'history' | 'snapshots'>(
+  let tab = $state<'overview' | 'compose' | 'logs' | 'deps' | 'history' | 'snapshots' | 'files'>(
     app.route.page === 'stack' && app.route.tab === 'history' ? 'history' : 'overview',
   );
   $effect(() => {
@@ -231,6 +236,41 @@
       imgInfo = await api.stackImages(name);
     } catch {
       /* best effort */
+    }
+    if (stack?.self && isAdmin()) void loadSelfNode();
+  }
+
+  const assistantOn = $derived(!!assistantChat.info?.enabled && !!assistantChat.info?.configured);
+
+  // M19C: Moorage's own stack updates through Moorage updates (signed release, helper
+  // with rollback), so its image row offers Update Moorage instead of Update now.
+  let selfNode = $state<NodeUpdateStatus | null>(null);
+  let updatingSelf = $state(false);
+  async function loadSelfNode() {
+    try {
+      const ov = await api.systemUpdates();
+      const h = currentHost();
+      const id = !h || h.kind === 'local' ? 'hub' : h.id;
+      selfNode = ov.nodes.find((n) => n.id === id || (id === 'hub' && n.kind !== 'agent')) ?? null;
+    } catch {
+      selfNode = null;
+    }
+  }
+  const selfPendingImage = $derived(
+    !!imgInfo?.services.some((s) => s.status === 'update-available' || s.status === 'pulled-not-applied'),
+  );
+  async function updateMoorage() {
+    if (!selfNode) return;
+    updatingSelf = true;
+    imgMsg = null;
+    try {
+      const res = await api.applySystemUpdates([selfNode.id]);
+      if (res.restartingHub || ownHub) void waitForMoorage();
+      else selfMsg = `Updating Moorage on this host to ${selfNode.latest}: the agent restarts and reconnects within a minute.`;
+    } catch (e) {
+      imgMsg = { ok: false, text: (e as Error).message };
+    } finally {
+      updatingSelf = false;
     }
   }
 
@@ -664,6 +704,7 @@
                 <a class="head-url" href={u} target="_blank" rel="noopener noreferrer" title={u}>
                   <Icon name="external" /> <span>{shortUrlLabel(u)}</span>
                 </a>
+                <QrLink url={u} />
               {/each}
               <AltUrls urls={stack.altUrls} />
             {/if}
@@ -685,11 +726,14 @@
             >
             <button
               class="btn btn-primary"
+              class:pulse-attention={stack.selfPending}
               onclick={() =>
                 maybeConfirm(
                   'Apply changes & restart Moorage?',
                   'Apply & restart',
-                  'Saves compose.yaml/.env and recreates Moorage. Automatically rolls back if Moorage fails to come back healthy.',
+                  stack?.selfRollback === false
+                    ? 'Saves compose.yaml/.env and recreates Moorage. Rollback is not available: the saved files differ from what runs and no earlier working configuration is known, so a change that breaks Moorage stays until you fix it on the host (docs/self-stack.md).'
+                    : 'Saves compose.yaml/.env and recreates Moorage. If Moorage fails to come back healthy, the configuration it runs now is put back.',
                   selfApply,
                 )}
               disabled={stack.busy || !!validation}
@@ -791,22 +835,52 @@
       {#if stack.self}
         <p class="note">
           Moorage runs from this stack, so it can't be stopped, taken down or deleted here. <strong>Apply & restart</strong> saves your
-          changes and recreates Moorage from a helper container; if Moorage doesn't come back within 2 minutes, the previous files are
-          put back. To update Moorage itself, use <a href="#/settings/hosts">Moorage updates</a>.
+          changes and recreates Moorage from a helper container; if Moorage doesn't come back within 2 minutes, the configuration it
+          ran with is put back. To update Moorage itself, use <a href="#/settings/hosts">Moorage updates</a>.
         </p>
+        {#if stack.selfPending}
+          <p class="self-pending" role="status">
+            <Icon name="alert" /> <strong>Saved, not applied</strong> – Moorage still runs the previous configuration. Use
+            <strong>Apply & restart</strong> to use it.
+          </p>
+        {/if}
         {#if selfMsg}<p class="note" role="status">{selfMsg}</p>{/if}
         {#if stack.selfResult && !stack.selfResult.ok}
-          <p class="error-text" role="alert">Last Apply & restart ({new Date(stack.selfResult.at).toLocaleString()}): {stack.selfResult.message}</p>
+          <p class="error-text" role="alert"
+            use:notice={{ id: 'self-result', severity: 'error', title: 'Last Apply & restart of Moorage failed', text: stack.selfResult.message, stack: name, hostId: app.host }}>
+            Last Apply & restart ({new Date(stack.selfResult.at).toLocaleString()}): {stack.selfResult.message}
+          </p>
+        {:else if stack.selfResult?.unverified}
+          <p class="self-pending" role="status">
+            <Icon name="alert" /> Last Apply & restart ({new Date(stack.selfResult.at).toLocaleString()}): {stack.selfResult.message}
+          </p>
         {/if}
       {/if}
       {#if !stack.managed && !isCoolify && manageExternal && !stack.self && externalMountLine}
-        <div style="margin-top:10px">
+        <div
+          style="margin-top:10px"
+          use:notice={{
+            id: 'ext-mount:' + name,
+            severity: 'warning',
+            title: "Moorage can't reach this stack's files",
+            text: `MOORAGE_MANAGE_EXTERNAL is on, but the compose folder ${stack.location} isn't mounted into the Moorage container, so only Start, Stop and Restart work. Add the fix line under volumes of the Moorage service in Moorage's own compose.yaml and recreate Moorage.`,
+            stack: name,
+            hostId: app.host,
+            fix: externalMountLine,
+          }}
+        >
           <SetupHint
             tone="warn"
             title="Moorage can't reach this stack's files"
             detail={`MOORAGE_MANAGE_EXTERNAL is on, but the compose folder ${stack.location} isn't mounted into the Moorage container, so only Start, Stop and Restart work here. To edit and deploy this stack from Moorage, add this line under volumes of the Moorage service in its compose.yaml and recreate Moorage.`}
             snippet={externalMountLine}
           />
+          {#if assistantOn}
+            <button type="button" class="btn btn-ghost btn-sm" style="margin-top:6px"
+              onclick={() => askAssistant(`Moorage can't reach the files of ${name}. Add the mount to Moorage's own compose.yaml for me.`)}>
+              <Icon name="message" /> Ask the assistant
+            </button>
+          {/if}
         </div>
       {/if}
       {#if !stack.managed && !isCoolify && !manageExternal && !stack.self && userPrefs().guidesMode === 'extended'}
@@ -831,7 +905,16 @@
           />
         </div>
       {/if}
-      {#if actionError}<p class="error-text" role="alert" style="margin-top:12px">{actionError}</p>{/if}
+      {#if actionError}
+        <div class="err-row" use:notice={{ id: 'action-error:' + name, severity: 'error', title: 'Action failed on ' + name, text: actionError, stack: name, hostId: app.host }}>
+          <p class="error-text" role="alert">{actionError}</p>
+          {#if assistantOn}
+            <button type="button" class="btn btn-ghost btn-sm" onclick={() => askAssistant(`Why did this fail on ${name}, and how do I fix it?\n${actionError}`)}>
+              <Icon name="message" /> Ask the assistant
+            </button>
+          {/if}
+        </div>
+      {/if}
 
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" aria-selected={tab === 'overview'} onclick={() => (tab = 'overview')}>Containers</button>
@@ -847,6 +930,9 @@
         {/if}
         {#if stack.managed || isCoolify}
           <button class="tab" role="tab" aria-selected={tab === 'history'} onclick={() => (tab = 'history')}>History</button>
+        {/if}
+        {#if stack.managed && isAdmin()}
+          <button class="tab" role="tab" aria-selected={tab === 'files'} onclick={() => (tab = 'files')}>Files</button>
         {/if}
       </div>
     </section>
@@ -1011,7 +1097,25 @@
                 >
                   <Icon name="refresh" /> {checkingImgs ? 'Checking…' : 'Check now'}
                 </button>
-                {#if editable}
+                {#if stack.self}
+                  {#if selfNode?.updateAvailable && selfNode.selfUpdate && selfNode.canUpdate}
+                    <button
+                      type="button"
+                      class="btn btn-primary"
+                      onclick={() =>
+                        maybeConfirm(
+                          `Update Moorage to ${selfNode?.latest}?`,
+                          'Update Moorage',
+                          'Installs the signed release through Moorage updates. Moorage restarts and rolls back if the new version does not come up.',
+                          updateMoorage,
+                        )}
+                      disabled={updatingSelf || stack.busy}
+                      aria-busy={updatingSelf}
+                    >
+                      <Icon name="cloudDown" /> {updatingSelf ? 'Starting…' : `Update Moorage to ${selfNode.latest}`}
+                    </button>
+                  {/if}
+                {:else if editable}
                   <button
                     type="button"
                     class="btn"
@@ -1027,6 +1131,20 @@
               {/if}
             </div>
           </div>
+          {#if stack.self && isAdmin() && selfPendingImage}
+            <p class="meta self-update-note">
+              {#if selfNode && !selfNode.selfUpdate}
+                <Icon name="lock" /> <strong>Manual updates only</strong> on this host (MOORAGE_SELF_UPDATE=false). Update it on the
+                host: <code>docker compose pull && docker compose up -d</code>
+              {:else if selfNode?.updateAvailable}
+                Moorage {selfNode.latest} is available. It installs through
+                <a href="#/settings/hosts">Moorage updates</a> (signed release, automatic rollback).
+              {:else}
+                This image isn't a newer Moorage release (own build, fork or another registry). Change the tag in compose.yaml and use
+                <strong>Apply & restart</strong>.
+              {/if}
+            </p>
+          {/if}
 
           {#if imgMsg}
             <div class="img-msg {imgMsg.ok ? 'ok' : 'bad'}" role="status">
@@ -1196,6 +1314,8 @@
       <SnapshotsPanel {name} {editable} onChanged={() => load()} />
     {:else if tab === 'deps'}
       <StackDeps name={stack.name} />
+    {:else if tab === 'files'}
+      <StackFiles name={stack.name} editable={editable && !stack.self} />
     {:else if tab === 'history'}
       <HistoryView name={stack.name} coolifyUuid={stack.coolifyUuid} at={routeAt} {editable} {dirty} refresh={historyRefresh} onRestored={(o) => { if (o) op = o; load(true); onChanged(); }} />
     {:else}
@@ -1234,6 +1354,27 @@
   }
   .head {
     padding-bottom: 12px;
+  }
+  .err-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .self-pending {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--signal-wash);
+    color: var(--signal-text);
+  }
+  .pulse-attention {
+    box-shadow: 0 0 0 2px var(--signal);
   }
   .head-row {
     display: flex;

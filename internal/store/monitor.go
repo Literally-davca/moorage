@@ -246,16 +246,49 @@ func (s *Store) Uptime(ctx context.Context, checkID int64, since time.Time) (flo
 	var up, total int
 	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(status = 'up'), 0), COUNT(*) FROM check_results
 		WHERE check_id = ? AND ts >= ? AND status IN ('up', 'down', 'degraded')`, checkID, since.UnixMilli()).Scan(&up, &total)
-	if err != nil || total == 0 {
+	if err != nil {
 		return 0, 0, err
+	}
+	// M19M: older results live on as hourly summaries (each result is in one place only)
+	var hu, ht int
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(up), 0), COALESCE(SUM(up + down + degraded), 0) FROM check_results_hourly
+		WHERE check_id = ? AND hour >= ?`, checkID, since.Unix()/3600).Scan(&hu, &ht); err == nil {
+		up, total = up+hu, total+ht
+	}
+	if total == 0 {
+		return 0, 0, nil
 	}
 	return float64(up) / float64(total), total, nil
 }
 
 // PruneResults deletes raw results older than t.
+// Raw results become hourly summaries before they are deleted (M19M); summaries are
+// kept for a year.
 func (s *Store) PruneResults(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM check_results WHERE ts < ?`, before.UnixMilli())
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO check_results_hourly (check_id, hour, up, down, degraded, silenced, avg_latency_ms, max_latency_ms)
+		SELECT check_id, ts / 3600000, SUM(status = 'up'), SUM(status = 'down'), SUM(status = 'degraded'), SUM(status NOT IN ('up', 'down', 'degraded')),
+			CAST(AVG(latency_ms) AS INTEGER), MAX(latency_ms)
+		FROM check_results WHERE ts < ? GROUP BY check_id, ts / 3600000
+		ON CONFLICT (check_id, hour) DO UPDATE SET
+			avg_latency_ms = (avg_latency_ms * (up + down + degraded + silenced) + excluded.avg_latency_ms * (excluded.up + excluded.down + excluded.degraded + excluded.silenced))
+				/ MAX(1, up + down + degraded + silenced + excluded.up + excluded.down + excluded.degraded + excluded.silenced),
+			up = up + excluded.up, down = down + excluded.down, degraded = degraded + excluded.degraded, silenced = silenced + excluded.silenced,
+			max_latency_ms = MAX(max_latency_ms, excluded.max_latency_ms)`, before.UnixMilli()); err != nil {
+		return 0, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM check_results WHERE ts < ?`, before.UnixMilli())
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM check_results_hourly WHERE hour < ?`, before.Add(-365*24*time.Hour).Unix()/3600); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()

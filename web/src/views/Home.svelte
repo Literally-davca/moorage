@@ -1,10 +1,12 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, engineLabel, statusLabel, type AutoRollback, type Check, type ContainerInfo, type HostInfo, type Op, type StackSummary } from '../lib/api';
+  import { api, engineLabel, formatBytes, statusLabel, type AutoRollback, type Check, type ContainerInfo, type HostInfo, type Op, type StackSummary } from '../lib/api';
   import { app, canEdit, currentHost, isAdmin, link, setHost } from '../lib/state.svelte';
   import { checkStatusLabel } from '../lib/checks';
   import Icon from '../lib/Icon.svelte';
-  import AltUrls from '../lib/AltUrls.svelte';
+  import ServiceLinksCard from './ServiceLinksCard.svelte';
+  import ProblemsSummary from './ProblemsSummary.svelte';
+  import BulkActions from './BulkActions.svelte';
   import OpPanel from './OpPanel.svelte';
   import TerminalPanel from './TerminalPanel.svelte';
 
@@ -90,7 +92,6 @@
 
   const attentionStacks = $derived((stacks ?? []).filter((s) => s.status === 'down' || s.status === 'degraded'));
   const attentionChecks = $derived(checks.filter((c) => c.enabled && (c.state.status === 'down' || c.state.status === 'pending')));
-  const serviceStacks = $derived((stacks ?? []).filter((s) => (s.urls?.length ?? 0) > 0));
   const runningCount = $derived((stacks ?? []).filter((s) => s.status === 'up').length);
 
   async function ackRollback(id: number) {
@@ -102,15 +103,6 @@
     }
   }
 
-  function shortUrl(raw: string): string {
-    try {
-      const u = new URL(raw);
-      const p = u.pathname === '/' ? '' : u.pathname.replace(/\/+$/, '');
-      return u.host + p;
-    } catch {
-      return raw.replace(/^https?:\/\//, '');
-    }
-  }
 
   function seen(iso?: string): string {
     if (!iso) return 'never connected';
@@ -160,6 +152,22 @@
           <p class="meta">
             {[`${stacks.length} stacks (${runningCount} up)`, engineLabel(host), host?.hostIp, host?.stacksDir].filter(Boolean).join(' · ')}
           </p>
+          {#if host?.resources}
+            <p class="meta res">
+              {#each host.resources.disks as d (d.path)}
+                <span class="res-item" class:warn={d.usedPct >= 85} class:bad={d.usedPct >= 95} title={`${d.label} (${d.path}): ${formatBytes(d.free)} free of ${formatBytes(d.total)}`}>
+                  <span class="bar"><span style:width={Math.min(100, d.usedPct) + '%'}></span></span>
+                  {d.label} {Math.round(d.usedPct)} %
+                </span>
+              {/each}
+              {#if host.resources.memTotal}
+                <span class="res-item" class:warn={(host.resources.memUsedPct ?? 0) >= 90} title={`${formatBytes(host.resources.memAvailable ?? 0)} available of ${formatBytes(host.resources.memTotal)}`}>
+                  <span class="bar"><span style:width={Math.min(100, host.resources.memUsedPct ?? 0) + '%'}></span></span>
+                  Memory {Math.round(host.resources.memUsedPct ?? 0)} %
+                </span>
+              {/if}
+            </p>
+          {/if}
         </div>
         <div class="svc-urls">
           {#if isAdmin()}
@@ -246,32 +254,9 @@
       {/key}
     {/if}
 
-    {#if serviceStacks.length}
-      <section class="card card-pad" aria-label="Services">
-        <div class="sec-head">
-          <h2 class="section-title">Services</h2>
-          <span class="meta">Web links detected from labels</span>
-        </div>
-        <ul class="rows">
-          {#each serviceStacks as s (s.name)}
-            <li class="svc-row">
-              <a class="svc-name" href={link('stacks/' + encodeURIComponent(s.name))}>
-                <span class="dot {s.status}"></span>
-                <span class="n">{s.name}</span>
-              </a>
-              <div class="svc-urls">
-                {#each s.urls ?? [] as u (u)}
-                  <a class="svc-url" href={u} target="_blank" rel="noopener noreferrer" title={u}>
-                    <Icon name="external" /> <span>{shortUrl(u)}</span>
-                  </a>
-                {/each}
-                <AltUrls urls={s.altUrls} compact />
-              </div>
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
+    <ServiceLinksCard {stacks} />
+    <ProblemsSummary />
+    {#if stacks}<BulkActions {stacks} />{/if}
 
     {#if standalone.length > 0}
       <section class="card card-pad" aria-label="Standalone containers">
@@ -496,22 +481,34 @@
     flex-wrap: wrap;
     gap: 6px 12px;
   }
-  .svc-url {
+  .res {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin-top: 4px;
+  }
+  .res-item {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    font-size: 13px;
-    color: var(--buoy-text);
-    text-decoration: none;
-    max-width: 280px;
+    gap: 6px;
   }
-  .svc-url span {
+  .res-item .bar {
+    width: 48px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--rope-strong);
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
-  .svc-url:hover {
-    text-decoration: underline;
+  .res-item .bar span {
+    display: block;
+    height: 100%;
+    background: var(--afloat);
+  }
+  .res-item.warn .bar span {
+    background: var(--signal);
+  }
+  .res-item.bad .bar span {
+    background: var(--adrift);
   }
   .rollback-banner {
     display: grid;

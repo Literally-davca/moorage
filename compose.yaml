@@ -20,6 +20,8 @@ services:
       # The stacks folder must have the SAME path inside and outside the container,
       # because compose resolves relative paths (./data, env_file) on the host.
       - /opt/stacks:/opt/stacks
+      # Tailscale Serve for services (MOORAGE_TAILSCALE_SERVE below):
+      # - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock
     environment:
       # ---- Basics -------------------------------------------------------------------------
       # HTTP address of the web UI and API. "off" runs without a web UI (CLI over MOORAGE_SOCKET only).
@@ -112,12 +114,33 @@ services:
       MOORAGE_PROXY_DEFAULT_ROLE: none
 
       # ---- Moorage updates ---------------------------------------------------------------
-      # true | false. Allow updating Moorage itself from the UI on this host.
+      # true | false. Allow updating Moorage itself from the UI on this host. false = manual
+      # updates only: Moorage updates, Update Moorage, pulling this stack and an Apply & restart
+      # that changes the Moorage image are all refused; update with docker compose pull && up -d.
       MOORAGE_SELF_UPDATE: "true"
+
       # Where to look for releases (forks, mirrors).
       MOORAGE_UPDATE_URL: https://api.github.com/repos/Literally-davca/moorage/releases
       # stable | pre (pre also offers pre-releases). Default: stable. Set in the UI.
       # MOORAGE_UPDATE_CHANNEL: stable
+
+      # ---- Tailscale ---------------------------------------------------------------------
+      # Tailscale runs on the host (not in this container). Two independent things:
+      #
+      # 1) Moorage itself in your tailnet – nothing to set here. On the host run once:
+      #      tailscale serve --bg --https=443 http://127.0.0.1:5080
+      #    then open https://<this-host>.<your-tailnet>.ts.net and set MOORAGE_PUBLIC_URL (or
+      #    Settings → General) to that address. Agents in the tailnet can use the hub's tailnet
+      #    name for MOORAGE_HUB (hub.<your-tailnet>.ts.net:5081) when port 5081 is published.
+      #
+      # 2) Tailscale Serve for your services (Services card → Tailscale): admins publish a
+      #    service's port in the tailnet as https://<this-host>.<your-tailnet>.ts.net:<port>,
+      #    reachable by every device your tailnet ACLs allow; never Funnel (public internet).
+      #    Turn it on here and mount the tailscaled socket (uncomment under volumes:). The socket
+      #    controls the whole Tailscale node, so this is only set here, never in the UI.
+      # MOORAGE_TAILSCALE_SERVE: "false"
+      # Path of the tailscaled socket inside the container (keep it equal to the mount).
+      # MOORAGE_TAILSCALE_SOCKET: /var/run/tailscale/tailscaled.sock
 
       # ---- Logging -----------------------------------------------------------------------
       # debug | info | warn | error

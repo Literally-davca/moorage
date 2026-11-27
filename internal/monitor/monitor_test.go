@@ -80,7 +80,7 @@ func TestStateMachineRetriesSilenceAndRecovery(t *testing.T) {
 	if len(*sent) != 1 || (*sent)[0].Status != "down" || !strings.Contains((*sent)[0].Title, "DOWN: web") {
 		t.Fatalf("down alert: %+v", *sent)
 	}
-	if (*sent)[0].URL != "https://moorage.example/#/h/local/stacks/web" {
+	if (*sent)[0].URL != "https://moorage.example/#/h/local/stacks/web?ask=explain" { // M19I
 		t.Fatalf("link: %q", (*sent)[0].URL)
 	}
 

@@ -156,7 +156,10 @@ func wireSelfStack(ctx context.Context, eng *engine.Engine, cfg config.Config, i
 			HostNetwork: helperHostNetwork(c, eng),
 		})
 	}
+	s.HostNetUnverifiable = !helperHostNetwork(ctx, eng)
 	eng.SetSelf(s)
+	// M19A: the files Moorage runs with now are the ones to roll back to
+	go eng.RefreshSelfGood(context.WithoutCancel(ctx))
 	log.Info("Moorage runs from a stack here", "stack", s.Project, "service", s.Service)
 	if r := eng.SelfResult(); r != nil && r.RolledBack && !r.Acknowledged {
 		log.Warn("the last Apply & restart was rolled back", "stack", s.Project, "at", r.At, "reason", r.Reason, "log", r.Log)
@@ -201,6 +204,9 @@ func run(mode string, log *slog.Logger) (func() error, error) {
 	cfg, err := config.FromEnv()
 	if err != nil {
 		return nil, err
+	}
+	for _, w := range cfg.ListenWarnings {
+		log.Warn("listen address corrected", "problem", w, "help", "docs/troubleshooting.md")
 	}
 	for _, w := range cfg.DirWarnings {
 		log.Warn("data folder", "problem", w)

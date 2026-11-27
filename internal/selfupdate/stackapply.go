@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -251,23 +252,52 @@ func RunStackApplyHelper(ctx context.Context, eng ContainerEngine, up func(ctx c
 	startedAt := o.Now()
 	reason := ""
 	var lastChecked []string
+	unverified := false
+	if o.HostNet {
+		if why := HostPortsTaken(ctx, eng, o.Project, o.Service, o.StackDir, out); why != "" {
+			// M19B: nothing was started; the old container keeps running
+			res := engine.SelfApplyResult{At: o.Now(), Message: "Not applied: " + why, Reason: why, Log: logPath}
+			if engine.RestoreSelfBackup(o.StackDir, engine.SelfBackupDir(o.DataDir)) != nil {
+				res.Message += " (the new files stay on disk; Moorage still runs the previous configuration)"
+			}
+			fmt.Fprintln(out, res.Message)
+			writeStackApplyResult(o.DataDir, res)
+			return fmt.Errorf("%s", res.Message)
+		}
+	}
 	if err := up(ctx, out); err != nil {
 		reason = "compose up failed: " + err.Error()
-	} else if why, checked := waitStackHealthy(ctx, eng, o, startedAt, proxyNets, out); why != "" {
+	} else if why, checked, unv := waitStackHealthy(ctx, eng, o, startedAt, proxyNets, out); why != "" {
 		reason = why
-		_ = checked
 	} else {
-		lastChecked = checked
+		lastChecked, unverified = checked, unv
 	}
 	if reason == "" {
-		writeStackApplyResult(o.DataDir, engine.SelfApplyResult{At: o.Now(), OK: true, Message: "Applied and Moorage came back.", Checked: lastChecked, Log: logPath})
+		res := engine.SelfApplyResult{At: o.Now(), OK: true, Message: "Applied and Moorage came back.", Checked: lastChecked, Log: logPath, Unverified: unverified}
+		if unverified {
+			res.Message = "Applied – Moorage started, but it wasn't reachable from the helper. Check that you can open it."
+		}
+		writeStackApplyResult(o.DataDir, res)
+		// M19A: this configuration is the one to return to next time
+		if err := engine.CopySelfFiles(o.StackDir, engine.SelfGoodDir(o.DataDir)); err != nil {
+			fmt.Fprintln(out, "can't keep the working configuration:", err)
+		}
 		_ = os.RemoveAll(engine.SelfBackupDir(o.DataDir))
 		return nil
 	}
 
 	fmt.Fprintln(out, "rolling back:", reason)
 	res := engine.SelfApplyResult{At: o.Now(), RolledBack: true, Message: "Rolled back: " + reason, Reason: reason, Log: logPath}
-	if err := engine.RestoreSelfBackup(o.StackDir, engine.SelfBackupDir(o.DataDir)); err != nil {
+	bdir := engine.SelfBackupDir(o.DataDir)
+	if _, err := os.Stat(bdir); err != nil || engine.SameSelfFiles(bdir, o.StackDir) {
+		// M19A: never claim a rollback that changes nothing
+		res.RolledBack = false
+		res.Message = "Apply failed (" + reason + ") and there is no earlier working configuration to return to – see docs/self-stack.md"
+		fmt.Fprintln(out, res.Message)
+		writeStackApplyResult(o.DataDir, res)
+		return fmt.Errorf("%s", res.Message)
+	}
+	if err := engine.RestoreSelfBackup(o.StackDir, bdir); err != nil {
 		res.RolledBack = false
 		res.Message = "Apply failed (" + reason + ") and the previous files couldn't be restored: " + err.Error()
 	} else {
@@ -288,15 +318,16 @@ func RunStackApplyHelper(ctx context.Context, eng ContainerEngine, up func(ctx c
 // network_mode: host, and on its IP in every network it shared with a reverse proxy;
 // ports: that network_mode: host ignores fail at once. Otherwise /api/session on the
 // container or a fresh healthy mark in /data, as before.
-func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOptions, startedAt time.Time, proxyNets map[string]string, out io.Writer) (string, []string) {
+func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOptions, startedAt time.Time, proxyNets map[string]string, out io.Writer) (string, []string, bool) {
 	deadline := o.Now().Add(o.HealthTimeout)
 	var stableSince time.Time
 	var stableKey string
 	last := "the Moorage container didn't start"
 	var checked []string
+	markOnly := false
 	if o.HostNet && o.IsHub {
 		if why := ignoredPorts(ctx, o); why != "" {
-			return why, nil
+			return why, nil, false
 		}
 	}
 	for o.Now().Before(deadline) {
@@ -319,9 +350,11 @@ func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOpti
 			} else {
 				// Do not require matching the old o.Version: Apply & restart is commonly used to change the Moorage image tag.
 				healthy = !o.IsHub || pollContainerSessionHealth(ctx, o.HTTPClient, *insp, o.ListenAddr, "")
+				markOnly = false
 				if !healthy && o.DataDir != "" {
 					if mark, ok := readHealthyMark(o.DataDir); ok && !mark.At.Before(startedAt.Add(-time.Second)) {
-						healthy = true
+						// M19D: alive by its own mark, but the helper couldn't reach it
+						healthy, markOnly = true, o.IsHub
 					}
 				}
 				if !healthy {
@@ -330,20 +363,23 @@ func waitStackHealthy(ctx context.Context, eng ContainerEngine, o StackApplyOpti
 			}
 			if healthy && o.Now().Sub(stableSince) >= o.StableFor {
 				fmt.Fprintf(out, "healthy: %s\n", strings.Join(checked, ", "))
-				return "", checked
+				if markOnly {
+					fmt.Fprintln(out, "unverified: only the health mark in the data folder answered")
+				}
+				return "", checked, markOnly
 			} else if healthy {
 				last = "the Moorage container keeps restarting"
 			}
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err().Error(), checked
+			return ctx.Err().Error(), checked, false
 		default:
 		}
 		o.Sleep(o.PollInterval)
 	}
 	fmt.Fprintf(out, "not healthy: %s\n", last)
-	return last + " within " + o.HealthTimeout.String(), checked
+	return last + " within " + o.HealthTimeout.String(), checked, false
 }
 
 // ignoredPorts reads the new compose file: ports: on the Moorage service with
@@ -520,4 +556,68 @@ func writeStackApplyResult(dataDir string, r engine.SelfApplyResult) {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(dataDir, engine.SelfStackResultFile), b, 0o644)
+}
+
+// HostPortsTaken is the helper's last check before compose up (M19B): with
+// network_mode: host in the new configuration, the listen ports of Moorage must be
+// free in the host's network. It reads /proc/net in the host's namespace, so it also
+// sees native processes (tailscaled, another server) that Moorage in a bridge network
+// can't. Ports the current Moorage container holds are ignored: they free up when it
+// is recreated. "" means go ahead.
+func HostPortsTaken(ctx context.Context, eng ContainerEngine, project, service, stackDir string, out io.Writer) string {
+	file := engine.ComposeFileIn(stackDir)
+	if file == "" {
+		return ""
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return ""
+	}
+	env, _ := os.ReadFile(filepath.Join(stackDir, ".env"))
+	native := engine.ReadNativePorts()
+	if native == nil {
+		return "" // not Linux, or /proc unreadable: the API check is all we have
+	}
+	var running []lint.PortUse
+	for _, p := range native {
+		running = append(running, lint.PortUse{IP: p.IP, Port: p.Port, Proto: p.Proto, Owner: "a process on the host"})
+	}
+	var own []int
+	if insp, _ := currentServiceContainer(ctx, eng, project, service); insp != nil {
+		own = containerOwnPorts(insp)
+	}
+	for _, is := range lint.Lint(ctx, string(b), string(env), lint.Options{Name: project, Running: running, Self: &lint.SelfLint{Service: service, OwnPorts: own}}) {
+		if is.Code == "self-port-taken" || is.Code == "self-listen-invalid" {
+			fmt.Fprintln(out, "refused before compose up:", is.Message)
+			return is.Message
+		}
+	}
+	return ""
+}
+
+// containerOwnPorts are the host ports a Moorage container holds: its published ports,
+// and its listen ports when it runs in the host's network.
+func containerOwnPorts(insp *container.InspectResponse) []int {
+	var own []int
+	if insp.NetworkSettings != nil {
+		for _, binds := range insp.NetworkSettings.Ports {
+			for _, b := range binds {
+				if n, err := strconv.Atoi(b.HostPort); err == nil {
+					own = append(own, n)
+				}
+			}
+		}
+	}
+	if insp.HostConfig != nil && insp.HostConfig.NetworkMode.IsHost() && insp.Config != nil {
+		for _, kv := range insp.Config.Env {
+			k, v, _ := strings.Cut(kv, "=")
+			if k == "MOORAGE_LISTEN" || k == "MOORAGE_AGENT_LISTEN" || k == "MOORAGE_WATCHDOG_LISTEN" {
+				if _, p, _, ok, _ := lint.ParseListen(v); ok && p > 0 {
+					own = append(own, p)
+				}
+			}
+		}
+		own = append(own, 5080, 5081) // defaults when not set
+	}
+	return own
 }

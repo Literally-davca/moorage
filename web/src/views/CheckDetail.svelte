@@ -9,6 +9,19 @@
   import { ago, duration, kindName, multiLocation, pct, quorumText, statusText, targetStatus, toInput, voteText } from '../lib/checks';
   import type { LocationResult, Quorum } from '../lib/api';
   import { untilText } from '../lib/maintenance';
+  import { chat as assistantChat, ask as askAssistant } from '../lib/assistantStore.svelte';
+
+  // M19I: Explain this alert – the panel opens with a question about the incident; the
+  // assistant reads the check, the timeline, logs and changes itself. Nothing is sent.
+  const assistantOn = $derived(!!assistantChat.info?.enabled && !!assistantChat.info?.configured);
+  function explainIncident(inc: { id: number; startedAt: string; endedAt?: string; cause: string }) {
+    if (!check) return;
+    const where = check.stack ? ` of stack ${check.stack} on host ${check.hostId ?? ''}` : '';
+    askAssistant(
+      `Explain this alert: check "${check.name}"${where} went down at ${new Date(inc.startedAt).toLocaleString()} (incident #${inc.id}, cause: ${inc.cause}). ` +
+        `What failed, why, what changed before it, and how do I fix it?`,
+    );
+  }
 
   let { id }: { id: number } = $props();
 
@@ -183,7 +196,7 @@
       <div class="hero">
         <span class="hero-label">Uptime 24 h</span>
         <span class="hero-num num">{pct(check.uptime24h)}</span>
-        <span class="meta num">7 d {pct(check.uptime7d)} · 30 d {pct(check.uptime30d)}</span>
+        <span class="meta num">7 d {pct(check.uptime7d)} · 30 d {pct(check.uptime30d)}{check.uptime90d != null ? ` · 90 d ${pct(check.uptime90d)}` : ''}{check.uptime365d != null ? ` · 1 y ${pct(check.uptime365d)}` : ''}</span>
       </div>
       <div class="strip-col">
         <Strip ticks={check.ticks} anchors={check.anchors ?? []} legend />
@@ -257,6 +270,11 @@
               {/if}
             </div>
             <p class="cause">{inc.cause}</p>
+            {#if assistantOn}
+              <button type="button" class="btn btn-ghost btn-sm explain" onclick={() => explainIncident(inc)}>
+                <Icon name="message" /> Explain this alert
+              </button>
+            {/if}
             {#if inc.context}
               {#each inc.context.containers ?? [] as c (c.id)}
                 {#if (c.exitCode !== undefined && c.exitCode !== 0) || c.health === 'unhealthy' || c.state !== 'running'}

@@ -179,7 +179,7 @@
     }
     if (!n.connected) return { tone: 'bad', label: 'Offline' };
     if (n.olderAgent) return { tone: 'warn', label: 'Update manually' };
-    if (!n.selfUpdate) return { tone: 'neutral', label: 'Disabled' };
+    if (!n.selfUpdate) return { tone: 'neutral', label: 'Manual updates only' };
     if (!n.supported) return { tone: 'neutral', label: 'Unsupported' };
     if (n.compatibility === 'update-hub-first') return { tone: 'warn', label: 'Update hub first' };
     if (n.compatibility === 'agent-too-old') return { tone: 'bad', label: 'Agent too old' };
@@ -304,6 +304,15 @@
               </p>
             {/if}
 
+            {#if !n.selfUpdate && n.connected}
+              <div class="su-manual">
+                <span class="meta">MOORAGE_SELF_UPDATE=false – update it on the host:</span>
+                <code class="mono su-cmd">docker compose pull && docker compose up -d</code>
+                <button type="button" class="btn btn-ghost" onclick={() => copyCmd(n.id, 'docker compose pull && docker compose up -d')}>
+                  <Icon name="copy" /> <span>{copiedId === n.id ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+            {/if}
             {#if n.olderAgent && n.manualCommand}
               <div class="su-manual">
                 <span class="meta">Update manually:</span>

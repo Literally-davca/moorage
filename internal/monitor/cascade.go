@@ -445,6 +445,7 @@ func (m *Monitor) noteAfterRoot(msg *notify.Message, a alert) {
 	}
 	name := m.rootLabel(r, a.check.HostID)
 	msg.Title += " — still down after " + name + " recovered"
+	msg.Repeat = true // M19L: not the first alert of this outage
 	msg.Text = strings.TrimSpace(msg.Text + "\n\nIt was folded into the " + name + " outage, but " + name + " is back and this is still down.")
 }
 

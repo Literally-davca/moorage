@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -17,7 +16,6 @@ import (
 
 	"moorage/internal/assistant"
 	"moorage/internal/host"
-	"moorage/internal/netguard"
 	"moorage/internal/store"
 )
 
@@ -70,12 +68,20 @@ type assistantSettings struct {
 	MonthlyTokenLimit int64             `json:"monthlyTokenLimit"`
 	UsageMonth        string            `json:"usageMonth"`
 	UsageTokens       int64             `json:"usageTokens"`
+	// M19E: several providers and the default pair; M19I: show the model's thinking.
+	Providers    []assistantProvider `json:"providers"`
+	Default      assistantDefault    `json:"default"`
+	ShowThinking *bool               `json:"showThinking,omitempty"`
 }
+
+func (a assistantSettings) thinking() bool { return a.ShowThinking == nil || *a.ShowThinking }
 
 type assistantSettingsDTO struct {
 	assistantSettings
 	Enabled   bool `json:"enabled"`
 	APIKeySet bool `json:"apiKeySet"`
+	// KeysSet says which providers have a key (M19E).
+	KeysSet map[string]bool `json:"keysSet"`
 	// FunctionCalling is false for providers/models known to lack tools (Advise only).
 	Categories []string `json:"categories"`
 }
@@ -112,6 +118,7 @@ func (s *Server) loadAssistantSettings(ctx context.Context) assistantSettings {
 	if m := time.Now().Format("2006-01"); a.UsageMonth != m {
 		a.UsageMonth, a.UsageTokens = m, 0
 	}
+	normalizeProviders(&a)
 	return a
 }
 
@@ -126,8 +133,12 @@ func (s *Server) saveAssistantSettings(ctx context.Context, a assistantSettings)
 func (s *Server) getAssistantSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	on, _ := s.store.AddonEnabled(ctx, addonAssistant)
-	key, _ := s.store.GetSetting(ctx, settingAssistantKey)
-	writeJSON(w, http.StatusOK, assistantSettingsDTO{assistantSettings: s.loadAssistantSettings(ctx), Enabled: on, APIKeySet: key != "", Categories: assistantCategories})
+	a := s.loadAssistantSettings(ctx)
+	keys := map[string]bool{}
+	for _, p := range a.Providers {
+		keys[p.ID] = s.providerKey(ctx, p.ID) != ""
+	}
+	writeJSON(w, http.StatusOK, assistantSettingsDTO{assistantSettings: a, Enabled: on, APIKeySet: keys[a.Default.Provider], KeysSet: keys, Categories: assistantCategories})
 }
 
 func (s *Server) putAssistantSettings(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +146,9 @@ func (s *Server) putAssistantSettings(w http.ResponseWriter, r *http.Request) {
 		assistantSettings
 		APIKey   string `json:"apiKey"`
 		ClearKey bool   `json:"clearKey"`
+		// M19E: keys per provider id; ClearKeys removes them.
+		Keys      map[string]string `json:"keys"`
+		ClearKeys []string          `json:"clearKeys"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -142,29 +156,25 @@ func (s *Server) putAssistantSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	cur := s.loadAssistantSettings(ctx)
 	in := req.assistantSettings
-	switch in.Provider {
-	case assistant.ProviderAnthropic, assistant.ProviderOpenAI, assistant.ProviderGemini, assistant.ProviderOllama, assistant.ProviderCompat:
-	default:
-		writeErr(w, http.StatusBadRequest, "Unknown provider.")
-		return
-	}
-	in.Model = strings.TrimSpace(in.Model)
-	if len(in.Model) > 120 {
-		writeErr(w, http.StatusBadRequest, "Model name is too long.")
-		return
-	}
-	in.BaseURL = strings.TrimSpace(in.BaseURL)
-	if in.BaseURL != "" {
-		u, err := url.Parse(in.BaseURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			writeErr(w, http.StatusBadRequest, "The endpoint must be an http(s) URL.")
+	if len(in.Providers) == 0 {
+		// an older client: the single provider fields
+		switch in.Provider {
+		case assistant.ProviderAnthropic, assistant.ProviderOpenAI, assistant.ProviderGemini, assistant.ProviderOllama, assistant.ProviderCompat:
+		default:
+			writeErr(w, http.StatusBadRequest, "Unknown provider.")
 			return
 		}
+		in.Providers = []assistantProvider{{ID: "default", Name: providerLabel(in.Provider), Type: in.Provider, BaseURL: strings.TrimSpace(in.BaseURL)}}
+		if paidProvider(in.Provider) && strings.TrimSpace(in.Model) != "" {
+			in.Providers[0].Models = []string{strings.TrimSpace(in.Model)}
+		}
+		in.Default = assistantDefault{Provider: "default", Model: strings.TrimSpace(in.Model)}
 	}
-	if in.Provider == assistant.ProviderCompat && in.BaseURL == "" {
-		writeErr(w, http.StatusBadRequest, "Set the endpoint URL of the OpenAI-compatible provider.")
+	if msg := validateProviders(&in); msg != "" {
+		writeErr(w, http.StatusBadRequest, msg)
 		return
 	}
+	normalizeProviders(&in)
 	for _, c := range assistantCategories {
 		switch in.Levels[c] {
 		case levelOff, levelAdvise, levelPropose:
@@ -194,13 +204,31 @@ func (s *Server) putAssistantSettings(w http.ResponseWriter, r *http.Request) {
 		s.engErr(w, err)
 		return
 	}
-	switch {
-	case req.ClearKey:
-		_ = s.store.SetSetting(ctx, settingAssistantKey, "")
-	case strings.TrimSpace(req.APIKey) != "":
-		if err := s.store.SetSetting(ctx, settingAssistantKey, strings.TrimSpace(req.APIKey)); err != nil {
+	if req.Keys == nil {
+		req.Keys = map[string]string{}
+	}
+	if strings.TrimSpace(req.APIKey) != "" {
+		req.Keys[in.Default.Provider] = req.APIKey
+	}
+	if req.ClearKey {
+		req.ClearKeys = append(req.ClearKeys, in.Default.Provider)
+	}
+	for _, id := range req.ClearKeys {
+		_ = s.store.SetSetting(ctx, settingAssistantKey+":"+id, "")
+		if id == "default" || id == in.Default.Provider {
+			_ = s.store.SetSetting(ctx, settingAssistantKey, "")
+		}
+	}
+	for id, k := range req.Keys {
+		if k = strings.TrimSpace(k); k == "" || in.providerByID(id) == nil {
+			continue
+		}
+		if err := s.store.SetSetting(ctx, settingAssistantKey+":"+id, k); err != nil {
 			s.engErr(w, err)
 			return
+		}
+		if id == in.Default.Provider {
+			_ = s.store.SetSetting(ctx, settingAssistantKey, k) // older versions read this
 		}
 	}
 	s.getAssistantSettings(w, r)
@@ -218,6 +246,11 @@ type assistantChatReq struct {
 	} `json:"context"`
 	// Allow lists data kinds the user allowed for this chat (logs, audit).
 	Allow []string `json:"allow"`
+	// M19E: an admin may pick the provider and model of this chat.
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	// M19I: banners, errors and warnings the user sees right now.
+	Notices []pageNotice `json:"notices"`
 }
 
 func (s *Server) assistantChat(w http.ResponseWriter, r *http.Request) {
@@ -236,29 +269,26 @@ func (s *Server) assistantChat(w http.ResponseWriter, r *http.Request) {
 	}
 	total := 0
 	for _, m := range req.Messages {
+		if len(m.Text) > assistantMaxMessageBytes {
+			writeErr(w, http.StatusBadRequest, "A message is longer than 32 KiB. Shorten it or attach less log text.")
+			return
+		}
 		total += len(m.Text)
 	}
 	if total > assistantMaxMessageBytes*assistantMaxMessages {
 		writeErr(w, http.StatusBadRequest, "The conversation is too long. Start a new chat.")
 		return
 	}
+	req.Notices = cleanNotices(req.Notices)
 	set := s.loadAssistantSettings(ctx)
 	if set.MonthlyTokenLimit > 0 && set.UsageTokens >= set.MonthlyTokenLimit {
 		s.log.Warn("assistant monthly token limit reached", "limit", set.MonthlyTokenLimit)
 		writeErr(w, http.StatusTooManyRequests, "This month's token limit of the assistant is used up. Raise it in Settings → Add-ons → AI assistant.")
 		return
 	}
-	key, _ := s.store.GetSetting(ctx, settingAssistantKey)
 	user := currentUser(r)
+	prov, model, note := s.pickModel(ctx, set, user.Role == "admin", req.Provider, req.Model)
 	tools := s.assistantTools(r, set, req)
-	sess, err := assistant.NewSession(assistant.Config{
-		Provider: set.Provider, Model: set.Model, BaseURL: set.BaseURL, APIKey: key,
-		HTTP: &http.Client{Timeout: 5 * time.Minute, Transport: &http.Transport{DialContext: netguard.DialContext(15*time.Second, true), ForceAttemptHTTP2: true}},
-	}, assistant.SystemPrompt(), s.assistantContext(ctx, user.Role, req), req.Messages, toolDefs(tools))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, capitalize(err.Error())+".")
-		return
-	}
 
 	fl, ok := w.(http.Flusher)
 	if !ok {
@@ -274,23 +304,77 @@ func (s *Server) assistantChat(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "data: %s\n\n", b)
 		fl.Flush()
 	}
-	in, out, err := assistant.Run(ctx, sess, tools, emit)
+	modelName := prov.Name + " · " + model
+	emit(assistant.Event{Type: "model", Model: modelName, Text: note})
+
+	cfg := s.providerConfig(ctx, prov, model)
+	cfg.OnDelta = func(t string) { emit(assistant.Event{Type: "delta", Text: t}) }
+	if set.thinking() {
+		cfg.Thinking = true
+		cfg.OnThinking = func(t string) { emit(assistant.Event{Type: "thinking", Text: t}) }
+	}
+	defs := toolDefs(tools)
+	if len(defs) > 0 {
+		defs = append(defs, assistant.AskChoiceTool)
+	}
+	sess, err := assistant.NewSession(cfg, assistant.SystemPrompt(), s.assistantContext(ctx, user.Role, req), req.Messages, defs)
+	var in, out int64
+	if err == nil {
+		in, out, err = assistant.Run(ctx, sess, tools, emit, noticesForeign(req.Notices))
+	}
 	if in+out > 0 {
 		cur := s.loadAssistantSettings(context.WithoutCancel(ctx))
 		cur.UsageTokens += in + out
 		_ = s.saveAssistantSettings(context.WithoutCancel(ctx), cur)
 	}
-	if err != nil {
+	if err != nil && ctx.Err() == nil {
 		// the status, never the conversation
-		var pe *assistant.ProviderError
-		if errors.As(err, &pe) {
-			s.log.Warn("assistant provider error", "provider", set.Provider, "model", set.Model, "status", pe.Status)
-		} else {
-			s.log.Warn("assistant provider unreachable", "provider", set.Provider, "model", set.Model)
-		}
-		emit(assistant.Event{Type: "error", Text: err.Error()})
+		code, detail := assistant.ErrorCode(err)
+		s.log.Warn("assistant provider error", "provider", prov.Type, "model", model, "code", code)
+		emit(assistant.Event{Type: "error", Text: capitalize(err.Error()) + ".", Code: code, Detail: detail, Model: modelName})
 	}
-	emit(assistant.Event{Type: "done", InTokens: in, OutTokens: out})
+	emit(assistant.Event{Type: "done", InTokens: in, OutTokens: out, Model: modelName})
+}
+
+// pageNotice is a banner, error or warning the user sees right now (M19I).
+type pageNotice struct {
+	ID       string `json:"id"`
+	Severity string `json:"severity"` // error | warning | info
+	Title    string `json:"title"`
+	Text     string `json:"text"`
+	HostID   string `json:"hostId,omitempty"`
+	Stack    string `json:"stack,omitempty"`
+	Fix      string `json:"fix,omitempty"`
+	// Foreign: the text quotes container output (logs); treated like logs.
+	Foreign bool `json:"foreign,omitempty"`
+}
+
+// cleanNotices bounds the screen context: at most 20 notices of 2 KiB each.
+func cleanNotices(in []pageNotice) []pageNotice {
+	var out []pageNotice
+	cut := func(s string, n int) string {
+		s = strings.TrimSpace(s)
+		if len(s) > n {
+			return s[:n] + "…"
+		}
+		return s
+	}
+	for _, n := range in {
+		if len(out) == 20 {
+			break
+		}
+		n.Title, n.Text, n.Fix = cut(n.Title, 200), cut(n.Text, 2048), cut(n.Fix, 1024)
+		switch n.Severity {
+		case "error", "warning", "info":
+		default:
+			n.Severity = "info"
+		}
+		if n.Title == "" && n.Text == "" {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 var originRe = regexp.MustCompile(`^https?://[A-Za-z0-9.\-\[\]:]+$`)
@@ -323,7 +407,36 @@ func (s *Server) assistantContext(ctx context.Context, role string, req assistan
 			}
 		}
 	}
+	if len(req.Notices) > 0 {
+		// M19I: what the user sees; quoted container output stays marked as data
+		b.WriteString("\n## Screen notices (what the user sees now)\n")
+		for _, n := range req.Notices {
+			where := ""
+			if n.Stack != "" {
+				where = " (stack " + n.Stack + ", host " + n.HostID + ")"
+			}
+			text := n.Text
+			if n.Foreign {
+				text = "<untrusted-data>" + text + "</untrusted-data>"
+			}
+			fmt.Fprintf(&b, "- [%s] %s%s: %s", n.Severity, n.Title, where, text)
+			if n.Fix != "" {
+				fmt.Fprintf(&b, " Suggested fix: %s", n.Fix)
+			}
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
+}
+
+// noticesForeign: a screen notice quotes container output, so Auto turns into Propose.
+func noticesForeign(ns []pageNotice) bool {
+	for _, n := range ns {
+		if n.Foreign {
+			return true
+		}
+	}
+	return false
 }
 
 func toolDefs(tools map[string]assistant.Tool) []assistant.ToolDef {
@@ -353,6 +466,8 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 	add := func(t assistant.Tool) { tools[t.Def.Name] = t }
 
 	add(assistant.Tool{
+		Label:  "Looking at stacks",
+		Target: func(json.RawMessage) string { return "stacks" },
 		Def: assistant.ToolDef{Name: "list_stacks", Description: "List hosts and their stacks with status.",
 			Schema: map[string]any{"hostId": str("string", "Only this host (optional).")}},
 		Run: func(ctx context.Context, in json.RawMessage, _ *assistant.State, _ func(assistant.Event)) (string, error) {
@@ -387,10 +502,12 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 		},
 	})
 	add(assistant.Tool{
+		Label:  "Reading the stack",
+		Target: func(in json.RawMessage) string { return "stack " + inputStack(in) + " · Problems · compose.yaml (values hidden)" },
 		Def: assistant.ToolDef{Name: "get_stack", Description: "Read a stack: containers, the Problems card, compose.yaml and the names of .env variables (values are never shown).",
 			Schema:   map[string]any{"hostId": str("string", "Host id."), "stack": str("string", "Stack name.")},
 			Required: []string{"hostId", "stack"}},
-		Run: func(ctx context.Context, in json.RawMessage, _ *assistant.State, _ func(assistant.Event)) (string, error) {
+		Run: func(ctx context.Context, in json.RawMessage, ast *assistant.State, _ func(assistant.Event)) (string, error) {
 			hostID, stack, h, err := s.assistantStack(ctx, in)
 			if err != nil {
 				return "", err
@@ -405,9 +522,7 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 				fmt.Fprintf(&b, "- %s (service %s, image %s): %s, %s %s\n", c.Name, c.Service, c.Image, c.State, c.Status, c.Health)
 			}
 			if pr, err := s.stackProblems(ctx, hostID, h, stack); err == nil {
-				for _, p := range pr.Problems {
-					fmt.Fprintf(&b, "Problem [%s] %s – %s: %s. Evidence: %s\n", p.Severity, p.Service, p.Title, p.Detail, strings.Join(p.Evidence, " | "))
-				}
+				b.WriteString(s.problemsText(pr.Problems, set, allowed, ast, st.Env))
 			}
 			fmt.Fprintf(&b, ".env variables (values hidden): %s\ncompose.yaml:\n%s\n", strings.Join(envKeyNames(st.Env), ", "), maskEnvValues(st.Compose, st.Env))
 			return b.String(), nil
@@ -416,13 +531,23 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 	if set.Data["logs"] != dataNever {
 		add(assistant.Tool{
 			Foreign: true,
+			Label:   "Reading logs",
+			Target: func(in json.RawMessage) string {
+				var a struct {
+					Lines int `json:"lines"`
+				}
+				_ = json.Unmarshal(in, &a)
+				if a.Lines <= 0 || a.Lines > 200 {
+					a.Lines = 200
+				}
+				return fmt.Sprintf("%d log lines of %s (masked)", a.Lines, inputStack(in))
+			},
 			Def: assistant.ToolDef{Name: "get_logs", Description: "Read the last log lines of a stack (at most 200). Values from .env and secrets are masked.",
 				Schema:   map[string]any{"hostId": str("string", "Host id."), "stack": str("string", "Stack name."), "lines": str("integer", "How many lines (max 200).")},
 				Required: []string{"hostId", "stack"}},
 			Run: func(ctx context.Context, in json.RawMessage, _ *assistant.State, emit func(assistant.Event)) (string, error) {
 				if set.Data["logs"] == dataAsk && !allowed["logs"] {
-					emit(assistant.Event{Type: "permission", Permission: "logs"})
-					return "The user has not allowed reading logs in this chat yet. Ask them to press Allow, then try again.", nil
+					return "", assistant.PermissionNeeded{What: "logs"}
 				}
 				var a struct {
 					Lines int `json:"lines"`
@@ -449,6 +574,8 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 		})
 	}
 
+	s.addReadTools(add, set, allowed)
+
 	// ---- actions (admins only, per category level) ----
 	if !admin {
 		return tools
@@ -472,9 +599,16 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 				if err != nil {
 					return "", err
 				}
-				_ = h
+				impact := ""
+				if cur, err := h.GetStack(ctx, stack); err == nil && (a.Action == "stop" || a.Action == "restart") {
+					verb := "Stops"
+					if a.Action == "restart" {
+						verb = "Restarts"
+					}
+					impact = fmt.Sprintf("%s %d %s", verb, cur.Running, plural(cur.Running, "container", "containers"))
+				}
 				d := store.MCPDraft{TokenName: assistantDraftPrefix + user.Username, Tool: "stack_action", HostID: hostID, Stack: stack, Note: a.Action}
-				return s.assistantAct(ctx, r, set, "stack", st, d, assistant.Action{Kind: "stack_action", Title: capitalize(a.Action) + " stack " + stack, HostID: hostID, Stack: stack}, emit)
+				return s.assistantAct(ctx, r, set, "stack", st, d, assistant.Action{Kind: "stack_action", Title: capitalize(a.Action) + " stack " + stack, HostID: hostID, Host: s.hostName(ctx, hostID), Stack: stack, Impact: impact}, emit)
 			},
 		})
 	}
@@ -493,6 +627,10 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 				if err := json.Unmarshal(in, &a); err != nil || strings.TrimSpace(a.Compose) == "" {
 					return "", errors.New("compose is required")
 				}
+				// M19I: Moorage's own stack gets a proposal with Apply & restart (never Auto)
+				if res, handled, err := s.assistantSelfProposal(ctx, r, set, in, a.Compose, a.Note, emit); handled {
+					return res, err
+				}
 				hostID, stack, h, err := s.assistantWritableStack(ctx, in)
 				if err != nil {
 					return "", err
@@ -507,7 +645,7 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 				d := store.MCPDraft{TokenName: assistantDraftPrefix + user.Username, Tool: "update_stack", HostID: hostID, Stack: stack,
 					Compose: a.Compose, Env: cur.Env, EnvKeys: []string{baseMarker(cur.Compose, cur.Env)}, Note: trimNote(a.Note), Deploy: a.Deploy}
 				return s.assistantAct(ctx, r, set, "compose", st, d, assistant.Action{Kind: "compose", Title: "Change compose.yaml of " + stack + deployWord(a.Deploy),
-					HostID: hostID, Stack: stack, Diff: lineDiff(cur.Compose, a.Compose), Undo: "Restore the previous version in the stack's History tab."}, emit)
+					HostID: hostID, Host: s.hostName(ctx, hostID), Stack: stack, Diff: lineDiff(cur.Compose, a.Compose), Undo: "Restore the previous version in the stack's History tab."}, emit)
 			},
 		})
 	}
@@ -645,6 +783,10 @@ func (s *Server) assistantDraft(w http.ResponseWriter, r *http.Request) (store.M
 func (s *Server) assistantApply(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.assistantDraft(w, r)
 	if !ok {
+		return
+	}
+	if d.Tool == draftSelfApply {
+		s.applySelfDraft(w, r, d) // M19I
 		return
 	}
 	ctx := r.Context()
@@ -794,12 +936,40 @@ func lineDiff(a, b string) string {
 	return out.String()
 }
 
-// assistantStatus tells the shell whether to show the panel (enabled and configured).
+/// assistantStatus tells the shell whether to show the panel (enabled and configured),
+// the default model and, for admins, the models they can switch to (M19E).
 func (s *Server) assistantStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	on, _ := s.store.AddonEnabled(ctx, addonAssistant)
 	set := s.loadAssistantSettings(ctx)
-	key, _ := s.store.GetSetting(ctx, settingAssistantKey)
-	configured := key != "" || set.Provider == assistant.ProviderOllama || (set.Provider == assistant.ProviderCompat && set.BaseURL != "")
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": on, "configured": configured, "admin": currentUser(r).Role == "admin"})
+	def := set.providerByID(set.Default.Provider)
+	configured := s.providerKey(ctx, def.ID) != "" || def.Type == assistant.ProviderOllama || (def.Type == assistant.ProviderCompat && def.BaseURL != "")
+	admin := currentUser(r).Role == "admin"
+	resp := map[string]any{
+		"enabled": on, "configured": configured, "admin": admin,
+		"model":        def.Name + " · " + set.Default.Model,
+		"default":      set.Default,
+		"showThinking": set.thinking(),
+		"tokenLimit":   set.MonthlyTokenLimit,
+		"tokensUsed":   set.UsageTokens,
+	}
+	if admin && on && r.URL.Query().Get("models") == "1" {
+		type group struct {
+			ID     string   `json:"id"`
+			Name   string   `json:"name"`
+			Models []string `json:"models"`
+			Error  string   `json:"error,omitempty"`
+		}
+		var groups []group
+		for i := range set.Providers {
+			p := &set.Providers[i]
+			g := group{ID: p.ID, Name: p.Name, Models: s.allowedModels(ctx, set, p)}
+			if !paidProvider(p.Type) {
+				g.Error = s.detectModels(ctx, p, false).err
+			}
+			groups = append(groups, g)
+		}
+		resp["models"] = groups
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

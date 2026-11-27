@@ -33,6 +33,7 @@
     { k: 'dns', hint: 'A name resolves' },
     { k: 'stack', hint: 'Containers of a stack keep running' },
     { k: 'log', hint: 'A pattern appears in container logs' },
+    { k: 'resources', hint: 'Disk and memory of a host stay below limits' },
   ];
 
   $effect(() => {
@@ -136,8 +137,8 @@
     form.target = urls.find((u) => u.trim()) ?? '';
   }
 
-  const linkStack = $derived(form.kind !== 'stack' && form.kind !== 'log');
-  const targetLabel: Record<CheckKind, string> = { http: 'URL', tcp: 'Host and port', ping: 'Host', dns: 'Name', stack: 'Stack', log: 'Container' };
+  const linkStack = $derived(form.kind !== 'stack' && form.kind !== 'log' && form.kind !== 'resources');
+  const targetLabel: Record<CheckKind, string> = { http: 'URL', tcp: 'Host and port', ping: 'Host', dns: 'Name', stack: 'Stack', log: 'Container', resources: 'Host' };
   const targetPlaceholder: Record<CheckKind, string> = {
     http: 'https://cloud.example.com/status',
     tcp: 'db.lan:5432',
@@ -145,6 +146,7 @@
     dns: 'example.com',
     stack: '',
     log: '',
+    resources: '',
   };
 
   const regexError = $derived.by(() => {
@@ -192,6 +194,9 @@
     test = null;
     if (k === 'dns') {
       form.settings = { recordType: 'A' };
+    } else if (k === 'resources') {
+      form.settings = { diskWarnPct: 85, diskCritPct: 95, memCritPct: 90 };
+      form.target = app.host;
     } else if (k === 'log') {
       form.settings = { pattern: '', regex: false, caseSensitive: false, threshold: 1, window: 300 };
       form.retries = 1;
@@ -205,11 +210,18 @@
     // StatusCodes binds this field; it must never be undefined.
     form.settings.status ??= '';
     if (k === 'stack') form.target = form.stack || '';
-    else if (k !== 'log' && form.target === form.stack) form.target = '';
+    else if (k !== 'log' && k !== 'resources' && form.target === form.stack) form.target = '';
   }
 
   function clean(): CheckInput {
     const c = $state.snapshot(form) as CheckInput;
+    if (c.kind === 'resources') {
+      c.locations = [];
+      c.quorum = '';
+      c.hostId = c.target;
+      c.name = c.name.trim() || `${app.hosts.find((h) => h.id === c.target)?.name ?? c.target}: disk & memory`.slice(0, 60);
+      return c;
+    }
     if (c.kind === 'log') {
       c.locations = [];
       c.quorum = '';
@@ -309,6 +321,26 @@
           {#if stackSel.length > 1}With several stacks (on any hosts) the check is <b>Partially down</b> when some of them fail and Down when all do;
             a stack that is deploying or in maintenance sits the run out.{/if}
         </p>
+      {:else if form.kind === 'resources'}
+        <div class="three">
+          <div>
+            <span class="label">Host</span>
+            <Select label="Host" value={form.target} items={app.hosts.map((h) => ({ value: h.id, label: h.name }))} onchange={(v) => (form.target = v)} />
+          </div>
+          <div>
+            <label class="label" for="dw">Disk warning at %</label>
+            <input id="dw" class="field" type="number" min="1" max="99" bind:value={form.settings.diskWarnPct} />
+          </div>
+          <div>
+            <label class="label" for="dc">Disk down at %</label>
+            <input id="dc" class="field" type="number" min="2" max="100" bind:value={form.settings.diskCritPct} />
+          </div>
+          <div>
+            <label class="label" for="mc">Memory down at %</label>
+            <input id="mc" class="field" type="number" min="1" max="100" bind:value={form.settings.memCritPct} />
+          </div>
+        </div>
+        <p class="hint">Watches the system disk (Docker data), the stacks folder, Moorage's data and memory of the host. Over the warning the check stays up with a note.</p>
       {:else if form.kind === 'log'}
         <div class="three">
           <div>
@@ -543,7 +575,7 @@
         {/if}
       </div>
 
-      {#if form.kind !== 'stack' && form.kind !== 'log'}
+      {#if form.kind !== 'stack' && form.kind !== 'log' && form.kind !== 'resources'}
         <button type="button" class="adv-toggle meta" onclick={() => (advanced = !advanced)} aria-expanded={advanced}>
           {advanced ? 'Hide' : 'Show'} advanced options
         </button>

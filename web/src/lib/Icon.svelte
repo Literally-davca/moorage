@@ -67,8 +67,13 @@
   import merge from '@tabler/icons/outline/git-merge.svg?raw';
   import swap from '@tabler/icons/outline/arrows-exchange.svg?raw';
   import code from '@tabler/icons/outline/code.svg?raw';
+  import qr from '@tabler/icons/outline/qrcode.svg?raw';
+  import maximize from '@tabler/icons/outline/arrows-diagonal.svg?raw';
+  import minimize from '@tabler/icons/outline/arrows-diagonal-minimize-2.svg?raw';
+  import message from '@tabler/icons/outline/message-circle-question.svg?raw';
 
   const icons = {
+    qr, maximize, minimize, message,
     anchor, search, plus, play, stop, refresh, download, trash, lock, dots, x, check, alert, logout, sun, moon,
     arrowDown, arrowUp, pause, eraser, terminal, server, power, cloudDown, wand, menu, chevronLeft, wrap, history, rollback, selector, copy, plug, pulse, bell, world, clipboardList, tool, hierarchy,
     template, eye, eyeOff, external, users, userCircle, key, chevronDown, settings,

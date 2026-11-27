@@ -82,6 +82,7 @@ func TestSelfApplyLaunchFailureRestoresFiles(t *testing.T) {
 	e := newSelfEngine(t, func(context.Context) error { return errors.New("no socket") })
 	ctx := context.Background()
 	changed := strings.Replace(selfCompose, "1.0.0", "2.0.0", 1)
+	keepGood(t, e) // M19A: what Moorage last ran with
 	if err := e.SelfApply(ctx, "moorage", changed, "", "ann"); err == nil {
 		t.Fatal("a failed launch must fail the apply")
 	}
@@ -103,6 +104,7 @@ func TestSelfApplyLaunchKeepsBackupAndLock(t *testing.T) {
 	e := newSelfEngine(t, func(context.Context) error { launched = true; return nil })
 	ctx := context.Background()
 	changed := strings.Replace(selfCompose, "1.0.0", "2.0.0", 1)
+	keepGood(t, e) // M19A: what Moorage last ran with
 	if err := e.SelfApply(ctx, "moorage", changed, "", "ann"); err != nil {
 		t.Fatal(err)
 	}
@@ -133,5 +135,29 @@ func TestSelfApplyNotSelf(t *testing.T) {
 	e := newSelfEngine(t, nil)
 	if err := e.SelfApply(context.Background(), "other", selfCompose, "", "ann"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want not found, got %v", err)
+	}
+}
+
+// keepGood records the files on disk as the last working configuration, as
+// RefreshSelfGood does at startup when they match the running container.
+func keepGood(t *testing.T, e *Engine) {
+	t.Helper()
+	dir, _ := e.stackDir("moorage")
+	if err := CopySelfFiles(dir, SelfGoodDir(e.cfg.DataDir)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSelfApplyWithoutWorkingConfigKeepsNoBackup(t *testing.T) {
+	e := newSelfEngine(t, func(context.Context) error { return nil })
+	changed := strings.Replace(selfCompose, "1.0.0", "2.0.0", 1)
+	if err := e.SelfApply(context.Background(), "moorage", changed, "", "ann"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(SelfBackupDir(e.cfg.DataDir)); !os.IsNotExist(err) {
+		t.Fatal("without a known working configuration there is nothing to roll back to")
+	}
+	if e.SelfRollbackAvailable(context.Background(), "moorage") {
+		t.Fatal("rollback must be reported unavailable")
 	}
 }

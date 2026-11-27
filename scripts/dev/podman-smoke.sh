@@ -234,7 +234,10 @@ PY
 then pass "stats"; else fail "stats" "$STATS"; fi
 
 # ---- exec (web terminal) -----------------------------------------------------------
-out=$(python3 "$WORK/ws.py" term "/api/hosts/local/stacks/$STACK/terminal?container=ticker&shell=sh&cols=80&rows=24" "$JAR" 2>&1)
+# Terminal upgrades need a one-time ticket since M17A (POST /api/terminal/ticket).
+r=$(api POST /api/terminal/ticket "{\"kind\":\"stack\",\"host\":\"local\",\"stack\":\"$STACK\",\"container\":\"ticker\"}")
+TICKET=$(body "$r" | jget ticket 2>/dev/null)
+out=$(python3 "$WORK/ws.py" term "/api/hosts/local/stacks/$STACK/terminal?container=ticker&shell=sh&cols=80&rows=24&ticket=$TICKET" "$JAR" 2>&1)
 if [ $? = 0 ]; then pass "exec in terminal ($out)"; else fail "exec" "$out"; fi
 
 # ---- down ----------------------------------------------------------------------

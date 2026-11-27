@@ -52,6 +52,9 @@ type checkDTO struct {
 	Anchors          []monitor.Anchor `json:"anchors,omitempty"`
 	Uptime7d         *float64         `json:"uptime7d,omitempty"`
 	Uptime30d        *float64         `json:"uptime30d,omitempty"`
+	// M19M: from hourly summaries beyond the 30 days of raw results.
+	Uptime90d  *float64 `json:"uptime90d,omitempty"`
+	Uptime365d *float64 `json:"uptime365d,omitempty"`
 	// Maintenance is the planned window running over the check now, if any.
 	Maintenance *activeMaintDTO `json:"maintenance,omitempty"`
 	// LocationTicks are the newest results per location of a multi-location check.
@@ -141,6 +144,28 @@ func (s *Server) validateCheck(ctx context.Context, in *checkInput) error {
 			return errors.New("Pick the host and the stack to watch.")
 		}
 		in.Stack = in.Target // silence and anchors follow the (first) watched stack
+	case monitor.KindResources:
+		// M19M: Target is the host id
+		if s.reg != nil {
+			if _, _, err := s.reg.Get(ctx, in.Target); errors.Is(err, host.ErrUnknownHost) {
+				return errors.New("Pick the host to watch.")
+			}
+		}
+		w, c, m := st.DiskWarnPct, st.DiskCritPct, st.MemCritPct
+		if w == 0 {
+			w = 85
+		}
+		if c == 0 {
+			c = 95
+		}
+		if m == 0 {
+			m = 90
+		}
+		if w < 1 || w > 99 || c < 2 || c > 100 || w >= c || m < 1 || m > 100 {
+			return errors.New("Thresholds are percentages: the disk warning below the disk limit.")
+		}
+		*st = monitor.Settings{DiskWarnPct: w, DiskCritPct: c, MemCritPct: m}
+		in.HostID, in.Stack = in.Target, ""
 	case monitor.KindLog:
 		if in.HostID == "" || !stackNameRe.MatchString(in.Stack) {
 			return errors.New("Pick the host and the stack to watch.")
@@ -390,7 +415,7 @@ func (s *Server) getCheck(w http.ResponseWriter, r *http.Request) {
 	for _, p := range []struct {
 		dst **float64
 		d   time.Duration
-	}{{&d.Uptime7d, 7 * 24 * time.Hour}, {&d.Uptime30d, 30 * 24 * time.Hour}} {
+	}{{&d.Uptime7d, 7 * 24 * time.Hour}, {&d.Uptime30d, 30 * 24 * time.Hour}, {&d.Uptime90d, 90 * 24 * time.Hour}, {&d.Uptime365d, 365 * 24 * time.Hour}} {
 		if up, n, err := s.store.Uptime(ctx, c.ID, time.Now().Add(-p.d)); err == nil && n > 0 {
 			*p.dst = &up
 		}

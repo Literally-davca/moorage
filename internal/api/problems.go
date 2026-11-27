@@ -83,7 +83,7 @@ func (s *Server) stackProblems(ctx context.Context, hostID string, h host.Host, 
 	}
 
 	now := time.Now()
-	dc := diagnose.Context{Now: now, DiskFreePct: -1, Logs: map[string][]string{}, PortOwners: map[int]string{}}
+	dc := diagnose.Context{Now: now, DiskFreePct: h.Info(ctx).Resources.DiskFreePct(), Logs: map[string][]string{}, PortOwners: map[int]string{}} // M19M: the real free space
 	unwell := false
 	for _, f := range facts {
 		if f.State != "running" || f.Health == "unhealthy" || f.RestartCount > 0 {

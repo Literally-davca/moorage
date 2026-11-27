@@ -424,7 +424,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			"id":      req.ID,
 			"result": map[string]any{
 				"protocolVersion": "2024-11-05",
-				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"capabilities":    map[string]any{"tools": map[string]any{}, "prompts": map[string]any{}, "resources": map[string]any{}},
 				"serverInfo":      map[string]any{"name": "moorage-mcp", "version": s.version},
 			},
 		})
@@ -434,7 +434,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"jsonrpc": "2.0",
 			"id":      req.ID,
-			"result":  map[string]any{"tools": mcpToolSchemas()},
+			"result":  map[string]any{"tools": append(mcpToolSchemas(), mcpM19ToolSchemas()...)},
 		})
 	case "tools/call":
 		var p struct {
@@ -466,6 +466,9 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	default:
+		if s.mcpM19Methods(w, ctx, tok, req) {
+			return
+		}
 		writeJSON(w, http.StatusOK, rpcErr(req.ID, -32601, "Method not found: "+req.Method))
 	}
 }
@@ -536,6 +539,9 @@ func (s *Server) execMCPTool(ctx context.Context, r *http.Request, tok store.MCP
 		})
 	}
 
+	if res, handled, err := s.execMCPToolM19(ctx, tok, tool, args); handled {
+		return res, err
+	}
 	switch tool {
 	case "list_hosts":
 		if !mcpAllowed(tok, "", "", "read") {
@@ -577,7 +583,12 @@ func (s *Server) execMCPTool(ctx context.Context, r *http.Request, tok store.MCP
 		}
 		// Never expose plaintext .env secret values over MCP!
 		st.Env = maskEnvText(st.Env)
-		return st, nil
+		// M19E: the composed links, as on the stack page
+		links := s.decorateStackLinks(ctx, hostID, h, &st)
+		return struct {
+			engine.Stack
+			ServiceLinks []serviceLink `json:"serviceLinks"`
+		}{st, links}, nil
 
 	case "get_logs":
 		if !mcpAllowed(tok, hostID, stack, "read") {
@@ -591,7 +602,16 @@ func (s *Server) execMCPTool(ctx context.Context, r *http.Request, tok store.MCP
 		if fv, ok := args["lines"].(float64); ok && fv > 0 {
 			n = min(int(fv), 200)
 		}
-		return h.TailLogs(ctx, stack, n)
+		lines, err := h.TailLogs(ctx, stack, n)
+		if err != nil {
+			return nil, err
+		}
+		// M19E: .env values and secret patterns are masked like for the assistant
+		st, _ := h.GetStack(ctx, stack)
+		for i := range lines {
+			lines[i].Message = maskSecrets(lines[i].Message, st.Env)
+		}
+		return lines, nil
 
 	case "list_checks":
 		if !mcpAllowed(tok, "", "", "read") {

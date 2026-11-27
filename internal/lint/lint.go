@@ -79,6 +79,8 @@ type Options struct {
 	AllowLatest bool
 	// Recipes say what popular images need (M18E); nil uses the bundled catalog.
 	Recipes []Recipe
+	// Self turns on the rules for the stack Moorage runs from (M19B).
+	Self *SelfLint
 }
 
 // Blocking reports whether issues stop a save (deploy=false) or a deploy (deploy=true).
@@ -299,6 +301,7 @@ func Lint(ctx context.Context, compose, env string, o Options) []Issue {
 				Fix: &Fix{Kind: "add-healthcheck", Label: "Add healthcheck", Service: name, Line: ln}})
 		}
 	}
+	selfIssues(proj, o, line, add)
 	return out
 }
 

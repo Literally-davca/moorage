@@ -180,6 +180,8 @@ func NewAgentHandler(h Host, o AgentOptions) http.Handler {
 	}
 	snapshotRoutes(mux, h, write)
 	selfApplyRoutes(mux, h, write)
+	tailscaleRoutes(mux, h, write) // M19J
+	fileRoutes(mux, h, write)      // M19M
 	if sd, ok := h.(StackDiagnoser); ok {
 		mux.HandleFunc("GET /stacks/{name}/diagnose", func(w http.ResponseWriter, r *http.Request) {
 			reply(w)(sd.DiagnoseStack(r.Context(), r.PathValue("name")))

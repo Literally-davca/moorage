@@ -7,6 +7,7 @@
   import SystemUpdates from '../lib/SystemUpdates.svelte';
   import MultiSelect from '../lib/MultiSelect.svelte';
   import Select from '../lib/Select.svelte';
+  import { composeYaml, defaultFields, dockerRun, fieldError, installCommand, noScriptCommand, type AgentFields, type AgentRuntime } from '../lib/agentInstall';
   import TerminalPanel from './TerminalPanel.svelte';
   import HostPorts from './HostPorts.svelte';
   import HostAddresses from './HostAddresses.svelte';
@@ -24,6 +25,21 @@
 
   // add host
   let showAdd = $state(false);
+  // The form opens right under the page header; the name field gets the focus.
+  let addCard = $state<HTMLElement | null>(null);
+  $effect(() => {
+    if (!addCard) return;
+    addCard.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    addCard.querySelector<HTMLInputElement>('#hname')?.focus({ preventScroll: true });
+  });
+  function toggleAdd() {
+    if (showAdd || joined) {
+      showAdd = false;
+      joined = null;
+    } else {
+      showAdd = true;
+    }
+  }
   let newName = $state('');
   let adding = $state(false);
   let addError = $state('');
@@ -34,6 +50,15 @@
   let pendingError = $state('');
   let hubAddr = $state('');
   let readOnly = $state(false);
+  let tailscaleServe = $state(false);
+  // M19F: the install fields and the chosen tab
+  let runtime = $state<AgentRuntime>('docker');
+  let stacksDir = $state('/opt/stacks');
+  let network = $state<'bridge' | 'host'>('bridge');
+  let agentHostIp = $state('');
+  let dataDir = $state('');
+  let imageTag = $state('');
+  let installTab = $state<'install' | 'noscript' | 'compose' | 'run' | 'token'>('install');
   let copied = $state('');
 
   // rename / network / remove
@@ -225,32 +250,37 @@
   // Agents should run the hub's release; a dev build of the hub falls back to :latest.
   const agentTag = $derived(/^\d+\.\d+\.\d+$/.test(app.version ?? '') ? app.version : 'latest');
 
-  const composeSnippet = $derived(
+  const fields = $derived<AgentFields | null>(
     joined
-      ? `services:
-  moorage-agent:
-    image: ghcr.io/literally-davca/moorage:${agentTag}
-    command: agent
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - moorage-agent:/data
-      # same path inside and outside, like on the hub
-      - /opt/stacks:/opt/stacks
-    environment:
-      MOORAGE_HUB: "${hubAddr}"
-      MOORAGE_JOIN_TOKEN: "${joined.token}"${readOnly ? '\n      MOORAGE_READ_ONLY: "true"' : ''}
-      # Hub watchdog (needed when 2 or more agents watch the hub):
-      # MOORAGE_WATCHDOG_LISTEN: ":5082"
-      # MOORAGE_WATCHDOG_ADDR: "<this-host-ip>:5082"
-    # ports:
-    #   - "5082:5082"
-
-volumes:
-  moorage-agent:
-`
-      : '',
+      ? {
+          ...defaultFields(hubAddr, joined.token, app.version ?? ''),
+          runtime,
+          stacks: stacksDir,
+          network,
+          hostIp: agentHostIp,
+          readOnly,
+          tailscale: tailscaleServe,
+          data: dataDir,
+          ...(imageTag ? { tag: imageTag } : {}),
+        }
+      : null,
   );
+  const fieldErr = $derived(fields ? fieldError(fields) : '');
+  const tabText = $derived.by(() => {
+    if (!fields) return '';
+    switch (installTab) {
+      case 'install':
+        return installCommand(fields);
+      case 'noscript':
+        return noScriptCommand(fields);
+      case 'compose':
+        return composeYaml(fields);
+      case 'run':
+        return dockerRun(fields);
+      default:
+        return fields.token;
+    }
+  });
 
   async function copy(text: string, what: string) {
     try {
@@ -352,12 +382,76 @@ volumes:
     <div class="head-bar">
       <h1 class="title">Hosts</h1>
       {#if isAdmin()}
-        <button type="button" class="btn {showAdd || joined ? '' : 'btn-primary'}" onclick={() => (showAdd = !showAdd)}>
+        <button type="button" class="btn {showAdd || joined ? '' : 'btn-primary'}" onclick={toggleAdd}>
           <Icon name={showAdd || joined ? 'x' : 'plus'} /> {showAdd || joined ? 'Close' : 'Add host'}
         </button>
       {/if}
     </div>
   </section>
+
+  {#if isAdmin() && (showAdd || joined)}
+  <section class="card card-pad add" bind:this={addCard}>
+    <h2 class="section-title">Add a host</h2>
+    {#if !acceptsAgents}
+      <p class="meta">The agent port is off on this hub. Set <code>MOORAGE_AGENT_LISTEN</code> (for example <code>:5081</code>) and restart Moorage.</p>
+    {:else if !joined}
+      <form class="addform" onsubmit={add}>
+        <label class="lbl" for="hname">Name</label>
+        <div class="addrow">
+          <input id="hname" class="field" bind:value={newName} maxlength="40" placeholder="Raspberry Pi" autocomplete="off" />
+          <button class="btn {sysUpdateAvail || wdDirty || editing !== null ? '' : 'btn-primary'}" disabled={!newName.trim() || adding} aria-busy={adding}><Icon name="plug" /> Create join token</button>
+        </div>
+        <p class="meta">The token pairs one agent, works once and expires in 24 hours.</p>
+        {#if addError}<p class="error-text" role="alert">{addError}</p>{/if}
+      </form>
+    {:else}
+      <div class="joined">
+        <p>Run the agent on <strong>{joined.name}</strong>. The token is shown only now.</p>
+
+        <label class="lbl" for="hub">Hub address the agent connects to</label>
+        <input id="hub" class="field mono" bind:value={hubAddr} spellcheck="false" />
+        <p class="meta">Port {agentPort} of this server must be reachable from the host. Don't put it behind your HTTPS proxy: the agent needs a direct TLS connection.</p>
+        <p class="meta">Moorage in Docker: publish the port in its compose file (<code>- "{agentPort}:{agentPort}"</code> under <code>ports</code>) and allow it in the firewall. Behind a reverse proxy, use this server's own address or IP here, not the proxy's domain.</p>
+
+        <label class="check">
+          <input type="checkbox" bind:checked={readOnly} />
+          <span>Read-only: Moorage can watch this host but never change it</span>
+        </label>
+        <label class="check">
+          <input type="checkbox" bind:checked={tailscaleServe} />
+          <span>Tailscale Serve: admins can publish this host's services in your tailnet (needs Tailscale on the host; mounts its tailscaled socket)</span>
+        </label>
+
+        <div class="fields">
+          <div><span class="lbl">Runtime</span><Select label="Runtime" value={runtime} items={[{ value: 'docker', label: 'Docker' }, { value: 'podman', label: 'Podman' }, { value: 'podman-rootless', label: 'Podman rootless' }]} onchange={(v) => (runtime = v as AgentRuntime)} /></div>
+          <div><span class="lbl">Stacks folder</span><Select label="Stacks folder" value={stacksDir} allowCustom items={[{ value: '/opt/stacks', label: '/opt/stacks' }, { value: '/srv/stacks', label: '/srv/stacks' }]} onchange={(v) => (stacksDir = v)} /></div>
+          <div><span class="lbl">Network</span><Select label="Network" value={network} items={[{ value: 'bridge', label: 'Bridge' }, { value: 'host', label: 'Host (sees the host\'s addresses and ports)' }]} onchange={(v) => (network = v as 'bridge' | 'host')} /></div>
+          <label><span class="lbl">Host address (optional)</span><input class="field mono" bind:value={agentHostIp} placeholder="192.168.1.11" /></label>
+          <label><span class="lbl">Data folder (empty = volume)</span><input class="field mono" bind:value={dataDir} placeholder="/opt/moorage-agent/data" /></label>
+          <div><span class="lbl">Image tag</span><Select label="Image tag" value={imageTag || fields?.tag || 'latest'} allowCustom items={[{ value: fields?.tag ?? 'latest', label: (fields?.tag ?? 'latest') + ' (hub)' }, { value: 'latest', label: 'latest' }]} onchange={(v) => (imageTag = v)} /></div>
+        </div>
+        <div class="tabs" role="tablist">
+          {#each [['install', 'Install command'], ['noscript', 'Command without script'], ['compose', 'compose.yaml'], ['run', runtime === 'docker' ? 'docker run' : 'podman run'], ['token', 'Token only']] as [id, label] (id)}
+            <button type="button" class="tab" role="tab" aria-selected={installTab === id} onclick={() => (installTab = id as typeof installTab)}>{label}</button>
+          {/each}
+        </div>
+        {#if fieldErr}
+          <p class="error-text" role="alert">{fieldErr}</p>
+        {:else}
+          <div class="snip-head">
+            <span class="meta">{installTab === 'install' ? 'Checks Docker or Podman (asks before installing it), writes compose.yaml and starts the agent.' : installTab === 'noscript' ? 'Writes compose.yaml and starts it; nothing else is downloaded.' : installTab === 'token' ? 'For an agent you configure yourself.' : ''}</span>
+            <button class="btn btn-ghost" onclick={() => copy(tabText, 'Copied')}><Icon name="copy" /> Copy</button>
+          </div>
+          <pre class="snip" class:token={installTab === 'token'}>{tabText}</pre>
+        {/if}
+        {#if copied}<p class="meta ok" role="status">{copied}</p>{/if}
+
+        <p class="meta">Valid until {new Date(joined.expires).toLocaleString()}. The host appears above as connected once the agent starts.</p>
+        <button class="btn" onclick={() => { joined = null; showAdd = false; }}>Done</button>
+      </div>
+    {/if}
+  </section>
+  {/if}
 
   {#if error}<p class="error-text" role="alert">{error}</p>{/if}
 
@@ -524,55 +618,6 @@ volumes:
 
   {#if isAdmin()}
     <SystemUpdates primaryBusy={wdDirty || editing !== null} onUpdateAvail={(v) => (sysUpdateAvail = v)} />
-
-    {#if showAdd || joined}
-    <section class="card card-pad add">
-      <h2 class="section-title">Add a host</h2>
-      {#if !acceptsAgents}
-        <p class="meta">The agent port is off on this hub. Set <code>MOORAGE_AGENT_LISTEN</code> (for example <code>:5081</code>) and restart Moorage.</p>
-      {:else if !joined}
-        <form class="addform" onsubmit={add}>
-          <label class="lbl" for="hname">Name</label>
-          <div class="addrow">
-            <input id="hname" class="field" bind:value={newName} maxlength="40" placeholder="Raspberry Pi" autocomplete="off" />
-            <button class="btn {sysUpdateAvail || wdDirty || editing !== null ? '' : 'btn-primary'}" disabled={!newName.trim() || adding} aria-busy={adding}><Icon name="plug" /> Create join token</button>
-          </div>
-          <p class="meta">The token pairs one agent, works once and expires in 24 hours.</p>
-          {#if addError}<p class="error-text" role="alert">{addError}</p>{/if}
-        </form>
-      {:else}
-        <div class="joined">
-          <p>Run the agent on <strong>{joined.name}</strong>. The token is shown only now.</p>
-
-          <label class="lbl" for="hub">Hub address the agent connects to</label>
-          <input id="hub" class="field mono" bind:value={hubAddr} spellcheck="false" />
-          <p class="meta">Port {agentPort} of this server must be reachable from the host. Don't put it behind your HTTPS proxy: the agent needs a direct TLS connection.</p>
-          <p class="meta">Moorage in Docker: publish the port in its compose file (<code>- "{agentPort}:{agentPort}"</code> under <code>ports</code>) and allow it in the firewall. Behind a reverse proxy, use this server's own address or IP here, not the proxy's domain.</p>
-
-          <label class="check">
-            <input type="checkbox" bind:checked={readOnly} />
-            <span>Read-only: Moorage can watch this host but never change it</span>
-          </label>
-
-          <div class="snip-head">
-            <span class="lbl">compose.yaml for the agent</span>
-            <button class="btn btn-ghost" onclick={() => copy(composeSnippet, 'Compose file copied')}><Icon name="copy" /> Copy</button>
-          </div>
-          <pre class="snip">{composeSnippet}</pre>
-
-          <div class="snip-head">
-            <span class="lbl">Join token only</span>
-            <button class="btn btn-ghost" onclick={() => copy(joined!.token, 'Token copied')}><Icon name="copy" /> Copy</button>
-          </div>
-          <pre class="snip token">{joined.token}</pre>
-          {#if copied}<p class="meta ok" role="status">{copied}</p>{/if}
-
-          <p class="meta">Valid until {new Date(joined.expires).toLocaleString()}. The host appears above as connected once the agent starts.</p>
-          <button class="btn" onclick={() => { joined = null; showAdd = false; }}>Done</button>
-        </div>
-      {/if}
-    </section>
-    {/if}
 
     {#if pending.length}
       <section class="card card-pad pending" aria-label="Open join tokens">
@@ -900,6 +945,17 @@ volumes:
     accent-color: var(--buoy);
     width: 16px;
     height: 16px;
+  }
+  .fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+    margin: 8px 0;
+  }
+  .fields label,
+  .fields > div {
+    display: grid;
+    gap: 4px;
   }
   .snip-head {
     display: flex;

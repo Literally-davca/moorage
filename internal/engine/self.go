@@ -33,6 +33,9 @@ type SelfStack struct {
 	// Launch starts the helper container that runs `compose up` for this stack from
 	// outside Moorage, waits for it to come back and rolls back otherwise.
 	Launch func(ctx context.Context) error
+	// HostNetUnverifiable: the apply helper can't run in the host's network here
+	// (Docker Desktop, rootless), so network_mode: host can't be checked (M19D).
+	HostNetUnverifiable bool
 }
 
 // selfBlocked are the actions refused on the self stack. Restart and pull stay allowed;
@@ -137,11 +140,19 @@ func (e *Engine) SelfApply(ctx context.Context, name, composeText, env, author s
 	if err := e.ValidateSelfCompose(ctx, name, composeText, env); err != nil {
 		return err
 	}
+	if e.SelfUpdateLocked() {
+		if img := e.selfImageChange(ctx, s, composeText, env); img != "" {
+			return ErrSelfUpdateLocked // M19G: the image changes only by hand on the host
+		}
+	}
 	dir, err := e.stackDir(name)
 	if err != nil {
 		return err
 	}
-	if err := e.backupSelfFiles(dir); err != nil {
+	// M19A: the rollback target is what Moorage runs now. The files on disk are that
+	// only when they match the running container (no Save since the last Apply);
+	// otherwise the last configuration Moorage ran with (self-stack-good).
+	if err := e.backupSelfFiles(ctx, s, dir); err != nil {
 		return fmt.Errorf("keep current files for rollback: %w", err)
 	}
 	if err := e.saveStack(ctx, name, composeText, env, author, false, ""); err != nil {
@@ -164,31 +175,26 @@ func (e *Engine) SelfApply(ctx context.Context, name, composeText, env, author s
 	return nil
 }
 
-// backupSelfFiles copies the stack's compose file and .env (or the fact it has none).
-func (e *Engine) backupSelfFiles(dir string) error {
+// backupSelfFiles keeps the configuration Moorage runs now for the helper's rollback:
+// the files on disk when they match the running container, else self-stack-good. With
+// neither, no backup is kept and the helper reports that it has nothing to return to.
+func (e *Engine) backupSelfFiles(ctx context.Context, s *SelfStack, dir string) error {
 	bdir := SelfBackupDir(e.cfg.DataDir)
 	if err := os.RemoveAll(bdir); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(bdir, 0o700); err != nil {
-		return err
+	if match, err := e.selfDiskMatchesRunning(ctx, s, dir); err == nil && match {
+		if err := CopySelfFiles(dir, bdir); err != nil {
+			return err
+		}
+		// the same files are the last working configuration
+		_ = CopySelfFiles(dir, SelfGoodDir(e.cfg.DataDir))
+		return nil
 	}
-	cf := composeFile(dir)
-	if cf == "" {
-		return ErrNotFound
+	if good := SelfGoodDir(e.cfg.DataDir); hasSelfFiles(good) {
+		return CopySelfFiles(good, bdir)
 	}
-	b, err := os.ReadFile(cf)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(bdir, filepath.Base(cf)), b, 0o600); err != nil {
-		return err
-	}
-	if b, err := os.ReadFile(filepath.Join(dir, ".env")); err == nil {
-		return os.WriteFile(filepath.Join(bdir, ".env"), b, 0o600)
-	} else if !os.IsNotExist(err) {
-		return err
-	}
+	e.log.Warn("Apply & restart without a rollback: the saved files differ from what runs and no earlier working configuration is known")
 	return nil
 }
 
@@ -259,6 +265,8 @@ type SelfApplyResult struct {
 	Checked      []string `json:"checked,omitempty"`
 	Log          string   `json:"log,omitempty"`
 	Acknowledged bool     `json:"acknowledged,omitempty"`
+	// M19D: Moorage came back only by its health mark; the helper couldn't reach it.
+	Unverified bool `json:"unverified,omitempty"`
 }
 
 // SelfApplyLogFile keeps the helper's output of the last Apply & restart.

@@ -41,6 +41,9 @@ func (s *Server) lintStack(ctx context.Context, hostID string, h host.Host, name
 	// deploy error, so it warns while typing and only blocks Deploy.
 	o := lint.Options{Name: name, AllowLatest: name == addonsStackName}
 	o.Running = s.runningPorts(ctx, hostID, h, name)
+	if st, err := h.GetStack(ctx, name); err == nil && st.Self {
+		o.Self = s.selfLint(hostID, st) // M19B, M19D
+	}
 	issues := lint.Lint(ctx, compose, env, o)
 	if issues == nil {
 		issues = []lint.Issue{}

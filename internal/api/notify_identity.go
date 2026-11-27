@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"moorage/internal/host"
+	"moorage/internal/netguard"
 	"moorage/internal/notify"
 )
 
@@ -144,6 +147,57 @@ func (s *Server) previewNotification(w http.ResponseWriter, r *http.Request) {
 		out["payload"] = body
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// notifyLogo serves one logo for the preview in Settings → Notifications. The page's
+// CSP allows only its own images, so Moorage fetches <base>/<role>.png itself: the
+// preview then works without loosening the CSP and shows whether the URL is reachable.
+// base is the value being edited (or the saved/default one); only http(s), PNG, ≤ 1 MiB.
+func (s *Server) notifyLogo(w http.ResponseWriter, r *http.Request) {
+	role := r.URL.Query().Get("role")
+	if role != notify.RoleHub && role != notify.RoleAgent && role != notify.RoleWatchdog {
+		writeErr(w, http.StatusBadRequest, "Unknown role.")
+		return
+	}
+	base := strings.TrimRight(strings.TrimSpace(r.URL.Query().Get("base")), "/")
+	if base == "" {
+		base = notify.IconBase()
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		writeErr(w, http.StatusBadRequest, "The logo base URL must be an http:// or https:// address without a query.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/"+role+".png", nil)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "Invalid logo URL.")
+		return
+	}
+	c := &http.Client{
+		Timeout:   8 * time.Second,
+		Transport: &http.Transport{DialContext: netguard.DialContext(5*time.Second, false), ForceAttemptHTTP2: true},
+	}
+	res, err := c.Do(req)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "Logo not reachable from Moorage.")
+		return
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		writeErr(w, http.StatusBadGateway, "Logo URL answered "+res.Status+".")
+		return
+	}
+	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20+1))
+	if err != nil || len(b) > 1<<20 || http.DetectContentType(b) != "image/png" {
+		writeErr(w, http.StatusBadGateway, "The logo isn't a PNG up to 1 MiB.")
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(b)
 }
 
 func sortedStrings(in []string) []string {

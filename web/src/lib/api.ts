@@ -17,6 +17,8 @@ export interface UserPreferences {
   confirmActions: 'all' | 'destructive';
   onboardingDone: boolean;
   manualOverrides?: Record<string, boolean>;
+  /** M19F: dependency graph view. */
+  depsView?: 'compact' | 'detailed';
 }
 
 export interface CoolifyNameMeta {
@@ -534,7 +536,24 @@ export interface Stack extends StackSummary {
   env: string;
   containers: Container[];
   /** Outcome of the last Apply & restart of Moorage's own stack. */
-  selfResult?: { at: string; ok: boolean; rolledBack: boolean; message: string; reason?: string; checked?: string[]; log?: string; acknowledged?: boolean };
+  selfResult?: {
+    at: string;
+    ok: boolean;
+    rolledBack: boolean;
+    message: string;
+    reason?: string;
+    checked?: string[];
+    log?: string;
+    acknowledged?: boolean;
+    /** M19D: Moorage came back only by its health mark; the helper couldn't reach it. */
+    unverified?: boolean;
+  };
+  /** M19A: the files on disk differ from what Moorage runs (saved, not applied). */
+  selfPending?: boolean;
+  /** M19A: an Apply & restart now has a working configuration to roll back to. */
+  selfRollback?: boolean;
+  selfService?: string;
+  selfHostNetUnverifiable?: boolean;
 }
 export interface Stat {
   id: string;
@@ -556,6 +575,8 @@ export interface EngineFields {
 }
 export interface HostInfo extends EngineFields {
   name: string;
+  /** M19M: disk and memory of the host (older agents send none). */
+  resources?: { disks: { label: string; path: string; total: number; free: number; usedPct: number }[]; memTotal?: number; memAvailable?: number; memUsedPct?: number };
   dockerVersion: string;
   stacksDir: string;
   reachable: boolean;
@@ -616,7 +637,7 @@ export interface WatchdogSettings {
   maintenanceUntil?: string;
   agents: WatchdogAgent[];
 }
-export type CheckKind = 'http' | 'tcp' | 'ping' | 'dns' | 'stack' | 'log';
+export type CheckKind = 'http' | 'tcp' | 'ping' | 'dns' | 'stack' | 'log' | 'resources';
 export type CheckStatus = 'up' | 'down' | 'degraded' | 'pending' | 'paused' | 'unknown' | 'maintenance';
 export interface LogLine {
   t: string;
@@ -647,6 +668,10 @@ export interface CheckSettings {
   urls?: string[];
   /** Stack: 2–20 stacks on any hosts (one stack lives in hostId/target only). */
   stacks?: StackTarget[];
+  /** M19M host resources: used share in % (warning, down) and memory limit. */
+  diskWarnPct?: number;
+  diskCritPct?: number;
+  memCritPct?: number;
 }
 export interface CheckInput {
   name: string;
@@ -788,6 +813,8 @@ export interface Check extends CheckInput {
   uptime24h: number | null;
   uptime7d?: number | null;
   uptime30d?: number | null;
+  uptime90d?: number | null;
+  uptime365d?: number | null;
   ticks: Tick[];
   hostName?: string;
   targetDisplayName?: string;
@@ -865,6 +892,15 @@ export interface ChannelConfig {
   preset?: NotifyPreset;
   include?: Partial<Record<NotifyPart, boolean>>;
   format?: 'rich' | 'plain';
+  /** M19L: who to mention on Discord / Slack and when (empty = nobody). */
+  mentions?: MentionRule[];
+}
+export interface MentionRule {
+  who: string[];
+  events: string[];
+  stacks?: string[];
+  checks?: string[];
+  firstOnly?: boolean;
 }
 export interface Channel {
   id: number;
@@ -1024,21 +1060,79 @@ export interface AssistantSettings {
   enabled?: boolean;
   apiKeySet?: boolean;
   categories?: string[];
+  /** M19E: providers, the default pair and which providers have a key. */
+  providers: AssistantProvider[];
+  default: { provider: string; model: string };
+  keysSet?: Record<string, boolean>;
+  /** M19I: show the model's thinking (collapsed, never stored). */
+  showThinking?: boolean;
+}
+export type AssistantProviderType = 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'openai-compatible';
+export interface AssistantProvider {
+  id: string;
+  name: string;
+  type: AssistantProviderType;
+  baseUrl?: string;
+  models?: string[];
+}
+export interface AssistantModelInfo {
+  id: string;
+  tools?: boolean;
+}
+export interface AssistantStatus {
+  enabled: boolean;
+  configured: boolean;
+  admin: boolean;
+  model?: string;
+  default?: { provider: string; model: string };
+  showThinking?: boolean;
+  tokenLimit?: number;
+  tokensUsed?: number;
+  models?: { id: string; name: string; models: string[]; error?: string }[];
+}
+export interface AssistantCommand {
+  id: number;
+  name: string;
+  text: string;
+}
+export interface AssistantLink {
+  service: string;
+  stack?: string;
+  host?: string;
+  url: string;
+  label?: string;
+  primary?: boolean;
 }
 export interface AssistantAction {
   draftId?: number;
   kind: string;
   title: string;
   hostId?: string;
+  host?: string;
   stack?: string;
   diff?: string;
   done?: boolean;
   result?: string;
   demoted?: boolean;
   undo?: string;
+  impact?: string;
+  widens?: string[];
+  selfApply?: boolean;
 }
 export interface AssistantEvent {
-  type: 'text' | 'tool' | 'action' | 'permission' | 'usage' | 'error' | 'done';
+  type:
+    | 'text'
+    | 'delta'
+    | 'thinking'
+    | 'model'
+    | 'tool'
+    | 'tool_done'
+    | 'action'
+    | 'permission'
+    | 'choice'
+    | 'usage'
+    | 'error'
+    | 'done';
   text?: string;
   tool?: string;
   action?: AssistantAction;
@@ -1046,6 +1140,17 @@ export interface AssistantEvent {
   inTokens?: number;
   outTokens?: number;
   incomplete?: boolean;
+  streamed?: boolean;
+  label?: string;
+  target?: string;
+  args?: unknown;
+  result?: string;
+  failed?: boolean;
+  links?: AssistantLink[];
+  choice?: { question: string; options: string[] };
+  code?: string;
+  detail?: string;
+  model?: string;
 }
 
 export interface StatusSnapshotLast {
@@ -1821,11 +1926,47 @@ export const api = {
     request<{ hostId: string; hostName: string; stack: string; at: string; message: string; reason?: string }[]>('GET', '/api/self-apply/notices'),
   ackSelfApply: (hostId: string) => request<void>('POST', `/api/hosts/${enc(hostId)}/self-apply/ack`),
   selfApplyLog: (hostId: string) => request<{ log: string }>('GET', `/api/hosts/${enc(hostId)}/self-apply/log`),
-  assistantStatus: () => request<{ enabled: boolean; configured: boolean; admin: boolean }>('GET', '/api/assistant/status'),
+  assistantStatus: (models = false) => request<AssistantStatus>('GET', '/api/assistant/status' + (models ? '?models=1' : '')),
   assistantSettings: () => request<AssistantSettings>('GET', '/api/addons/assistant/settings'),
-  saveAssistantSettings: (s: AssistantSettings & { apiKey?: string; clearKey?: boolean }) =>
-    request<AssistantSettings>('PUT', '/api/addons/assistant/settings', s),
-  assistantApply: (id: number) => request<{ ok: boolean }>('POST', `/api/assistant/actions/${id}/apply`),
+  saveAssistantSettings: (
+    s: AssistantSettings & { apiKey?: string; clearKey?: boolean; keys?: Record<string, string>; clearKeys?: string[] },
+  ) => request<AssistantSettings>('PUT', '/api/addons/assistant/settings', s),
+  assistantModels: (provider: string, fresh = false) =>
+    request<{ models: AssistantModelInfo[]; error?: string; at?: string; paid: boolean }>(
+      'GET',
+      `/api/addons/assistant/models?provider=${enc(provider)}${fresh ? '&fresh=1' : ''}`,
+    ),
+  assistantTest: (provider: string, model: string) =>
+    request<{ ok: boolean; error?: string; code?: string; detail?: string }>('POST', '/api/addons/assistant/test', { provider, model }),
+  assistantCommands: () => request<{ commands: AssistantCommand[]; max: number }>('GET', '/api/assistant/commands'),
+  saveAssistantCommand: (name: string, text: string) =>
+    request<{ commands: AssistantCommand[]; max: number }>('PUT', `/api/assistant/commands/${enc(name)}`, { text }),
+  deleteAssistantCommand: (name: string) => request<void>('DELETE', `/api/assistant/commands/${enc(name)}`),
+  problemsSummary: () => request<unknown>('GET', '/api/problems'),
+  tailscaleStatus: () =>
+    request<{ available: boolean; reason?: string; dnsName?: string; entries: { port: number; url: string; target: string; moorage: boolean }[] }>(
+      'GET',
+      `${H()}/tailscale/serve`,
+    ),
+  tailscaleServe: (port: number) => request<{ url: string }>('POST', `${H()}/tailscale/serve`, { port }),
+  tailscaleStop: (port: number) => request<void>('DELETE', `${H()}/tailscale/serve/${port}`),
+  serviceLinks: () => request<{ stacks: unknown[] }>('GET', `${H()}/service-links`),
+  fixPorts: (name: string, service: string, port: string, mode: 'vpn' | 'all', confirm: boolean) =>
+    request<{ diff: string; compose?: string; op?: Op }>('POST', `${H()}/stacks/${enc(name)}/ports/fix`, { service, port, mode, confirm }),
+  setStackLinksOn: (name: string, service: string, urls: string[]) =>
+    request<{ urls: string[] }>('PUT', `${H()}/stacks/${enc(name)}/links`, { service, urls }),
+  setStackLinks: (name: string, service: string, urls: string[]) =>
+    request<{ urls: string[] }>('PUT', `${H()}/stacks/${enc(name)}/links`, { service, urls }),
+  stackFiles: (name: string) => request<unknown[]>('GET', `${H()}/stacks/${enc(name)}/files`),
+  stackFile: (name: string, path: string) =>
+    request<{ content: string }>('GET', `${H()}/stacks/${enc(name)}/files/content?path=${encodeURIComponent(path)}`),
+  saveStackFile: (name: string, path: string, content: string) =>
+    request<void>('PUT', `${H()}/stacks/${enc(name)}/files/content`, { path, content }),
+  stackFileVersions: (name: string, path: string) =>
+    request<string[]>('GET', `${H()}/stacks/${enc(name)}/files/versions?path=${encodeURIComponent(path)}`),
+  stackFileVersion: (name: string, path: string, id: string) =>
+    request<{ content: string }>('GET', `${H()}/stacks/${enc(name)}/files/versions/${enc(id)}?path=${encodeURIComponent(path)}`),
+  assistantApply: (id: number) => request<{ ok: boolean; selfApply?: boolean; ownHub?: boolean }>('POST', `/api/assistant/actions/${id}/apply`),
   assistantReject: (id: number) => request<void>('POST', `/api/assistant/actions/${id}/reject`),
   stackProblems: (name: string) => request<StackProblems>('GET', `${H()}/stacks/${enc(name)}/problems`),
   ignoreProblem: (name: string, service: string, rule: string, ignored: boolean) =>

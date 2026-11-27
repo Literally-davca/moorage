@@ -905,9 +905,9 @@ func (s *Service) Apply(ctx context.Context, targets []string, actor, ip string)
 		}
 		if !n.SelfUpdate {
 			if isExplicit {
-				return nil, false, "", RequestError{Status: 403, Msg: n.Name + " has MOORAGE_SELF_UPDATE=false."}
+				return nil, false, "", RequestError{Status: 403, Msg: n.Name + " is set to manual updates only (MOORAGE_SELF_UPDATE=false). Update it on the host: docker compose pull && docker compose up -d."}
 			}
-			noteSkip(403, n.Name+" has MOORAGE_SELF_UPDATE=false.")
+			noteSkip(403, n.Name+" is set to manual updates only.")
 			continue
 		}
 		if !n.Supported {

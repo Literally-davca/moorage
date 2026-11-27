@@ -102,7 +102,8 @@ if [ -e "$PREFIX/moorage" ]; then
 fi
 
 if [ "$MODE" = "docker" ]; then
-	command -v docker >/dev/null 2>&1 || die "docker isn't installed here; use --native with MOORAGE_URL and MOORAGE_TOKEN instead"
+	command -v docker >/dev/null 2>&1 || die "Docker isn't installed here. Install Moorage first (scripts/install.sh), or use --native with MOORAGE_URL and MOORAGE_TOKEN."
+	docker info >/dev/null 2>&1 || docker ps >/dev/null 2>&1 || die "Docker doesn't answer (daemon stopped, or no permission: try sudo). Install Moorage first, or use --native."
 	if [ -z "$CONTAINER" ]; then
 		# The Moorage server container: image named moorage, not one of its helpers
 		# (updater, host shell), which carry the moorage.role label.
@@ -110,6 +111,9 @@ if [ "$MODE" = "docker" ]; then
 		if [ -z "$CONTAINER" ]; then
 			CONTAINER=$(docker ps --format '{{.Names}} {{.Image}} {{.Label "moorage.role"}}' 2>/dev/null |
 				awk '$2 ~ /moorage/ && $3 == "" { print $1; exit }' || true)
+		fi
+		if [ -z "$CONTAINER" ] && ! docker inspect moorage >/dev/null 2>&1; then
+			die "no Moorage container runs here. Install Moorage first (scripts/install.sh), or use --native."
 		fi
 		[ -n "$CONTAINER" ] || CONTAINER="moorage"
 	fi

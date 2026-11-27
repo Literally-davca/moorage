@@ -2,9 +2,10 @@
   import { untrack } from 'svelte';
   import { api, type Op, type TimelineEntry, type TimelineKind, type VersionDetail } from '../lib/api';
   import { auditLabel } from '../lib/audit';
-  import { isAdmin, link } from '../lib/state.svelte';
+  import { currentHost, isAdmin, link } from '../lib/state.svelte';
   import Icon, { type IconName } from '../lib/Icon.svelte';
   import Confirm from '../lib/Confirm.svelte';
+  import { chat as assistantChat, ask as askAssistant } from '../lib/assistantStore.svelte';
 
   let {
     name,
@@ -24,6 +25,20 @@
     /** Bumped by the stack page when an operation finished, so its entries show up. */
     refresh?: number;
   } = $props();
+
+  // M19I: Explain this alert on an incident row – same question as on the check page,
+  // filled in the assistant panel; nothing is sent until Enter.
+  const assistantOn = $derived(!!assistantChat.info?.enabled && !!assistantChat.info?.configured);
+  function explainIncident(e: TimelineEntry) {
+    const inc = e.incident;
+    if (!inc) return;
+    const host = currentHost();
+    askAssistant(
+      `Explain this alert: check "${inc.checkName}" of stack ${name} on host ${host?.name ?? host?.id ?? ''} went down at ` +
+        `${new Date(inc.startedAt).toLocaleString()} (incident #${e.ref.incidentId ?? '?'}, check #${e.ref.checkId ?? '?'}, cause: ${inc.cause}). ` +
+        `What failed, why, what changed before it, and how do I fix it?`,
+    );
+  }
 
   let coolifyDeploys = $state<{ uuid: string; status: string; commit?: string; logs?: string; createdAt?: string }[]>([]);
   let expandedDeploy = $state('');
@@ -358,6 +373,9 @@
                   <div class="acts">
                     <button type="button" class="link" onclick={() => showBefore(e)}>Show what changed before</button>
                     <a class="link" href={`#/checks/${e.ref.checkId}`}>Open check</a>
+                    {#if assistantOn}
+                      <button type="button" class="link" onclick={() => explainIncident(e)}>Explain this alert</button>
+                    {/if}
                     {#if e.incident.causedBy}
                       <a class="link" href={`#/h/${encodeURIComponent(e.incident.causedBy.hostId)}/stacks/${encodeURIComponent(e.incident.causedBy.stack)}/history`}>
                         Root cause: {e.incident.causedBy.stack}

@@ -16,6 +16,8 @@ type UserPreferences struct {
 	GuidesMode      string          `json:"guidesMode,omitempty"`      // "extended" | "compact"
 	ConfirmActions  string          `json:"confirmActions,omitempty"`  // "all" | "destructive"
 	ManualOverrides map[string]bool `json:"manualOverrides,omitempty"`
+	// M19F: dependency graph view, "compact" (default) or "detailed".
+	DepsView string `json:"depsView,omitempty"`
 }
 
 // PresetPreferences returns the built-in defaults for "beginner" or "advanced".
@@ -71,6 +73,7 @@ func (p UserPreferences) Normalize() UserPreferences {
 			preset := PresetPreferences(p.Mode)
 			preset.OnboardingDone = p.OnboardingDone
 			preset.ManualOverrides = cleanOverrides(p.ManualOverrides)
+			preset.DepsView = p.DepsView
 			return preset
 		}
 	}
@@ -98,6 +101,9 @@ func (p UserPreferences) Normalize() UserPreferences {
 	case "all", "destructive":
 	default:
 		p.ConfirmActions = "destructive"
+	}
+	if p.DepsView != "compact" && p.DepsView != "detailed" {
+		p.DepsView = ""
 	}
 	p.ManualOverrides = cleanOverrides(p.ManualOverrides)
 	if p.Mode == "" && p.OnboardingDone {

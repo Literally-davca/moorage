@@ -3,7 +3,7 @@
 Docker compose stacks, live logs and uptime checks in one small self-hosted app.
 Plan and decisions: [PLAN.md](PLAN.md) · ideas: [ROADMAP.md](ROADMAP.md) · UI system: [.interface-design/system.md](.interface-design/system.md)
 
-**Status: milestone M9 + roadmap features R1–R7** – one hub, any number of Docker hosts with agents, version history of stacks, uptime checks (also from several agents at once), log alerts, a coordinated hub watchdog, public status pages with RSS, image update checking with auto-update and rollback, an opt-in web terminal, an audit log of every change, planned maintenance windows, a per-stack timeline, a dependency graph with grouped cascade alerts, stack templates and Prometheus metrics. Podman support is in progress and not yet verified.
+**Status: milestone M9 + roadmap features R1–R7** – one hub, any number of Docker hosts with agents, version history of stacks, uptime checks (also from several agents at once), log alerts, a coordinated hub watchdog, public status pages with RSS, image update checking with auto-update and rollback, an opt-in web terminal, an audit log of every change, planned maintenance windows, a per-stack timeline, a dependency graph with grouped cascade alerts, stack templates and Prometheus metrics. Podman 5 (rootful and rootless) is verified.
 
 ## What works
 
@@ -41,7 +41,13 @@ Plan and decisions: [PLAN.md](PLAN.md) · ideas: [ROADMAP.md](ROADMAP.md) · UI 
 
 ## Run with Docker
 
-Use the example [compose.yaml](compose.yaml) (image `ghcr.io/literally-davca/moorage`, multi-arch: amd64, arm64, arm/v7). It lists every variable with its default and possible values; [compose.agent.yaml](compose.agent.yaml) does the same for an agent on another host:
+The quickest way on a Linux server is the install script. It checks Docker or Podman (and installs it only if you say yes), asks for the stacks folder, the port and the public URL, writes `compose.yaml` and starts Moorage. It never overwrites an existing installation; `--upgrade` pulls a new image and recreates Moorage with your compose file as it is:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Literally-davca/moorage/main/scripts/install.sh | sh
+```
+
+Or by hand: use the example [compose.yaml](compose.yaml) (image `ghcr.io/literally-davca/moorage`, multi-arch: amd64, arm64, arm/v7). It lists every variable with its default and possible values; [compose.agent.yaml](compose.agent.yaml) does the same for an agent on another host:
 
 ```sh
 docker compose up -d
@@ -70,7 +76,7 @@ Open http://localhost:5080, enter the setup token, create the admin and scan the
 ### Add a host
 
 1. On the hub, open **Hosts → Add a host**, give it a name and create a join token.
-2. Copy the generated `compose.yaml` to the new host and start it (all agent variables are in [compose.agent.yaml](compose.agent.yaml)). The agent pairs once (token is single-use, valid 24 h) and keeps its own key in its data volume.
+2. Pick how to install it: the **Install command** (one line; `scripts/install-agent.sh` checks Docker or Podman, asks before installing it, writes compose.yaml and starts the agent), a **command without script**, the **compose.yaml**, **docker run** or the **token only**. Fields above the tabs set the runtime (Docker, Podman, rootless Podman), stacks folder, network, host address, data folder, read-only and image tag. All agent variables are in [compose.agent.yaml](compose.agent.yaml). The agent pairs once (token is single-use, valid 24 h) and keeps its own key in its data volume.
 3. The hub's agent port (`5081`) must be reachable from the host directly, not through an HTTPS proxy.
 
 ### Hub watchdog
@@ -224,13 +230,25 @@ scrape_configs:
 
 Alert on `moorage_check_state{state="down"} == 1` (not `moorage_check_up == 0`, which is also 0 for paused, pending and maintenance) and `moorage_host_up == 0`. A Grafana dashboard is in [`deploy/grafana/moorage-dashboard.json`](deploy/grafana/moorage-dashboard.json) (Grafana 10+, pick the data source when importing).
 
-### Podman (in progress, unverified)
+### Podman
 
-Moorage detects Podman's Docker-compatible API and adapts stats, logs, health and the terminal to it, but this has not been tested against a real Podman yet. To try it, point `DOCKER_HOST` at the Podman socket:
+Moorage detects Podman's Docker-compatible API and adapts stats, logs, health and the terminal to it. Point `DOCKER_HOST` at the Podman socket:
 - rootful: `systemctl enable --now podman.socket`, `DOCKER_HOST=unix:///run/podman/podman.sock`;
 - rootless: `systemctl --user enable --now podman.socket`, `loginctl enable-linger $USER`, `DOCKER_HOST=unix://$XDG_RUNTIME_DIR/podman/podman.sock`; leave `MOORAGE_PUID`/`MOORAGE_PGID` unset; ports below 1024 need `net.ipv4.ip_unprivileged_port_start`.
 
-`scripts/dev/podman-smoke.sh` runs a throwaway instance against `DOCKER_HOST` and prints PASS/FAIL per feature. Please report what fails.
+Verified on 2026-11-27 with Podman 5.4.2 on Debian 13 (WSL 2, cgroup v2):
+
+| Feature | Rootful | Rootless | Notes |
+| --- | --- | --- | --- |
+| Engine detection, create stack, up, published port | ✓ | ✓ | `scripts/dev/podman-smoke.sh` |
+| Logs over WebSocket, stats | ✓ | ✓ | |
+| Web terminal (exec) | ✓ | ✓ | needs `MOORAGE_TERMINAL=true` |
+| Down, delete stack | ✓ | ✓ | |
+| Moorage in a container: own stack detected, Saved not applied, Apply & restart through the helper | – | ✓ | `scripts/dev/podman-selfstack.sh`, started with `podman compose` (podman-compose 1.3) |
+
+Limits: with rootless Podman the Apply & restart helper can't join the host's network, so it checks Moorage from the container network (and says so when it could only see Moorage's own health mark); `network_mode: host` for Moorage itself gets a warning there. Without systemd lingering (`loginctl enable-linger`) rootless containers stop when you log out. Fully qualified image names (`docker.io/library/…`) avoid Podman's short-name prompt.
+
+`scripts/dev/podman-smoke.sh` and `scripts/dev/podman-selfstack.sh` print PASS/FAIL per feature; please report what fails on other setups.
 
 ## Documentation
 
@@ -248,6 +266,7 @@ Detailed guides for built-in integrations and features live in `docs/`:
 - [Problems and snapshots](docs/snapshots.md) — container diagnosis and local restore points
 - [AI assistant](docs/assistant.md) — the chat panel, levels of what it may do and read
 - [Apply & restart of Moorage's own stack](docs/self-stack.md) — the helper's checks, rollback and manual recovery
+- [Troubleshooting](docs/troubleshooting.md) — Moorage keeps restarting, port conflicts in host mode, a rollback that didn't help, updates that didn't install, manual updates only, saved but not applied
 - [CLI, Headless Mode & Interactive TUI](docs/cli.md) — `MOORAGE_WEB_UI=false`, Unix socket (`moorage.sock`), API bearer tokens, full CLI command reference & `moorage cli` TUI
 
 ## Configuration
@@ -298,6 +317,8 @@ Every variable with its default and possible values is also in [compose.yaml](co
 | `MOORAGE_PROXY_USER_HEADER` / `_GROUPS_HEADER` | – | forward-auth headers, e.g. `Remote-User`, `Remote-Groups` (comma-separated) |
 | `MOORAGE_PROXY_ADMIN_GROUPS` / `_VIEWER_GROUPS` / `_DEFAULT_ROLE` | – / – / `none` | forward-auth role mapping |
 | `MOORAGE_SELF_UPDATE` | `true` | every node: allow updates of Moorage itself from the UI |
+| `MOORAGE_TAILSCALE_SERVE` | `false` | every node: let admins publish services in the tailnet with Tailscale Serve (mount the host's `tailscaled.sock`; never Funnel; only settable here) |
+| `MOORAGE_TAILSCALE_SOCKET` | `/var/run/tailscale/tailscaled.sock` | every node: path of the mounted tailscaled socket |
 | `MOORAGE_UPDATE_URL` | GitHub releases API of this repo | hub: where to look for releases (forks, mirrors) |
 | `MOORAGE_UPDATE_CHANNEL` | `stable` | hub: `stable` or `pre` (include pre-releases); *UI* |
 | `MOORAGE_WATCHDOG_ADDR` | – | agent: `host:port` other watching agents dial to reach this agent's watchdog listener |

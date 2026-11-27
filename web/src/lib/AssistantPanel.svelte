@@ -1,249 +1,145 @@
 <script lang="ts">
-  import { api, type AssistantAction, type AssistantEvent } from './api';
-  import { app } from './state.svelte';
   import Icon from './Icon.svelte';
+  import Select from './Select.svelte';
+  import AssistantChat from './AssistantChat.svelte';
+  import { app, go } from './state.svelte';
+  import { chat, reset, revoke, loadStatus, loadCommands } from './assistantStore.svelte';
 
-  // The assistant panel (M18G): a one-off chat that lives only in this page. Nothing is
-  // stored on the server; closing or reloading the page ends the conversation.
-  let { open = $bindable(false) }: { open: boolean } = $props();
+  // The assistant panel (M18G, M19E): docked on the right from 1280 px (the page gets
+  // narrower), an overlay below, full screen under 768 px. Expand opens the same chat on
+  // #/assistant. The chat lives in assistantChat.svelte.ts, so it survives page changes.
 
-  type Item =
-    | { kind: 'user'; text: string }
-    | { kind: 'assistant'; text: string; incomplete?: boolean }
-    | { kind: 'action'; action: AssistantAction; state: 'pending' | 'applied' | 'rejected' | 'done'; error?: string }
-    | { kind: 'permission'; what: string; granted: boolean }
-    | { kind: 'error'; text: string }
-    | { kind: 'tool'; name: string };
+  const MIN_W = 360;
+  const MAX_W = 640;
+  let width = $state(readWidth());
+  let vw = $state(typeof window !== 'undefined' ? window.innerWidth : 1400);
+  const onPage = $derived((app.route as { page: string }).page === 'assistant');
+  const shown = $derived(chat.open && !onPage);
+  const docked = $derived(shown && vw >= 1280);
+  const mobile = $derived(vw < 768);
 
-  let items = $state<Item[]>([]);
-  let input = $state('');
-  let busy = $state(false);
-  let allow = $state<string[]>([]);
-  let tokens = $state(0);
-  let ctrl: AbortController | null = null;
-
-  const toolLabel: Record<string, string> = {
-    list_stacks: 'Looking at stacks…',
-    get_stack: 'Reading the stack…',
-    get_logs: 'Reading logs…',
-    stack_action: 'Preparing a stack action…',
-    propose_compose: 'Preparing a compose change…',
-    create_stack: 'Preparing a new stack…',
-  };
-
-  function history() {
-    const out: { role: string; text: string }[] = [];
-    for (const it of items) {
-      if (it.kind === 'user') out.push({ role: 'user', text: it.text });
-      else if (it.kind === 'assistant' && it.text) {
-        const last = out[out.length - 1];
-        if (last?.role === 'assistant') last.text += '\n' + it.text;
-        else out.push({ role: 'assistant', text: it.text });
-      } else if (it.kind === 'action') {
-        const note = `[action ${it.action.title}: ${it.state}]`;
-        const last = out[out.length - 1];
-        if (last?.role === 'assistant') last.text += '\n' + note;
-        else out.push({ role: 'assistant', text: note });
-      }
-    }
-    return out;
-  }
-
-  function pageContext() {
-    const r = app.route as { page: string; name?: string };
-    return {
-      origin: location.origin,
-      page: location.hash,
-      hostId: app.host,
-      stack: r.page === 'stack' ? (r.name ?? '') : '',
-    };
-  }
-
-  async function send(text?: string) {
-    const msg = (text ?? input).trim();
-    if (!msg || busy) return;
-    if (text === undefined) input = '';
-    items.push({ kind: 'user', text: msg });
-    await run();
-  }
-
-  async function run() {
-    busy = true;
-    ctrl = new AbortController();
-    let current: { kind: 'assistant'; text: string; incomplete?: boolean } | null = null;
+  function readWidth(): number {
     try {
-      const res = await fetch('/api/assistant/chat', {
-        method: 'POST',
-        headers: { 'X-Moorage': '1', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history(), context: pageContext(), allow }),
-        signal: ctrl.signal,
-        credentials: 'same-origin',
-      });
-      if (!res.ok || !res.body) {
-        const data = await res.json().catch(() => ({}));
-        items.push({ kind: 'error', text: data.error ?? `Request failed (${res.status}).` });
-        return;
-      }
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-      let finished = false;
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += dec.decode(value, { stream: true });
-        let i;
-        while ((i = buf.indexOf('\n\n')) >= 0) {
-          const chunk = buf.slice(0, i);
-          buf = buf.slice(i + 2);
-          if (!chunk.startsWith('data: ')) continue;
-          const ev = JSON.parse(chunk.slice(6)) as AssistantEvent;
-          switch (ev.type) {
-            case 'text':
-              current = { kind: 'assistant', text: ev.text ?? '', incomplete: ev.incomplete };
-              items.push(current);
-              break;
-            case 'tool':
-              items.push({ kind: 'tool', name: ev.tool ?? '' });
-              break;
-            case 'action':
-              if (ev.action) items.push({ kind: 'action', action: ev.action, state: ev.action.done ? 'done' : 'pending' });
-              break;
-            case 'permission':
-              if (ev.permission && !allow.includes(ev.permission)) items.push({ kind: 'permission', what: ev.permission, granted: false });
-              break;
-            case 'error':
-              items.push({ kind: 'error', text: ev.text ?? 'Error' });
-              break;
-            case 'done':
-              finished = true;
-              tokens += (ev.inTokens ?? 0) + (ev.outTokens ?? 0);
-              break;
-          }
-        }
-      }
-      if (!finished) items.push({ kind: 'error', text: 'The answer is incomplete (the connection ended).' });
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') items.push({ kind: 'error', text: (e as Error).message });
-    } finally {
-      busy = false;
-      ctrl = null;
-      // drop the transient "working" lines
-      items = items.filter((it) => it.kind !== 'tool');
+      const n = Number(localStorage.getItem('moorage-assistant-width'));
+      if (n >= MIN_W && n <= MAX_W) return n;
+    } catch {
+      /* storage blocked */
     }
+    return 420;
   }
 
-  async function grant(it: Item & { kind: 'permission' }) {
-    it.granted = true;
-    if (!allow.includes(it.what)) allow = [...allow, it.what];
-    await run();
-  }
+  // the page makes room for the docked panel
+  $effect(() => {
+    const root = document.documentElement;
+    if (docked) root.style.setProperty('--assistant-dock', width + 'px');
+    else root.style.removeProperty('--assistant-dock');
+    return () => root.style.removeProperty('--assistant-dock');
+  });
 
-  async function decide(it: Item & { kind: 'action' }, apply: boolean) {
-    if (!it.action.draftId) return;
-    it.error = undefined;
+  $effect(() => {
+    if (shown) {
+      void loadStatus(true);
+      void loadCommands();
+    }
+  });
+
+  let dragging = false;
+  function startDrag(e: PointerEvent) {
+    dragging = true;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }
+  function onDrag(e: PointerEvent) {
+    if (!dragging) return;
+    width = Math.min(MAX_W, Math.max(MIN_W, window.innerWidth - e.clientX));
+  }
+  function endDrag() {
+    dragging = false;
     try {
-      if (apply) {
-        await api.assistantApply(it.action.draftId);
-        it.state = 'applied';
-      } else {
-        await api.assistantReject(it.action.draftId);
-        it.state = 'rejected';
-      }
-    } catch (e) {
-      it.error = (e as Error).message;
+      localStorage.setItem('moorage-assistant-width', String(width));
+    } catch {
+      /* storage blocked */
     }
   }
-
-  function reset() {
-    ctrl?.abort();
-    items = [];
-    allow = [];
-    tokens = 0;
+  function onResizeKey(e: KeyboardEvent) {
+    if (e.key === 'ArrowLeft') width = Math.min(MAX_W, width + 20);
+    else if (e.key === 'ArrowRight') width = Math.max(MIN_W, width - 20);
+    else return;
+    e.preventDefault();
+    endDrag();
   }
 
+  function close() {
+    chat.open = false;
+    document.getElementById('assistant-toggle')?.focus();
+  }
   function onKey(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Escape' && !chat.busy && !chat.editing) close();
+  }
+  function onGlobalKey(e: KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'o' && (shown || onPage)) {
       e.preventDefault();
-      send();
+      reset();
     }
   }
 
-  // links in answers: only Moorage's own origin becomes clickable
-  function linkify(text: string): { t: string; href?: string }[] {
-    const out: { t: string; href?: string }[] = [];
-    const re = /(https?:\/\/[^\s)`'"]+)/g;
-    let last = 0;
-    let m;
-    while ((m = re.exec(text))) {
-      if (m.index > last) out.push({ t: text.slice(last, m.index) });
-      const url = m[1];
-      out.push(url.startsWith(location.origin) ? { t: url, href: url } : { t: url });
-      last = m.index + url.length;
-    }
-    if (last < text.length) out.push({ t: text.slice(last) });
-    return out;
+  // ---- model picker (admins, among models allowed in the settings) ----
+  const modelItems = $derived(
+    (chat.info?.models ?? []).flatMap((g) => g.models.map((m) => ({ value: g.id + '|' + m, label: m, meta: g.name }))),
+  );
+  const pickValue = $derived(
+    chat.pick.provider ? chat.pick.provider + '|' + chat.pick.model : chat.info?.default ? chat.info.default.provider + '|' + chat.info.default.model : '',
+  );
+  function pickModel(v: string) {
+    const [p, ...rest] = v.split('|');
+    chat.pick = { provider: p, model: rest.join('|') };
   }
+  const tokenWarn = $derived(
+    chat.info?.tokenLimit && chat.info.tokensUsed !== undefined && chat.info.tokensUsed >= chat.info.tokenLimit * 0.8
+      ? `${Math.round((chat.info.tokensUsed / chat.info.tokenLimit) * 100)} % of this month's tokens used`
+      : '',
+  );
 </script>
 
-{#if open}
-  <aside class="assistant card" aria-label="Assistant">
+<svelte:window onresize={() => (vw = window.innerWidth)} onkeydown={onGlobalKey} />
+
+{#if shown}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <aside class="assistant card" class:docked class:mobile style:width={mobile ? undefined : width + 'px'} aria-label="Assistant" onkeydown={onKey}>
+    {#if !mobile}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <div
+        class="grip"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the assistant"
+        aria-valuemin={MIN_W}
+        aria-valuemax={MAX_W}
+        aria-valuenow={width}
+        tabindex="0"
+        onpointerdown={startDrag}
+        onpointermove={onDrag}
+        onpointerup={endDrag}
+        onkeydown={onResizeKey}
+      ></div>
+    {/if}
     <header class="ahead">
       <strong><Icon name="wand" /> Assistant</strong>
-      <span class="meta">{tokens ? `${tokens.toLocaleString()} tokens` : ''}</span>
-      <button type="button" class="btn btn-ghost btn-sm" onclick={reset} title="New chat" disabled={items.length === 0}>New chat</button>
-      <button type="button" class="btn btn-ghost btn-sm" onclick={() => (open = false)} aria-label="Close assistant"><Icon name="x" /></button>
+      <button type="button" class="btn btn-ghost btn-sm" onclick={reset} title="New chat (Ctrl+Shift+O)" disabled={chat.items.length === 0}>New chat</button>
+      <button type="button" class="btn btn-ghost btn-sm btn-icon" onclick={() => go('assistant')} aria-label="Expand to a page"><Icon name="maximize" /></button>
+      <button type="button" class="btn btn-ghost btn-sm btn-icon" onclick={close} aria-label="Close assistant (Esc)"><Icon name="x" /></button>
     </header>
-    <div class="log" aria-live="polite">
-      {#if items.length === 0}
-        <p class="meta">Ask about your stacks, why something fails, or where a setting is. The chat isn't saved.</p>
+    <div class="sub">
+      {#if chat.info?.admin && modelItems.length > 1}
+        <div class="picker"><Select items={modelItems} value={pickValue} label="Model" compact onchange={pickModel} /></div>
+      {:else if chat.info?.model}
+        <span class="meta">{chat.info.model}</span>
       {/if}
-      {#each items as it, i (i)}
-        {#if it.kind === 'user'}
-          <div class="bubble user">{it.text}</div>
-        {:else if it.kind === 'assistant'}
-          <div class="bubble bot">
-            {#each linkify(it.text) as part, j (j)}{#if part.href}<a href={part.href}>{part.t}</a>{:else}{part.t}{/if}{/each}
-            {#if it.incomplete}<span class="meta"> (incomplete)</span>{/if}
-          </div>
-        {:else if it.kind === 'tool'}
-          <div class="meta working">{toolLabel[it.name] ?? 'Working…'}</div>
-        {:else if it.kind === 'permission'}
-          <div class="perm">
-            <span>The assistant wants to read <strong>{it.what}</strong> (secrets are masked).</span>
-            {#if !it.granted}<button type="button" class="btn btn-sm btn-primary" onclick={() => grant(it)} disabled={busy}>Allow for this chat</button>{/if}
-          </div>
-        {:else if it.kind === 'action'}
-          <div class="action">
-            <div><strong>{it.action.title}</strong>{#if it.action.demoted}<span class="meta"> – proposed instead of done, because outside content was read</span>{/if}</div>
-            {#if it.action.diff}<pre class="diff mono">{it.action.diff}</pre>{/if}
-            {#if it.state === 'pending' && it.action.draftId}
-              <div class="acts">
-                <button type="button" class="btn btn-sm btn-primary" onclick={() => decide(it, true)}>Apply</button>
-                <button type="button" class="btn btn-sm btn-ghost" onclick={() => decide(it, false)}>Reject</button>
-              </div>
-            {:else}
-              <span class="meta">{it.state === 'done' ? 'Done by the assistant.' : it.state === 'applied' ? 'Applied.' : 'Rejected.'} {it.action.undo ?? ''}</span>
-            {/if}
-            {#if it.error}<p class="error-text">{it.error}</p>{/if}
-          </div>
-        {:else if it.kind === 'error'}
-          <div class="bubble err" role="alert">
-            {it.text}
-            {#if app.user?.role === 'admin'}<a href="#/settings/addons"> Assistant settings</a>{/if}
-          </div>
-        {/if}
+      {#each chat.allow as a (a)}
+        <span class="chip">{a} allowed <button type="button" aria-label="Revoke {a}" onclick={() => revoke(a)}><Icon name="x" /></button></span>
       {/each}
-      {#if busy}<div class="meta working">Thinking…</div>{/if}
+      {#if tokenWarn}<span class="meta warn">{tokenWarn}</span>{/if}
     </div>
-    <form class="compose" onsubmit={(e) => { e.preventDefault(); send(); }}>
-      <textarea class="field" rows="2" bind:value={input} onkeydown={onKey} placeholder="Ask… (Enter to send)" aria-label="Message"></textarea>
-      {#if busy}
-        <button type="button" class="btn" onclick={() => ctrl?.abort()}>Stop</button>
-      {:else}
-        <button type="submit" class="btn btn-primary" disabled={!input.trim()}>Send</button>
-      {/if}
-    </form>
+    <AssistantChat />
   </aside>
 {/if}
 
@@ -253,17 +149,42 @@
     right: 12px;
     top: 72px;
     bottom: 12px;
-    width: min(420px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
     z-index: 60;
     display: grid;
-    grid-template-rows: auto 1fr auto;
-    gap: 8px;
-    padding: 10px;
+    grid-template-rows: auto auto 1fr;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+  .assistant.docked {
+    right: 0;
+    top: 0;
+    bottom: 0;
+    border-radius: 0;
+    box-shadow: -1px 0 0 var(--rope-strong);
+  }
+  .assistant.mobile {
+    inset: 0;
+    max-width: none;
+    border-radius: 0;
+    padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
+  }
+  .grip {
+    position: absolute;
+    left: -4px;
+    top: 0;
+    bottom: 0;
+    width: 8px;
+    cursor: col-resize;
+  }
+  .grip:focus-visible {
+    outline: 2px solid var(--buoy);
   }
   .ahead {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 4px;
   }
   .ahead strong {
     display: inline-flex;
@@ -271,57 +192,34 @@
     gap: 6px;
     margin-right: auto;
   }
-  .log {
-    overflow: auto;
-    display: grid;
-    align-content: start;
-    gap: 8px;
-  }
-  .bubble {
-    padding: 8px 10px;
-    border-radius: var(--r-md);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  .user {
-    background: var(--info-wash);
-    justify-self: end;
-    max-width: 90%;
-  }
-  .bot {
-    background: var(--well);
-    box-shadow: inset 0 0 0 1px var(--rope);
-  }
-  .err {
-    color: var(--danger);
-    background: var(--well);
-  }
-  .action,
-  .perm {
-    display: grid;
+  .sub {
+    display: flex;
+    flex-wrap: wrap;
     gap: 6px;
-    padding: 8px 10px;
-    border-radius: var(--r-md);
-    box-shadow: inset 0 0 0 1px var(--info);
+    align-items: center;
   }
-  .diff {
-    margin: 0;
+  .picker {
+    min-width: 180px;
+    max-width: 100%;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 1px 4px 1px 8px;
+    border-radius: 999px;
     font-size: 12px;
-    max-height: 200px;
-    overflow: auto;
-    white-space: pre;
+    background: var(--signal-wash);
+    color: var(--signal-text);
   }
-  .acts {
-    display: flex;
-    gap: 6px;
+  .chip button {
+    border: 0;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
   }
-  .compose {
-    display: flex;
-    gap: 6px;
-    align-items: end;
-  }
-  .compose textarea {
-    flex: 1;
-    resize: vertical;
+  .warn {
+    color: var(--signal-text);
   }
 </style>

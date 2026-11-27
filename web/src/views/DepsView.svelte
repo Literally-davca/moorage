@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type AutoRestartMode, type DepNode, type HostDeps, type StackDep } from '../lib/api';
-  import { app, currentHost, isAdmin, stackLabel } from '../lib/state.svelte';
+  import { app, currentHost, isAdmin, stackLabel, userPrefs } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Select, { type SelectItem } from '../lib/Select.svelte';
   import {
@@ -175,10 +175,24 @@
   }
 
   // Graph geometry
-  const W = 172;
-  const H = 48;
-  const GX = 28;
-  const GY = 56;
+  // M19F: compact nodes (dot + name) by default; Detailed is the earlier view. The
+  // choice is a user preference, so it follows the user to other devices.
+  let view = $state<'compact' | 'detailed'>(userPrefs().depsView === 'detailed' ? 'detailed' : 'compact');
+  const compact = $derived(view === 'compact');
+  const W = $derived(compact ? 132 : 172);
+  const H = $derived(compact ? 30 : 48);
+  const GX = $derived(compact ? 18 : 28);
+  const GY = $derived(compact ? 40 : 56);
+  async function setView(v: 'compact' | 'detailed') {
+    view = v;
+    try {
+      const p = { ...userPrefs(), depsView: v };
+      await api.savePreferences(p);
+      if (app.user) app.user.preferences = p;
+    } catch {
+      /* the view still switches for now */
+    }
+  }
   const PAD = 12;
 
   const nodeByKey = $derived(new Map((data?.nodes ?? []).map((n) => [refKey(n), n])));
@@ -210,7 +224,7 @@
     return (data?.nodes ?? []).filter((n) => {
       if (hideExternal && scope === 'current' && n.external) return false;
       const isLinked = linkedKeys.has(refKey(n));
-      if (!isLinked && !showStandalone) return false;
+      if (!isLinked && (!showStandalone || compact)) return false; // compact: a row of chips instead
       if (onlyUnhealthy && !isLinked && !isNodeUnhealthy(n)) return false;
       return true;
     });
@@ -225,6 +239,10 @@
     }
     return (data?.nodes ?? []).filter((n) => !n.external && !linkedAll.has(refKey(n)));
   });
+
+  // M19F: in compact view the stacks without dependencies are one row of chips; the
+  // filters still apply
+  const aloneChips = $derived(alone.filter((n) => !onlyUnhealthy || isNodeUnhealthy(n)));
 
   const aloneText = $derived.by(() => {
     if (!alone.length) return '';
@@ -511,6 +529,10 @@
     <section class="card card-pad graph-card" aria-label="Dependency graph">
       <div class="toolbar-row">
         <div class="filters" role="group" aria-label="Graph filters">
+          <span class="seg" role="group" aria-label="View">
+            <button type="button" class="chip" class:on={compact} onclick={() => setView('compact')}>Compact</button>
+            <button type="button" class="chip" class:on={!compact} onclick={() => setView('detailed')}>Detailed</button>
+          </span>
           <button type="button" class="chip" class:on={onlyUnhealthy} onclick={() => (onlyUnhealthy = !onlyUnhealthy)}>
             Only unhealthy
           </button>
@@ -652,11 +674,20 @@
                   onkeydown={(ev) => { if (ev.key === 'Enter' || ev.key === ' ') selectNode(k, ev); }}
                 >
                   <rect x={p.x + PAD} y={p.y + PAD} width={W} height={H} rx="8" class="box {cls}" class:loop={p.node.inCycle} />
-                  <circle cx={p.x + PAD + 14} cy={p.y + PAD + 16} r="4" class="st {cls}" />
-                  <text x={p.x + PAD + 24} y={p.y + PAD + 20} class="nname">{clip(stackLabel(p.node.hostId, p.node.stack, p.node.displayName))}</text>
-                  <text x={p.x + PAD + 24} y={p.y + PAD + 36} class="nstat">
-                    {clip(nodeText(p.node) + (p.node.total ? ` · ${p.node.running ?? 0}/${p.node.total}` : '') + (p.node.inCycle ? ' · loop' : ''), 25)}
-                  </text>
+                  <title>{stackLabel(p.node.hostId, p.node.stack, p.node.displayName)} – {nodeText(p.node)}</title>
+                  {#if compact}
+                    {@const allUp = !p.node.total || (p.node.running ?? 0) === p.node.total}
+                    <circle cx={p.x + PAD + 12} cy={p.y + PAD + 15} r="4" class="st {cls}" />
+                    <text x={p.x + PAD + 22} y={p.y + PAD + 19} class="nname">
+                      {clip(stackLabel(p.node.hostId, p.node.stack, p.node.displayName) + (allUp && !p.node.inCycle ? '' : ` · ${p.node.running ?? 0}/${p.node.total}`), 15)}
+                    </text>
+                  {:else}
+                    <circle cx={p.x + PAD + 14} cy={p.y + PAD + 16} r="4" class="st {cls}" />
+                    <text x={p.x + PAD + 24} y={p.y + PAD + 20} class="nname">{clip(stackLabel(p.node.hostId, p.node.stack, p.node.displayName))}</text>
+                    <text x={p.x + PAD + 24} y={p.y + PAD + 36} class="nstat">
+                      {clip(nodeText(p.node) + (p.node.total ? ` · ${p.node.running ?? 0}/${p.node.total}` : '') + (p.node.inCycle ? ' · loop' : ''), 25)}
+                    </text>
+                  {/if}
                 </g>
               {/each}
             </g>
@@ -840,7 +871,16 @@
       </section>
     {/if}
 
-    {#if alone.length && !showStandalone}
+    {#if compact && showStandalone && aloneChips.length}
+      <section class="card card-pad alone-row" aria-label="Stacks without dependencies">
+        <span class="meta">Without dependencies ({aloneChips.length}):</span>
+        {#each aloneChips as n (refKey(n))}
+          <button type="button" class="chip alone-chip" title={stackLabel(n.hostId, n.stack, n.displayName)} onclick={() => (selectedKey = refKey(n))}>
+            <span class="dot {nodeClass(n) === 'up' ? 'up' : nodeClass(n)}"></span> {clip(stackLabel(n.hostId, n.stack, n.displayName), 24)}
+          </button>
+        {/each}
+      </section>
+    {:else if alone.length && !showStandalone}
       <p class="meta note">Standalone stacks without dependencies: {aloneText}</p>
     {/if}
   {:else if !error}
@@ -936,6 +976,23 @@
     display: flex;
     gap: 8px;
     align-items: center;
+  }
+  .alone-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+  .alone-chip {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    max-width: 220px;
+  }
+  .seg {
+    display: inline-flex;
+    gap: 2px;
+    margin-right: 8px;
   }
   .note {
     display: flex;

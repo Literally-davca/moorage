@@ -2,6 +2,8 @@
 package engine
 
 import (
+	"moorage/internal/tsserve"
+
 	"context"
 	"errors"
 	"fmt"
@@ -75,8 +77,9 @@ type Engine struct {
 	hostShells map[io.Closer]struct{}            // open host OS shells, ended on Close
 
 	selfMu sync.Mutex
-	self   *SelfStack // the stack Moorage runs from, nil for binary installs (self.go)
-	rtNet  RuntimeNet // how Moorage is attached to the host network (hostnet.go)
+	self   *SelfStack      // the stack Moorage runs from, nil for binary installs (self.go)
+	ts     *tsserve.Client // Tailscale Serve (M19J), created on first use
+	rtNet  RuntimeNet      // how Moorage is attached to the host network (hostnet.go)
 
 	engMu    sync.Mutex
 	eng      engineIdent // Docker or Podman, from /version (see podman.go)
@@ -140,6 +143,8 @@ type HostInfo struct {
 	// HostIP and BaseDomain come from MOORAGE_HOST_IP / MOORAGE_BASE_DOMAIN of that host.
 	HostIP     string `json:"hostIp,omitempty"`
 	BaseDomain string `json:"baseDomain,omitempty"`
+	// Resources: disk and memory of the host (M19M); nil from older agents.
+	Resources *HostResources `json:"resources,omitempty"`
 	// NetMode, Addresses and DataHostPath: how Moorage sees the host network (M17B,
 	// hostnet.go). Addresses are auto-detected only in native / host-network mode.
 	NetMode      string        `json:"netMode,omitempty"`
@@ -202,6 +207,7 @@ func (e *Engine) Host(ctx context.Context) HostInfo {
 	}
 	h.Rootless = isRootless(info.Info.SecurityOptions) || (h.Engine == EnginePodman && rootlessSocket(os.Getenv("DOCKER_HOST")))
 	e.warnRootlessOwnership(h.Rootless)
+	h.Resources = e.Resources() // M19M
 	return h
 }
 

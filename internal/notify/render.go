@@ -162,10 +162,15 @@ const (
 )
 
 func renderDiscord(c Config, m Message, v View) (Request, error) {
+	// M19L: only the IDs of the matching rules may ping; log lines never ping anyone
+	ping, allowed := discordMentions(c.mentionsFor(m))
 	body := map[string]any{
 		"username":         discordUsername(v.Sender),
 		"avatar_url":       v.IconURL,
-		"allowed_mentions": map[string]any{"parse": []string{}}, // log lines must never ping @everyone
+		"allowed_mentions": allowed,
+	}
+	if ping != "" {
+		body["content"] = ping
 	}
 	if !c.rich("discord") {
 		var b strings.Builder
@@ -182,7 +187,11 @@ func renderDiscord(c Config, m Message, v View) (Request, error) {
 			}
 			b.WriteString("\n```\n" + clip(strings.Join(logs, "\n"), 1200) + "\n```")
 		}
-		body["content"] = clip(b.String(), 1990)
+		content := b.String()
+		if ping != "" {
+			content = ping + "\n" + content
+		}
+		body["content"] = clip(content, 1990)
 		return jsonRequest("POST", c.URL, body, nil)
 	}
 	body["embeds"] = []any{discordEmbed(v)}
@@ -267,8 +276,12 @@ func discordEmbed(v View) map[string]any {
 // ---- Slack ------------------------------------------------------------------------------
 
 func renderSlack(c Config, m Message, v View) (Request, error) {
+	ping := slackMentions(c.mentionsFor(m)) // M19L; the rest of the text is escaped
+	if ping != "" {
+		ping += " "
+	}
 	if !c.rich("slack") {
-		return jsonRequest("POST", c.URL, map[string]any{"text": clip(v.Title+"\n\n"+v.plainText(false), 3000)}, nil)
+		return jsonRequest("POST", c.URL, map[string]any{"text": ping + slackEscape(clip(v.Title+"\n\n"+v.plainText(false), 3000))}, nil)
 	}
 	text, _ := fitView(v, 3500, byteLen, func(x View) string { return slackText(x) })
 	var fields []map[string]any
@@ -286,7 +299,7 @@ func renderSlack(c Config, m Message, v View) (Request, error) {
 	}
 	att := map[string]any{
 		"color":     fmt.Sprintf("#%06X", statusColor(v.Status)),
-		"fallback":  clip(v.Title, 300),
+		"fallback":  slackEscape(clip(v.Title, 300)),
 		"title":     slackEscape(clip(v.Title, 300)),
 		"footer":    slackEscape(v.Footer),
 		"mrkdwn_in": []string{"text"},
@@ -305,7 +318,7 @@ func renderSlack(c Config, m Message, v View) (Request, error) {
 	}
 	// username / icon_url only take effect on legacy incoming webhooks; Slack apps ignore them.
 	return jsonRequest("POST", c.URL, map[string]any{
-		"text":        slackEscape(clip(v.Title, 300)),
+		"text":        ping + slackEscape(clip(v.Title, 300)),
 		"username":    v.Sender,
 		"icon_url":    v.IconURL,
 		"attachments": []any{att},

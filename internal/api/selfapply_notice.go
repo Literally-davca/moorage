@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"moorage/internal/engine"
 	"moorage/internal/host"
 	"moorage/internal/lint"
 )
@@ -93,12 +94,49 @@ func (s *Server) selfApplyLog(w http.ResponseWriter, r *http.Request) {
 }
 
 // selfApplyBlocked refuses a configuration of Moorage's own stack whose ports Docker
-// would drop or refuse (M18H): the helper's probe would fail on it anyway.
-func selfApplyBlocked(r *http.Request, name, compose, env string) string {
-	for _, is := range lint.Lint(r.Context(), compose, env, lint.Options{Name: name}) {
-		if is.Code == "ports-ignored" || is.Code == "ports-conflict-network" {
+// would drop or refuse (M18H), whose listen address would crash it, or whose listen
+// ports are taken on the host in host network mode (M19B).
+func (s *Server) selfApplyBlocked(r *http.Request, hostID string, h host.Host, name, compose, env string) string {
+	o := lint.Options{Name: name}
+	if st, err := h.GetStack(r.Context(), name); err == nil && st.Self {
+		o.Self = s.selfLint(hostID, st)
+		o.Running = s.runningPorts(r.Context(), hostID, h, name)
+	}
+	for _, is := range lint.Lint(r.Context(), compose, env, o) {
+		switch is.Code {
+		case "ports-ignored", "ports-conflict-network":
 			return is.Message + " Moorage would not be reachable after the restart."
+		case "self-port-taken", "self-listen-invalid":
+			return is.Message
 		}
 	}
 	return ""
+}
+
+// selfLint describes the self stack for the linter: its service, the ports the running
+// Moorage holds (free again once it's recreated) and whether host networking can be
+// verified by the helper.
+func (s *Server) selfLint(hostID string, st engine.Stack) *lint.SelfLint {
+	sl := &lint.SelfLint{Service: st.SelfService, HostNetUnverifiable: st.SelfHostNetUnverifiable}
+	if sl.Service == "" {
+		return nil // older agent: it doesn't say which service Moorage is
+	}
+	for _, c := range st.Containers {
+		if c.Service != sl.Service {
+			continue
+		}
+		for _, p := range c.Ports {
+			if pb, ok := engine.ParsePortString(p); ok {
+				sl.OwnPorts = append(sl.OwnPorts, pb.Public)
+			}
+		}
+	}
+	if hostID == host.LocalID {
+		for _, a := range []string{s.cfg.Listen, s.cfg.AgentListen, s.cfg.WatchdogListen, s.cfg.StatusListen} {
+			if _, p, _, ok, _ := lint.ParseListen(a); ok && p > 0 {
+				sl.OwnPorts = append(sl.OwnPorts, p)
+			}
+		}
+	}
+	return sl
 }

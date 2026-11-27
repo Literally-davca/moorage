@@ -148,6 +148,9 @@ func (e *Engine) RunAction(name, action string) (*Op, error) {
 	if selfBlocked[action] && e.IsSelf(name) {
 		return nil, ErrSelfStack
 	}
+	if action == "pull" && e.IsSelf(name) && e.SelfUpdateLocked() {
+		return nil, ErrSelfUpdateLocked // M19G
+	}
 	dir, err := e.stackDir(name)
 	if err != nil {
 		return nil, err

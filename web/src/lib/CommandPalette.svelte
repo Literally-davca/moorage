@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { chat as assistantChat, open as openAssistant } from './assistantStore.svelte';
   import { api, type Check, type SisterLinks, type StackSummary } from './api';
   import { app, isAdmin, link, setHost, stackLabel } from './state.svelte';
   import Icon, { type IconName } from './Icon.svelte';
@@ -67,6 +68,9 @@
 
   const pageItems = $derived<PaletteItem[]>([
     { id: 'pg:home', group: 'Page', title: 'Home', sub: 'Dashboard overview', icon: 'anchor', run: () => { location.hash = link(''); } },
+    ...(assistantChat.info?.enabled && assistantChat.info?.configured
+      ? [{ id: 'pg:ask', group: 'Page' as const, title: 'Ask the assistant…', sub: 'Open the AI assistant (Ctrl+J)', icon: 'wand' as const, run: () => openAssistant() }]
+      : []),
     { id: 'pg:logs', group: 'Page', title: 'Logs', sub: 'Host-wide live & historical container logs', icon: 'logs', run: () => { location.hash = link('logs'); } },
     { id: 'pg:checks', group: 'Page', title: 'Monitoring · Checks', sub: 'Uptime checks', icon: 'pulse', run: () => { location.hash = '#/monitoring/checks'; } },
     { id: 'pg:status', group: 'Page', title: 'Monitoring · Status pages', sub: 'Public status pages', icon: 'world', run: () => { location.hash = '#/monitoring/status-pages'; } },

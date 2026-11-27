@@ -56,6 +56,14 @@ type Stack struct {
 	Containers  []Container `json:"containers"`
 	// SelfResult is the outcome of the last Apply & restart of the self stack.
 	SelfResult *SelfApplyResult `json:"selfResult,omitempty"`
+	// M19A: the files on disk differ from what runs (saved, not applied), and whether an
+	// Apply & restart has a working configuration to roll back to.
+	SelfPending  bool `json:"selfPending,omitempty"`
+	SelfRollback bool `json:"selfRollback,omitempty"`
+	// SelfService is the compose service of the Moorage container; SelfHostNetUnverifiable
+	// says host networking can't be verified by the helper on this engine.
+	SelfService             string `json:"selfService,omitempty"`
+	SelfHostNetUnverifiable bool   `json:"selfHostNetUnverifiable,omitempty"`
 }
 
 // ListStacks returns managed stacks from the folder plus read-only compose projects found in Docker.
@@ -150,6 +158,11 @@ func (e *Engine) GetStack(ctx context.Context, name string) (Stack, error) {
 	}
 	if s.Self {
 		s.SelfResult = e.SelfResult()
+		s.SelfPending = e.SelfPending(ctx, name)
+		s.SelfRollback = e.SelfRollbackAvailable(ctx, name)
+		if ss := e.selfStack(); ss != nil {
+			s.SelfService, s.SelfHostNetUnverifiable = ss.Service, ss.HostNetUnverifiable
+		}
 	}
 
 	dir, derr := e.stackDir(name)

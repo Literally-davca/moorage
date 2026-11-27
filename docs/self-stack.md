@@ -26,4 +26,4 @@ If even `compose up` with the previous files fails, Moorage may not come back. O
 docker compose up -d
 ```
 
-Check `<data>/self-stack-apply.log` and `<data>/self-stack-result.json` for what happened. The previous files of the last attempt are in `<data>/self-stack-prev/` until an apply succeeds.
+Check `<data>/self-stack-apply.log` and `<data>/self-stack-result.json` for what happened. The previous files of the last attempt are in `<data>/self-stack-prev/` until an apply succeeds. Common causes and fixes are in [Troubleshooting](troubleshooting.md).

@@ -60,6 +60,9 @@ type Config struct {
 	Preset  string          `json:"preset,omitempty"`  // minimal | standard | detailed | custom
 	Include map[string]bool `json:"include,omitempty"` // parts shown by the Custom preset (PartKeys)
 	Format  string          `json:"format,omitempty"`  // rich | plain
+
+	// Mentions (M19L, Discord and Slack): who to ping and when. Empty = nobody.
+	Mentions []MentionRule `json:"mentions,omitempty"`
 }
 
 // Event kinds a channel can subscribe to (Config.Events).
@@ -147,6 +150,9 @@ func (c *Config) KeepSecrets(kind string, old Config) {
 // Validate checks a configuration before it is stored.
 func Validate(kind string, c Config) error {
 	if err := validatePresentation(c); err != nil {
+		return err
+	}
+	if err := validateMentions(kind, c.Mentions); err != nil {
 		return err
 	}
 	httpURL := func(s, what string) error {

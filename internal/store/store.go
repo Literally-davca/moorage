@@ -605,6 +605,28 @@ var migrations = []string{
 		last_used_at INTEGER NOT NULL DEFAULT 0
 	);
 	CREATE INDEX webauthn_credentials_user ON webauthn_credentials(user_id);`,
+	// M19I: saved assistant commands (/name) per user.
+	`CREATE TABLE assistant_commands (
+		id INTEGER PRIMARY KEY,
+		user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+		name TEXT NOT NULL,
+		text TEXT NOT NULL,
+		created INTEGER NOT NULL,
+		updated INTEGER NOT NULL,
+		UNIQUE (user_id, name)
+	);`,
+	// M19M: hourly summaries of check results, kept for a year after the raw rows go.
+	`CREATE TABLE check_results_hourly (
+		check_id INTEGER NOT NULL REFERENCES checks(id) ON DELETE CASCADE,
+		hour INTEGER NOT NULL,
+		up INTEGER NOT NULL DEFAULT 0,
+		down INTEGER NOT NULL DEFAULT 0,
+		degraded INTEGER NOT NULL DEFAULT 0,
+		silenced INTEGER NOT NULL DEFAULT 0,
+		avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+		max_latency_ms INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (check_id, hour)
+	);`,
 }
 
 // Open opens (and migrates) moorage.db in dataDir.

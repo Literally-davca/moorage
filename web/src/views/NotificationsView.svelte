@@ -6,6 +6,7 @@
   import Select from '../lib/Select.svelte';
   import NotifyPresentation from './NotifyPresentation.svelte';
   import NotifyBranding from './NotifyBranding.svelte';
+  import NotifyMentions from './NotifyMentions.svelte';
   import { presets } from '../lib/notifications';
 
   type Draft = { id?: number; name: string; kind: ChannelKind; config: ChannelConfig; enabled: boolean };
@@ -346,6 +347,9 @@
         {/if}
 
         <NotifyPresentation kind={draft.kind} bind:config={draft.config} />
+        {#if draft.kind === 'discord' || draft.kind === 'slack'}
+          <NotifyMentions kind={draft.kind} bind:config={draft.config} />
+        {/if}
 
         <div>
           <span class="label">Events</span>

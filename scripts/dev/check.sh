@@ -35,6 +35,10 @@ if [ -n "$HTML_HITS" ]; then
 fi
 echo "  OK (Icon.svelte only)"
 
+echo "==> [1/5] Checking that the installers carry the current scripts/lib/runtime.sh"
+bash scripts/dev/check-installers.sh
+echo "  OK"
+
 echo "==> [2/5] Checking and building web UI"
 (
   cd web

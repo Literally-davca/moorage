@@ -2,6 +2,15 @@
   import { api, type Problem, type ProblemFix, type StackProblems } from '../lib/api';
   import { go, isAdmin } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
+  import { chat, ask } from '../lib/assistantStore.svelte';
+  import { notice } from '../lib/pageNotices.svelte';
+  import { app } from '../lib/state.svelte';
+
+  // M19I: every problem on screen is context for the assistant, with an Ask button.
+  const assistantOn = $derived(!!chat.info?.enabled && !!chat.info?.configured);
+  function askAbout(p: Problem) {
+    ask(`Why does ${p.service || p.container} in ${name} have "${p.title}" and how do I fix it?`);
+  }
 
   // The Problems card (M18F): what is wrong with the stack's containers, the evidence and
   // fixes that are existing actions with a preview. It adds no alerts.
@@ -166,7 +175,18 @@
       {/if}
     </header>
     {#each data.problems as p (p.container + p.rule)}
-      <article class="problem {p.severity}">
+      <article
+        class="problem {p.severity}"
+        use:notice={{
+          id: 'problem:' + name + ':' + p.container + ':' + p.rule,
+          severity: p.severity === 'error' ? 'error' : p.severity === 'warning' ? 'warning' : 'info',
+          title: 'Problem: ' + p.title,
+          text: `${p.service || p.container}: ${p.detail}`,
+          stack: name,
+          hostId: app.host,
+          fix: (p.fixes ?? []).map((f) => f.label).join('; '),
+        }}
+      >
         <div class="ptitle">
           <span class="dot {p.severity === 'error' ? 'down' : p.severity === 'warning' ? 'degraded' : ''}"></span>
           <strong>{p.title}</strong>
@@ -192,6 +212,11 @@
             {#if p.rule !== 'starting'}
               <button type="button" class="btn btn-ghost btn-sm" onclick={() => ignore(p, true)}>Ignore</button>
             {/if}
+          </div>
+        {/if}
+        {#if assistantOn}
+          <div class="pactions">
+            <button type="button" class="btn btn-ghost btn-sm" onclick={() => askAbout(p)}><Icon name="message" /> Ask the assistant</button>
           </div>
         {/if}
       </article>

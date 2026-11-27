@@ -1106,6 +1106,10 @@ func (m *Monitor) compose(group []alert) notify.Message {
 		} else {
 			msg.URL = fmt.Sprintf("%s/#/checks/%d", pubURL, first.check.ID)
 		}
+		if msg.Status == "down" && first.check.Kind != "host" {
+			// M19I: the page opens the assistant with "Explain this alert" filled in
+			msg.URL += "?ask=explain"
+		}
 	}
 	return msg
 }

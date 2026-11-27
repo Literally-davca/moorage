@@ -12,6 +12,7 @@
   import { app, stackLabel } from '../lib/state.svelte';
   import Icon from '../lib/Icon.svelte';
   import Select from '../lib/Select.svelte';
+  import { absoluteEndpoint, mcpClients, type MCPClientId } from '../lib/mcpClients';
 
   let { addonId }: { addonId: 'stack-scheduler' | 'socket-proxy-check' | 'registry-webhooks' | 'mcp-server' } = $props();
 
@@ -219,6 +220,21 @@
   }
 
   const pendingDrafts = $derived(mcpDrafts.filter((d) => d.status === 'pending'));
+
+  // Client config files: the whole JSON to download or paste. With a fresh token it is
+  // filled in; otherwise a placeholder (tokens are shown only once).
+  let mcpClient = $state<MCPClientId>('claude-code');
+  const fullEndpoint = $derived(absoluteEndpoint(mcpEndpoint, location.origin));
+  const clients = $derived(mcpClients(fullEndpoint, createdMCPSecret));
+  const client = $derived(clients.find((c) => c.id === mcpClient) ?? clients[0]);
+  function downloadConfig() {
+    const url = URL.createObjectURL(new Blob([client.json], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = client.file;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
 </script>
 
 <div class="bpanel">
@@ -389,8 +405,8 @@
     <div class="secret-box">
       <span class="meta">Streamable HTTP MCP endpoint:</span>
       <div class="ractions">
-        <code class="mono">{mcpEndpoint || '/mcp'}</code>
-        <button type="button" class="btn btn-sm" onclick={() => copy(mcpEndpoint || '/mcp', 'mcpep')}>
+        <code class="mono">{fullEndpoint}</code>
+        <button type="button" class="btn btn-sm" onclick={() => copy(fullEndpoint, 'mcpep')}>
           <Icon name="copy" /> {copied === 'mcpep' ? 'Copied' : 'Copy URL'}
         </button>
       </div>
@@ -463,6 +479,29 @@
         </div>
       </div>
     {/if}
+
+    <div class="secret-box client-cfg">
+      <span class="meta">Client config file{createdMCPSecret ? ' – with the new token filled in' : ` – generate a token above to fill it in, or replace PASTE-YOUR-MOORAGE-MCP-TOKEN`}:</span>
+      <div class="tabs" role="tablist">
+        {#each clients as c (c.id)}
+          <button type="button" class="tab" role="tab" aria-selected={mcpClient === c.id} onclick={() => (mcpClient = c.id)}>{c.label}</button>
+        {/each}
+      </div>
+      <ul class="where meta">
+        {#each client.where as w (w)}<li>{w}</li>{/each}
+      </ul>
+      <pre class="code mono">{client.json}</pre>
+      <div class="ractions">
+        <button type="button" class="btn btn-sm" onclick={() => copy(client.json, 'mcpcfg')}>
+          <Icon name="copy" /> {copied === 'mcpcfg' ? 'Copied' : 'Copy JSON'}
+        </button>
+        <button type="button" class="btn btn-sm" onclick={downloadConfig}><Icon name="download" /> Download {client.file}</button>
+      </div>
+      <p class="meta">
+        Already have this file? Add only the <code>moorage</code> entry to its <code>{mcpClient === 'vscode' ? 'servers' : 'mcpServers'}</code>.
+        The file holds the token: keep it out of git (a project <code>.mcp.json</code> or <code>.vscode/mcp.json</code> is often committed).
+      </p>
+    </div>
 
     <div class="rows">
       {#each mcpTokens as tok (tok.id)}
@@ -543,6 +582,22 @@
     box-shadow: inset 0 0 0 1px var(--info);
     display: grid;
     gap: 6px;
+  }
+  .client-cfg {
+    background: var(--well);
+    box-shadow: inset 0 0 0 1px var(--rope);
+    min-width: 0;
+  }
+  .client-cfg pre {
+    margin: 0;
+    max-height: 260px;
+    overflow: auto;
+    white-space: pre;
+  }
+  .where {
+    margin: 0;
+    padding-left: 18px;
+    overflow-wrap: anywhere;
   }
   .ok-msg {
     display: flex;

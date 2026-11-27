@@ -169,6 +169,10 @@ type Updater struct {
 	unsupported map[string]time.Time // hostID -> when 404 was seen
 	nowFn       func() time.Time
 	sendFn      func(ctx context.Context, ch store.Channel, m notify.Message) error
+	// OnSelfImagePending runs when the image check finds a newer image of Moorage's own
+	// stack (M19C): the hub re-checks releases so both overviews agree. Rate-limited by the
+	// callee.
+	OnSelfImagePending func(hostID string)
 	// Strategy returns the deploy strategy of a stack: "rolling" runs updates as rolling
 	// deploys with an automatic rollback. Nil means standard.
 	Strategy func(ctx context.Context, hostID, stack string) string
@@ -176,6 +180,17 @@ type Updater struct {
 	// An error postpones the update: the admin turned the safeguard on on purpose.
 	BeforeUpdate func(ctx context.Context, hostID, stack string) error
 }
+
+// ErrSelfUpdateViaMoorage refuses an image update of the stack Moorage runs from (M19C):
+// it wraps engine.ErrSelfStack so callers that treat it as notify-only keep working.
+var ErrSelfUpdateViaMoorage error = selfViaMoorage{}
+
+type selfViaMoorage struct{}
+
+func (selfViaMoorage) Error() string {
+	return "Moorage updates itself through Moorage updates – use Update Moorage"
+}
+func (selfViaMoorage) Is(target error) bool { return target == engine.ErrSelfStack }
 
 // ErrSnapshotFailed postpones an update whose snapshot before the update failed.
 var ErrSnapshotFailed = errors.New("update postponed: the snapshot before the update failed")
@@ -331,6 +346,8 @@ type pendingNotice struct {
 	newDigest  string
 	newerTag   string
 	newerMajor string
+	// self: Moorage's own stack (M19C): it's installed through Moorage updates.
+	self bool
 }
 
 // RunScheduled executes one scheduled check run across all connected hosts, sends one batched
@@ -382,6 +399,9 @@ func (u *Updater) RunScheduled(ctx context.Context) {
 			if err != nil {
 				continue
 			}
+			if sm.Self {
+				u.selfImagePending(he.ID, rows)
+			}
 
 			// Decide whether any service in this stack should be auto-applied right now.
 			// An update pulls every service of the stack, so a digest the user rolled back
@@ -416,6 +436,11 @@ func (u *Updater) RunScheduled(ctx context.Context) {
 				}
 			}
 
+			if wantAuto && sm.Self {
+				// M19C: Moorage's own stack is never recreated from inside; Auto behaves like
+				// Notify, visibly (Logbook + notice once per digest, below).
+				wantAuto = false
+			}
 			if wantAuto {
 				u.applyAutoUpdate(ctx, h, he, sm.Name, st, pol, rows, now)
 				// Still check if any service has a newly discovered version tag (Part B is notify-only even when policy is auto!).
@@ -472,8 +497,11 @@ func (u *Updater) RunScheduled(ctx context.Context) {
 					notices = append(notices, pendingNotice{
 						hostID: he.ID, hostName: he.Name, stack: sm.Name,
 						service: r.Service, ref: r.Ref,
-						newDigest: nDig, newerTag: nTag, newerMajor: nMaj,
+						newDigest: nDig, newerTag: nTag, newerMajor: nMaj, self: sm.Self,
 					})
+					if sm.Self && nDig != "" && u.events != nil {
+						u.events.StackEvent(he.ID, sm.Name, "update", ActorAuto, "A new Moorage build is available ("+r.Ref+") – install it in Moorage updates")
+					}
 				}
 			}
 			if changed {
@@ -772,12 +800,17 @@ func (u *Updater) StartUpdate(ctx context.Context, hostID, stack, actor string) 
 	if he.ReadOnly {
 		return engine.OpInfo{}, nil, host.ErrHostReadOnly
 	}
+	// M19C: Moorage's own stack updates through Moorage updates; no snapshot, no pull.
+	if st, err := h.GetStack(ctx, stack); err == nil && st.Self {
+		return engine.OpInfo{}, nil, ErrSelfUpdateViaMoorage
+	}
 	if u.BeforeUpdate != nil {
 		if err := u.BeforeUpdate(ctx, hostID, stack); err != nil {
 			if u.events != nil {
 				u.events.StackEvent(hostID, stack, "update", actor, "Update postponed: snapshot before update failed ("+err.Error()+")")
 			}
-			return engine.OpInfo{}, nil, fmt.Errorf("%w: %v", ErrSnapshotFailed, err)
+			// keep the cause too (errors.Is finds ErrSelfStack and friends)
+			return engine.OpInfo{}, nil, fmt.Errorf("%w: %w", ErrSnapshotFailed, err)
 		}
 	}
 
@@ -1161,7 +1194,9 @@ func (u *Updater) sendDiscoveryBatch(ctx context.Context, channelIDs []int64, no
 			where = n.stack + " on " + n.hostName
 		}
 		prefix := fmt.Sprintf("%s · %s: ", where, n.service)
-		if n.newDigest != "" {
+		if n.newDigest != "" && n.self {
+			lines = append(lines, prefix+"a new Moorage build is available – install it in Moorage updates")
+		} else if n.newDigest != "" {
 			lines = append(lines, prefix+n.ref+" has a new build")
 		}
 		if n.newerTag != "" {
@@ -1420,4 +1455,17 @@ func (u *Updater) sendFailureNotice(ctx context.Context, channelIDs []int64, sta
 		Logs:   logs,
 		URL:    u.stackURL(rec.HostID, stack),
 	})
+}
+
+// selfImagePending tells the hub that Moorage's own stack has a newer image (M19C).
+func (u *Updater) selfImagePending(hostID string, rows []store.ImageCheckRow) {
+	if u.OnSelfImagePending == nil {
+		return
+	}
+	for _, r := range rows {
+		if pendingUpdate(r) {
+			u.OnSelfImagePending(hostID)
+			return
+		}
+	}
 }
