@@ -2,6 +2,7 @@
 // show the same conversation, so moving between pages or expanding the panel keeps it.
 // Nothing is stored on the server; a reload ends the chat.
 
+import { untrack } from 'svelte';
 import { api, type AssistantAction, type AssistantEvent, type AssistantLink, type AssistantStatus, type AssistantCommand } from './api';
 import { app, currentHost } from './state.svelte';
 import { currentNotices, type PageNotice } from './pageNotices.svelte';
@@ -147,8 +148,12 @@ export function resolveSlash(input: string): string | null {
 }
 
 export function open(focus = true) {
-  chat.open = true;
-  if (focus) chat.focusTick++;
+  // untrack: `focusTick++` also reads it, so an effect calling open() (#/assistant) would
+  // re-run itself forever, re-fetching status and commands until the browser runs out of memory
+  untrack(() => {
+    chat.open = true;
+    if (focus) chat.focusTick++;
+  });
 }
 
 /** ask opens the panel with a prefilled question; the user sends it (M19I). */

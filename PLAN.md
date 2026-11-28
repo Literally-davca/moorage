@@ -1616,6 +1616,7 @@ Hotové všechny body, `scripts/dev/check.sh` prošel. Odchylky a co neověřeno
 - M20K: Upozornění „Agents must join again“ je v Settings → General (diagnostika), ne na Home; zmizí s odebráním `MOORAGE_RESTORE_FILE`. Formát 3 dává klíč CA i do vzdálených záloh (S3/WebDAV), šifrovaný heslem zálohy jako databáze.
 - M20L: `GET` seznamu draftů už měl `LIMIT 100`, limit 200 se nepřidával. Limit webhooků používá stejný limiter jako MCP (duplicitní kód smazán).
 - M20F: Stejný diff z enginu používají karta asistenta, `links_fix.go` a CLI `moorage history diff`; vlastní diffy smazány.
+- **Skutečná příčina „žere RAM“ (2026-11-28, po M20):** Stránka `#/assistant` volala `open()` v `$effect`. `chat.focusTick++` stav čte i zapisuje, takže efekt spouštěl sám sebe donekonečna a při každém běhu znovu volal `/api/assistant/status` a `/commands`. Stránka zamrzla a proces prohlížeče narostl na GB (M19 i M20, Chrome i Firefox). Oprava: `open()` mění stav v `untrack`. Ověřeno lokálně: po otevření `#/assistant` 3 požadavky, halda 5 MB, po dlouhé odpovědi 17 MB. Měření chatu s falešným providerem (OpenRouter styl, 7 odpovědí, 80 000 drobných kousků): halda JS do 18 MB.
 
 ### Rozhodnutí
 - M20F: Maskovat jen tajné hodnoty .env (uživatel). Mění M18G: cesty, IP a porty z .env model vidí. `[A]` Náhodně vypadající hodnoty se maskují i bez tajného jména.
