@@ -29,6 +29,13 @@ type assistantProvider struct {
 	// Models: ticked models of a paid API (Anthropic, OpenAI, Gemini). Ignored for
 	// Ollama and OpenAI-compatible endpoints, which offer every model they report.
 	Models []string `json:"models,omitempty"`
+	// OnlyTicked: an OpenAI-compatible endpoint offers only Models, not all (M20H).
+	OnlyTicked bool `json:"onlyTicked,omitempty"`
+}
+
+// tickedOnly: paid APIs always, OpenAI-compatible when the admin chose Only ticked.
+func (p *assistantProvider) tickedOnly() bool {
+	return paidProvider(p.Type) || (p.Type == assistant.ProviderCompat && p.OnlyTicked)
 }
 
 type assistantDefault struct {
@@ -155,7 +162,7 @@ func (s *Server) allowedModels(ctx context.Context, a assistantSettings, p *assi
 	if a.Default.Provider == p.ID {
 		add(a.Default.Model)
 	}
-	if paidProvider(p.Type) {
+	if p.tickedOnly() {
 		for _, m := range p.Models {
 			add(m)
 		}
@@ -189,16 +196,75 @@ func (s *Server) pickModel(ctx context.Context, a assistantSettings, admin bool,
 	return def, a.Default.Model, "Model " + model + " is no longer allowed – using " + a.Default.Model + "."
 }
 
-// assistantModels: GET /api/addons/assistant/models?provider=<id>&fresh=1 (admin).
+// providerProbe is the body of Load models and Test connection. Draft and APIKey are the
+// unsaved form values (M20H): used for this request only, never stored.
+type providerProbe struct {
+	Provider string             `json:"provider"`
+	Model    string             `json:"model"`
+	Fresh    bool               `json:"fresh"`
+	Draft    *assistantProvider `json:"draft"`
+	APIKey   string             `json:"apiKey"`
+}
+
+// probeProvider resolves the provider of a probe; unsaved=true when form values replace
+// the saved ones (then the result isn't cached).
+func (s *Server) probeProvider(ctx context.Context, a assistantSettings, req providerProbe) (*assistantProvider, string, bool, string) {
+	p := a.providerByID(req.Provider)
+	key := ""
+	if p != nil {
+		key = s.providerKey(ctx, p.ID)
+	}
+	if req.Draft == nil && req.APIKey == "" {
+		if p == nil {
+			return nil, "", false, "Unknown provider."
+		}
+		return p, key, false, ""
+	}
+	np := assistantProvider{ID: req.Provider}
+	if p != nil {
+		np = *p
+	}
+	if req.Draft != nil {
+		np.Type, np.BaseURL = req.Draft.Type, strings.TrimSpace(req.Draft.BaseURL)
+		if np.ID == "" {
+			np.ID = "unsaved"
+		}
+		check := assistantSettings{Providers: []assistantProvider{np}, Default: assistantDefault{Provider: np.ID}}
+		if msg := validateProviders(&check); msg != "" {
+			return nil, "", false, msg
+		}
+	}
+	if req.APIKey != "" {
+		key = req.APIKey
+	}
+	return &np, key, true, ""
+}
+
+// assistantModels: POST /api/addons/assistant/models (a providerProbe, admin).
 func (s *Server) assistantModels(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	a := s.loadAssistantSettings(ctx)
-	p := a.providerByID(r.URL.Query().Get("provider"))
-	if p == nil {
-		writeErr(w, http.StatusNotFound, "Unknown provider.")
+	var req providerProbe
+	if !readJSON(w, r, &req) {
 		return
 	}
-	e := s.detectModels(ctx, p, r.URL.Query().Get("fresh") == "1")
+	p, key, unsaved, msg := s.probeProvider(ctx, s.loadAssistantSettings(ctx), req)
+	if p == nil {
+		writeErr(w, http.StatusBadRequest, msg)
+		return
+	}
+	var e modelCacheEntry
+	if unsaved {
+		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		ms, err := assistant.ListModels(cctx, assistant.Config{Provider: p.Type, BaseURL: p.BaseURL, APIKey: key, HTTP: assistantHTTP()})
+		e = modelCacheEntry{at: time.Now(), models: ms}
+		if err != nil {
+			e.err = err.Error()
+		}
+		sort.Slice(e.models, func(i, j int) bool { return e.models[i].ID < e.models[j].ID })
+	} else {
+		e = s.detectModels(ctx, p, req.Fresh)
+	}
 	models := e.models
 	if models == nil {
 		models = []assistant.ModelInfo{}
@@ -206,20 +272,21 @@ func (s *Server) assistantModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"models": models, "error": e.err, "at": e.at, "paid": paidProvider(p.Type)})
 }
 
-// assistantTest: POST /api/addons/assistant/test {provider, model} (admin).
+// assistantTest: POST /api/addons/assistant/test (a providerProbe, admin).
 func (s *Server) assistantTest(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Provider string `json:"provider"`
-		Model    string `json:"model"`
-	}
+	var req providerProbe
 	if !readJSON(w, r, &req) {
 		return
 	}
 	ctx := r.Context()
 	a := s.loadAssistantSettings(ctx)
-	p := a.providerByID(req.Provider)
+	if req.Provider == "" && req.Draft == nil {
+		req.Provider = a.Default.Provider
+	}
+	p, key, _, msg := s.probeProvider(ctx, a, req)
 	if p == nil {
-		p = a.providerByID(a.Default.Provider)
+		writeErr(w, http.StatusBadRequest, msg)
+		return
 	}
 	model := req.Model
 	if model == "" {
@@ -227,7 +294,7 @@ func (s *Server) assistantTest(w http.ResponseWriter, r *http.Request) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	if err := assistant.Test(cctx, s.providerConfig(ctx, p, model)); err != nil {
+	if err := assistant.Test(cctx, assistant.Config{Provider: p.Type, Model: model, BaseURL: p.BaseURL, APIKey: key, HTTP: assistantHTTP()}); err != nil {
 		code, detail := assistant.ErrorCode(err)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": capitalize(err.Error()) + ".", "code": code, "detail": detail})
 		return

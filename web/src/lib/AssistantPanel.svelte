@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
-  import Select from './Select.svelte';
+  import ModelPicker from './ModelPicker.svelte';
   import AssistantChat from './AssistantChat.svelte';
   import { app, go } from './state.svelte';
   import { chat, reset, revoke, loadStatus, loadCommands } from './assistantStore.svelte';
@@ -38,7 +38,7 @@
 
   $effect(() => {
     if (shown) {
-      void loadStatus(true);
+      void loadStatus();
       void loadCommands();
     }
   });
@@ -82,17 +82,6 @@
     }
   }
 
-  // ---- model picker (admins, among models allowed in the settings) ----
-  const modelItems = $derived(
-    (chat.info?.models ?? []).flatMap((g) => g.models.map((m) => ({ value: g.id + '|' + m, label: m, meta: g.name }))),
-  );
-  const pickValue = $derived(
-    chat.pick.provider ? chat.pick.provider + '|' + chat.pick.model : chat.info?.default ? chat.info.default.provider + '|' + chat.info.default.model : '',
-  );
-  function pickModel(v: string) {
-    const [p, ...rest] = v.split('|');
-    chat.pick = { provider: p, model: rest.join('|') };
-  }
   const tokenWarn = $derived(
     chat.info?.tokenLimit && chat.info.tokensUsed !== undefined && chat.info.tokensUsed >= chat.info.tokenLimit * 0.8
       ? `${Math.round((chat.info.tokensUsed / chat.info.tokenLimit) * 100)} % of this month's tokens used`
@@ -129,11 +118,7 @@
       <button type="button" class="btn btn-ghost btn-sm btn-icon" onclick={close} aria-label="Close assistant (Esc)"><Icon name="x" /></button>
     </header>
     <div class="sub">
-      {#if chat.info?.admin && modelItems.length > 1}
-        <div class="picker"><Select items={modelItems} value={pickValue} label="Model" compact onchange={pickModel} /></div>
-      {:else if chat.info?.model}
-        <span class="meta">{chat.info.model}</span>
-      {/if}
+      <ModelPicker />
       {#each chat.allow as a (a)}
         <span class="chip">{a} allowed <button type="button" aria-label="Revoke {a}" onclick={() => revoke(a)}><Icon name="x" /></button></span>
       {/each}
@@ -152,6 +137,7 @@
     max-width: calc(100vw - 24px);
     z-index: 60;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto auto 1fr;
     gap: 6px;
     padding: 10px 12px;
@@ -197,10 +183,6 @@
     flex-wrap: wrap;
     gap: 6px;
     align-items: center;
-  }
-  .picker {
-    min-width: 180px;
-    max-width: 100%;
   }
   .chip {
     display: inline-flex;

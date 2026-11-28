@@ -41,6 +41,12 @@ services:
       # Owner (user and group ID) of files Moorage writes in the stacks folder. Set both or neither.
       # MOORAGE_PUID: "1000"
       # MOORAGE_PGID: "1000"
+      # One-time restore on a new machine: when /data has no database yet, Moorage first
+      # restores this .mbk backup (users, passkeys, tokens, stacks, agent CA) and starts
+      # without Setup. With a database present it is ignored. A wrong password or a damaged
+      # file stops the start. Remove both variables after the first start.
+      # MOORAGE_RESTORE_FILE: /data/restore/moorage-backup.mbk
+      # MOORAGE_RESTORE_PASSWORD_FILE: /data/restore/password   # or MOORAGE_RESTORE_PASSWORD
 
       # ---- Address and cookies -----------------------------------------------------------
       # The address people open Moorage at. Used for links in alerts, passkeys, SSO and terminal checks.

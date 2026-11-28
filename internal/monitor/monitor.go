@@ -1223,6 +1223,9 @@ func (m *Monitor) prune(ctx context.Context) {
 		_ = m.st.PruneImageUpdates(ctx, time.Now().Add(-90*24*time.Hour))
 		_ = m.st.PruneTerminalSessions(ctx, time.Now().Add(-365*24*time.Hour))
 		_ = m.st.PruneAudit(ctx, time.Now().Add(-365*24*time.Hour))
+		_ = m.st.PruneMCPDrafts(ctx, time.Now().Add(-30*24*time.Hour))
+		// assistant proposals nobody decided (page reloaded, tab closed); "assistant:" is api.assistantDraftPrefix
+		_ = m.st.RejectPendingMCPDrafts(ctx, "assistant:*", time.Now().Add(-time.Hour), "expired")
 		_, _ = m.st.PruneContainerEvents(ctx, time.Now().Add(-ContainerEventRetention))
 		select {
 		case <-ctx.Done():

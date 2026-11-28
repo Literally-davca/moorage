@@ -244,6 +244,12 @@ func applyUserChange(ctx context.Context, tx *sql.Tx, id int64, c UserChange) er
 	return err
 }
 
+// DeleteAllSessions signs everyone out (a database restored from a backup, M20K).
+func (s *Store) DeleteAllSessions(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions`)
+	return err
+}
+
 // CountBreakGlassAdmins counts finished, enabled local admins with TOTP.
 func (s *Store) CountBreakGlassAdmins(ctx context.Context) (int, error) {
 	var n int

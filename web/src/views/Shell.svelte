@@ -125,7 +125,8 @@
     { href: link('deps'), label: 'Dependencies', icon: 'hierarchy', current: app.route.page === 'deps' },
     { href: '#/updates', label: 'Image updates', icon: 'cloudDown', current: app.route.page === 'updates', badge: updatesBadge() },
     {
-      href: '#/settings/hosts',
+      // with MCP drafts waiting, Settings leads to them (M20G)
+      href: app.nav?.mcpDrafts ? '#/settings/addons?open=mcp-server' : '#/settings/hosts',
       label: 'Settings',
       icon: 'settings',
       current: app.route.page === 'settings',

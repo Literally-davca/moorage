@@ -387,7 +387,7 @@ func newHostsCmd(opts *rootOpts) *cobra.Command {
 	return root
 }
 
-func newBackupCmd(opts *rootOpts) *cobra.Command {
+func newBackupCmd(opts *rootOpts, hooks ServerHooks) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "backup",
 		Short: "Export, inspect, and restore encrypted .mbk backups",
@@ -459,11 +459,21 @@ func newBackupCmd(opts *rootOpts) *cobra.Command {
 
 	var resPass string
 	var restoreDB, restoreStacks bool
+	var localFile, localPassFile string
 	restoreCmd := &cobra.Command{
-		Use:   "restore <file.mbk>",
-		Short: "Preview and apply an .mbk backup archive",
-		Args:  cobra.ExactArgs(1),
+		Use:   "restore <file.mbk> | --file <file.mbk> --password-file <file>",
+		Short: "Apply an .mbk backup through the server, or with --file restore it into this machine's empty data folder",
+		Args:  cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if localFile != "" {
+				if hooks.RestoreLocal == nil || localPassFile == "" {
+					return fmt.Errorf("--file needs --password-file")
+				}
+				return hooks.RestoreLocal(localFile, localPassFile)
+			}
+			if len(args) != 1 || resPass == "" {
+				return fmt.Errorf("give the backup file and --password, or --file and --password-file")
+			}
 			if !restoreDB && !restoreStacks {
 				restoreDB = true
 				restoreStacks = true
@@ -495,7 +505,8 @@ func newBackupCmd(opts *rootOpts) *cobra.Command {
 	restoreCmd.Flags().StringVar(&resPass, "password", "", "backup decryption password")
 	restoreCmd.Flags().BoolVar(&restoreDB, "db", true, "restore hub database (takes effect on restart)")
 	restoreCmd.Flags().BoolVar(&restoreStacks, "stacks", true, "restore stack compose.yaml/.env files")
-	_ = restoreCmd.MarkFlagRequired("password")
+	restoreCmd.Flags().StringVar(&localFile, "file", "", "restore this .mbk into the empty data folder (MOORAGE_DATA_DIR) without a running server")
+	restoreCmd.Flags().StringVar(&localPassFile, "password-file", "", "file holding the backup password (with --file)")
 	root.AddCommand(restoreCmd)
 
 	return root

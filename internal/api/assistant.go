@@ -13,8 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"moorage/internal/assistant"
+	"moorage/internal/engine"
 	"moorage/internal/host"
 	"moorage/internal/store"
 )
@@ -266,6 +268,9 @@ func (s *Server) assistantChat(w http.ResponseWriter, r *http.Request) {
 	if len(req.Messages) == 0 || len(req.Messages) > assistantMaxMessages {
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("The conversation is too long (%d messages at most). Start a new chat.", assistantMaxMessages))
 		return
+	}
+	if len(req.Messages) == 1 { // a new chat: earlier proposals of this user can no longer be decided
+		_ = s.store.RejectPendingMCPDrafts(ctx, assistantDraftPrefix+currentUser(r).Username, time.Now(), "new chat")
 	}
 	total := 0
 	for _, m := range req.Messages {
@@ -524,7 +529,7 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 			if pr, err := s.stackProblems(ctx, hostID, h, stack); err == nil {
 				b.WriteString(s.problemsText(pr.Problems, set, allowed, ast, st.Env))
 			}
-			fmt.Fprintf(&b, ".env variables (values hidden): %s\ncompose.yaml:\n%s\n", strings.Join(envKeyNames(st.Env), ", "), maskEnvValues(st.Compose, st.Env))
+			fmt.Fprintf(&b, ".env (secret values shown as ********):\n%s\ncompose.yaml:\n%s\n", maskEnvForModel(st.Env), maskEnvValues(st.Compose, st.Env))
 			return b.String(), nil
 		},
 	})
@@ -614,18 +619,39 @@ func (s *Server) assistantTools(r *http.Request, set assistantSettings, req assi
 	}
 	if level("compose") != levelOff {
 		add(assistant.Tool{
-			Def: assistant.ToolDef{Name: "propose_compose", Description: "Change compose.yaml of an existing stack: saved as a new version (and deployed when deploy is true). For new secrets write @generate(...) values. .env values can't be changed.",
+			Def: assistant.ToolDef{Name: "propose_compose", Description: "Change compose.yaml of an existing stack: saved as a new version (and deployed when deploy is true). " +
+				"Prefer edits (whole lines copied exactly from get_stack, each found once); the server applies them to the real file, so untouched lines stay. " +
+				"Use compose (the whole file) only for big rewrites. Never send lines with ********: they are masked secrets. For new secrets write @generate(...) values. .env values can't be changed.",
 				Schema: map[string]any{"hostId": str("string", "Host id."), "stack": str("string", "Stack name."),
-					"compose": str("string", "The complete new compose.yaml."), "note": str("string", "Short reason."), "deploy": str("boolean", "Deploy after saving.")},
-				Required: []string{"hostId", "stack", "compose"}},
+					"edits": map[string]any{"type": "array", "description": "Line edits: find = one or more whole current lines, replace = their new text (empty deletes them).",
+						"items": map[string]any{"type": "object", "properties": map[string]any{"find": str("string", "Exact current lines."), "replace": str("string", "New lines.")}, "required": []string{"find", "replace"}}},
+					"compose": str("string", "The complete new compose.yaml (only when edits don't fit)."), "note": str("string", "Short reason."), "deploy": str("boolean", "Deploy after saving.")},
+				Required: []string{"hostId", "stack"}},
 			Run: func(ctx context.Context, in json.RawMessage, st *assistant.State, emit func(assistant.Event)) (string, error) {
 				var a struct {
-					Compose string `json:"compose"`
-					Note    string `json:"note"`
-					Deploy  bool   `json:"deploy"`
+					Compose string        `json:"compose"`
+					Edits   []composeEdit `json:"edits"`
+					Note    string        `json:"note"`
+					Deploy  bool          `json:"deploy"`
 				}
-				if err := json.Unmarshal(in, &a); err != nil || strings.TrimSpace(a.Compose) == "" {
-					return "", errors.New("compose is required")
+				if err := json.Unmarshal(in, &a); err != nil || (strings.TrimSpace(a.Compose) == "" && len(a.Edits) == 0) {
+					return "", errors.New("edits or compose is required")
+				}
+				if len(a.Edits) > 0 {
+					_, stack, h, err := s.assistantStack(ctx, in)
+					if err != nil {
+						return "", err
+					}
+					cur, err := h.GetStack(ctx, stack)
+					if err != nil {
+						return "", err
+					}
+					if a.Compose, err = applyComposeEdits(cur.Compose, a.Edits); err != nil {
+						return "", err
+					}
+				}
+				if strings.Contains(a.Compose, "********") { // M20F: a masked secret would be saved as stars
+					return "", errors.New("the proposal contains ******** (a masked secret): keep masked lines unchanged and leave them out of edits")
 				}
 				// M19I: Moorage's own stack gets a proposal with Apply & restart (never Auto)
 				if res, handled, err := s.assistantSelfProposal(ctx, r, set, in, a.Compose, a.Note, emit); handled {
@@ -850,36 +876,96 @@ func deployWord(d bool) string {
 	return ""
 }
 
-func envKeyNames(env string) []string {
-	var out []string
-	for _, l := range strings.Split(env, "\n") {
+type composeEdit struct {
+	Find    string `json:"find"`
+	Replace string `json:"replace"`
+}
+
+// applyComposeEdits replaces whole lines of the real file (M20F). Each find must be there
+// exactly once, so the model can't guess; lines it didn't touch stay byte for byte
+// (comments, quotes, CRLF).
+func applyComposeEdits(cur string, edits []composeEdit) (string, error) {
+	crlf := strings.Contains(cur, "\r\n")
+	text := strings.ReplaceAll(cur, "\r\n", "\n")
+	for i, e := range edits {
+		find := strings.TrimSuffix(strings.ReplaceAll(e.Find, "\r\n", "\n"), "\n")
+		repl := strings.TrimSuffix(strings.ReplaceAll(e.Replace, "\r\n", "\n"), "\n")
+		if strings.TrimSpace(find) == "" {
+			return "", fmt.Errorf("edit %d: find is empty", i+1)
+		}
+		padded := "\n" + text + "\n"
+		if n := strings.Count(padded, "\n"+find+"\n"); n != 1 {
+			return "", fmt.Errorf("edit %d: find must be whole lines found exactly once, found %d times; copy the lines from get_stack", i+1, n)
+		}
+		with := "\n" + repl + "\n"
+		if repl == "" {
+			with = "\n"
+		}
+		padded = strings.Replace(padded, "\n"+find+"\n", with, 1)
+		text = padded[1 : len(padded)-1]
+	}
+	if crlf {
+		text = strings.ReplaceAll(text, "\n", "\r\n")
+	}
+	return text, nil
+}
+
+var (
+	secretEnvNameRe = regexp.MustCompile(`(?i)PASS|PWD|SECRET|TOKEN|KEY|AUTH|CREDENTIAL|PRIVATE|SALT|COOKIE|SESSION|DSN`)
+	urlPasswordRe   = regexp.MustCompile(`://[^/\s:@]+:[^/\s@]+@`)
+)
+
+// secretEnv reports whether a .env value stays hidden from the model (M20F): a secret
+// name, a URL with a password, or a generated-looking value. Paths, addresses, ports
+// and names stay visible, so proposals can keep them.
+func secretEnv(key, v string) bool {
+	return secretEnvNameRe.MatchString(key) || urlPasswordRe.MatchString(v) || randomLooking(v)
+}
+
+// randomLooking: 16+ characters mixing letters and digits (an @generate value), and not
+// a path, host name or address.
+func randomLooking(v string) bool {
+	if len(v) < 16 || strings.ContainsAny(v, " ./:") {
+		return false
+	}
+	return strings.ContainsAny(v, "0123456789") && strings.IndexFunc(v, unicode.IsLetter) >= 0
+}
+
+// envPairs yields the KEY=value lines of a .env with quotes removed from the value.
+func envPairs(env string, fn func(k, v string)) {
+	for _, l := range strings.Split(strings.ReplaceAll(env, "\r\n", "\n"), "\n") {
 		l = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "export "))
 		if l == "" || strings.HasPrefix(l, "#") {
 			continue
 		}
-		if k, _, ok := strings.Cut(l, "="); ok {
-			out = append(out, strings.TrimSpace(k))
+		if k, v, ok := strings.Cut(l, "="); ok {
+			fn(strings.TrimSpace(k), strings.Trim(strings.TrimSpace(v), `"'`))
 		}
 	}
+}
+
+// envValues lists the secret .env values, longest first, for masking.
+func envValues(env string) []string {
+	var out []string
+	envPairs(env, func(k, v string) {
+		if len(v) >= 4 && secretEnv(k, v) {
+			out = append(out, v)
+		}
+	})
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
 	return out
 }
 
-func envValues(env string) []string {
-	var out []string
-	for _, l := range strings.Split(env, "\n") {
-		l = strings.TrimSpace(l)
-		if l == "" || strings.HasPrefix(l, "#") {
-			continue
+// maskEnvForModel is the .env as the model sees it: secret values replaced.
+func maskEnvForModel(env string) string {
+	var b strings.Builder
+	envPairs(env, func(k, v string) {
+		if secretEnv(k, v) {
+			v = "********"
 		}
-		if _, v, ok := strings.Cut(l, "="); ok {
-			v = strings.Trim(strings.TrimSpace(v), `"'`)
-			if len(v) >= 4 {
-				out = append(out, v)
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
-	return out
+		b.WriteString(k + "=" + v + "\n")
+	})
+	return b.String()
 }
 
 // maskEnvValues hides .env values that appear literally in a text.
@@ -910,30 +996,13 @@ func maskSecrets(text, env string) string {
 	})
 }
 
-// lineDiff is a compact changed-lines view for the action card.
+// lineDiff is the changed-lines view (3 lines of context) for action cards.
 func lineDiff(a, b string) string {
-	al := strings.Split(a, "\n")
-	bl := strings.Split(b, "\n")
-	i := 0
-	for i < len(al) && i < len(bl) && al[i] == bl[i] {
-		i++
+	d := engine.UnifiedDiff(a, b, 3)
+	if len(d) > 16<<10 {
+		return d[:16<<10] + "…"
 	}
-	ea, eb := len(al)-1, len(bl)-1
-	for ea >= i && eb >= i && al[ea] == bl[eb] {
-		ea--
-		eb--
-	}
-	var out strings.Builder
-	for k := i; k <= ea; k++ {
-		out.WriteString("- " + al[k] + "\n")
-	}
-	for k := i; k <= eb; k++ {
-		out.WriteString("+ " + bl[k] + "\n")
-	}
-	if out.Len() > 16<<10 {
-		return out.String()[:16<<10] + "…"
-	}
-	return out.String()
+	return d
 }
 
 /// assistantStatus tells the shell whether to show the panel (enabled and configured),

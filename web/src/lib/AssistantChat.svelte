@@ -147,8 +147,47 @@
     return ['Which stacks need attention?', 'Where does my media server run?', 'How do I add a new service?'];
   });
 
+  // ---- memory (M20E) ----
+  // the DOM holds the last 10 exchanges (a question and everything after it)
+  let showAll = $state(false);
+  $effect(() => {
+    if (chat.items.length === 0) showAll = false;
+  });
+  const firstShown = $derived.by(() => {
+    if (showAll) return 0;
+    let users = 0;
+    for (let i = chat.items.length - 1; i >= 0; i--) {
+      if (chat.items[i].kind === 'user' && ++users === 10) return i;
+    }
+    return 0;
+  });
+  /** splitStable cuts a streaming answer at its last blank line outside a code block. */
+  function splitStable(text: string): [string, string] {
+    let cut = text.lastIndexOf('\n\n');
+    if (cut < 0) return ['', text];
+    const fences = (text.slice(0, cut).match(/^```/gm) ?? []).length;
+    if (fences % 2) {
+      // an open code block: cut before its fence
+      const f = text.slice(0, cut).lastIndexOf('```');
+      cut = text.lastIndexOf('\n\n', f);
+      if (cut < 0) return ['', text];
+    }
+    return [text.slice(0, cut), text.slice(cut + 2)];
+  }
+
   // ---- links ----
+  // M20E: one checker per answer (until its links change), so Markdown isn't re-parsed
+  // just because a new function was passed
+  const checks = new WeakMap<object, { n: number; fn: LinkCheck }>();
   function checkFor(it: ChatItem): LinkCheck {
+    const n = it.kind === 'assistant' ? it.links.length : 0;
+    const hit = checks.get(it);
+    if (hit && hit.n === n) return hit.fn;
+    const fn = makeCheck(it);
+    checks.set(it, { n, fn });
+    return fn;
+  }
+  function makeCheck(it: ChatItem): LinkCheck {
     const allowed = new Set(it.kind === 'assistant' ? it.links.map((l) => l.url) : []);
     return (url: string) => {
       if (url.startsWith('#/')) return isKnownRoute(url) ? { href: url, external: false } : null;
@@ -225,7 +264,8 @@
 </script>
 
 <div class="chat">
-  <div class="log" role="log" aria-label="Conversation" bind:this={log} onscroll={onScroll}>
+  <!-- aria-live off: screen readers get finished answers from the announce region (M20E) -->
+  <div class="log" role="log" aria-live="off" aria-label="Conversation" bind:this={log} onscroll={onScroll}>
     {#if chat.items.length === 0}
       <div class="empty">
         <p class="meta">Ask about your stacks, why something fails, or where a setting is.</p>
@@ -239,8 +279,13 @@
         </p>
       </div>
     {/if}
+    {#if firstShown > 0}
+      <button type="button" class="btn btn-ghost btn-sm" onclick={() => (showAll = true)}>Show {firstShown} earlier messages</button>
+    {/if}
     {#each chat.items as it, i (i)}
-      {#if it.kind === 'user'}
+      {#if i < firstShown}
+        <!-- M20E: older exchanges stay in the chat (and go to the model) but not in the DOM -->
+      {:else if it.kind === 'user'}
         <div class="row-user" class:faded={chat.editing && i >= lastUserIndex()}>
           <span class="sr">You:</span>
           {#if it.text.length > 4000}
@@ -283,7 +328,12 @@
               {/each}
             </div>
           {/if}
-          {#if it.text}
+          {#if it.text && it.streaming}
+            <!-- M20E: finished blocks parse once; only the block being written changes -->
+            {@const [done, open] = splitStable(it.text)}
+            {#if done}<Markdown text={done} check={checkFor(it)} />{/if}
+            {#if open}<Markdown text={open} check={checkFor(it)} />{/if}
+          {:else if it.text}
             <Markdown text={it.text} check={checkFor(it)} />
           {/if}
           {#if it.streaming && it.text}<span class="cursor" aria-hidden="true"></span>{/if}
@@ -339,13 +389,24 @@
               </div>
             </div>
           {/if}
+          {#if it.action.removes?.length}
+            <div class="widen" role="alert">
+              <Icon name="alert" />
+              <div>
+                <strong>This takes away from Moorage's own configuration:</strong>
+                <ul>{#each it.action.removes as w (w)}<li>{w}</li>{/each}</ul>
+              </div>
+            </div>
+          {/if}
           {#if it.action.impact}<p class="meta">{it.action.impact}</p>{/if}
           {#if it.action.diff}
-            <div class="diff mono" class:open={openDiff[i]}>
-              {#each diffLines(it.action.diff) as l, k (k)}<div class:add={l.startsWith('+')} class:del={l.startsWith('-')}>{l}</div>{/each}
+            {@const lines = diffLines(it.action.diff)}
+            <!-- M20E: long diffs render only their first 10 lines until Expand -->
+            <div class="diff mono">
+              {#each openDiff[i] ? lines : lines.slice(0, 10) as l, k (k)}<div class:add={l.startsWith('+')} class:del={l.startsWith('-')} class:hunk={l.startsWith('@@')}>{l}</div>{/each}
             </div>
-            {#if it.action.diff.split('\n').length > 10}
-              <button type="button" class="btn btn-ghost btn-sm" onclick={() => (openDiff[i] = !openDiff[i])}>{openDiff[i] ? 'Collapse' : 'Expand'}</button>
+            {#if lines.length > 10}
+              <button type="button" class="btn btn-ghost btn-sm" onclick={() => (openDiff[i] = !openDiff[i])}>{openDiff[i] ? 'Collapse' : `Expand (${lines.length - 10} more lines)`}</button>
             {/if}
           {/if}
           {#if it.state === 'pending' && it.action.draftId}
@@ -383,7 +444,7 @@
           {:else}
             <div class="acts wrap">
               {#each it.options as o, k (o)}
-                <button type="button" class="btn btn-sm" class:btn-primary={k === 0} onclick={() => answerChoice(it, o)} disabled={chat.busy}>{o}</button>
+                <button type="button" class="btn btn-sm choice" class:btn-primary={k === 0} onclick={() => answerChoice(it, o)} disabled={chat.busy}>{o}</button>
               {/each}
             </div>
           {/if}
@@ -401,7 +462,7 @@
             <button type="button" class="btn btn-sm" onclick={regenerate} disabled={chat.busy}>Retry</button>
             {#if chat.info?.admin}
               <a class="btn btn-sm btn-ghost" href="#/settings/addons">Assistant settings</a>
-              {#if chat.info?.models && chat.info.models.length > 1}<span class="meta">or pick another model above.</span>{/if}
+<span class="meta">or pick another model above.</span>
             {:else}
               <span class="meta">If it keeps failing, ask an admin.</span>
             {/if}
@@ -467,8 +528,10 @@
 </div>
 
 <style>
+  /* minmax(0, 1fr): wide content (code, diffs, choices) must not widen the panel (M20C) */
   .chat {
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 1fr auto;
     min-height: 0;
     height: 100%;
@@ -478,6 +541,7 @@
   .log {
     overflow: auto;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-content: start;
     gap: 12px;
     min-height: 0;
@@ -644,18 +708,19 @@
   }
   .diff {
     font-size: 12px;
-    max-height: 200px;
-    overflow: auto;
+    overflow-x: auto;
     white-space: pre;
     background: var(--well);
     border-radius: var(--r-sm);
     padding: 4px 0;
   }
-  .diff.open {
-    max-height: none;
-  }
   .diff div {
     padding: 0 8px;
+    width: max-content;
+    min-width: 100%;
+  }
+  .diff .hunk {
+    color: var(--haze);
   }
   .diff .add {
     background: var(--afloat-wash);
@@ -671,6 +736,13 @@
   }
   .wrap {
     flex-wrap: wrap;
+  }
+  .choice {
+    width: 100%;
+    white-space: normal;
+    text-align: left;
+    justify-content: flex-start;
+    height: auto;
   }
   .err {
     color: var(--adrift-text);

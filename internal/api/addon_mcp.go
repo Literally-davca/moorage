@@ -33,6 +33,13 @@ func (l *mcpLimiter) allow(key string, limit int) bool {
 	defer l.mu.Unlock()
 	now := time.Now()
 	cutoff := now.Add(-time.Minute)
+	if len(l.hits) > 10000 { // public endpoints: keys from many addresses must not pile up
+		for k, ts := range l.hits {
+			if len(ts) == 0 || !ts[len(ts)-1].After(cutoff) {
+				delete(l.hits, k)
+			}
+		}
+	}
 	var kept []time.Time
 	for _, t := range l.hits[key] {
 		if t.After(cutoff) {
@@ -614,10 +621,17 @@ func (s *Server) execMCPTool(ctx context.Context, r *http.Request, tok store.MCP
 		return lines, nil
 
 	case "list_checks":
-		if !mcpAllowed(tok, "", "", "read") {
-			return nil, errors.New("forbidden by MCP token ACL")
+		all, err := s.store.Checks(ctx)
+		if err != nil {
+			return nil, err
 		}
-		return s.store.Checks(ctx)
+		out := []store.Check{}
+		for _, c := range all {
+			if mcpCheckAllowed(tok, c) {
+				out = append(out, c)
+			}
+		}
+		return out, nil
 
 	case "list_deps":
 		if !mcpAllowed(tok, hostID, "", "read") {

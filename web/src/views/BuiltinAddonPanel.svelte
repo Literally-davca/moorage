@@ -219,7 +219,16 @@
     }
   }
 
-  const pendingDrafts = $derived(mcpDrafts.filter((d) => d.status === 'pending'));
+  // the badge counts MCP token drafts only; assistant proposals are decided in the chat (M20G)
+  const pendingDrafts = $derived(mcpDrafts.filter((d) => d.status === 'pending' && !d.tokenName.startsWith('assistant:')));
+  let draftsEl = $state<HTMLElement | null>(null);
+  let scrolled = false;
+  $effect(() => {
+    if (draftsEl && !scrolled && location.hash.includes('open=mcp-server')) {
+      scrolled = true;
+      draftsEl.scrollIntoView({ block: 'start' });
+    }
+  });
 
   // Client config files: the whole JSON to download or paste. With a fresh token it is
   // filled in; otherwise a placeholder (tokens are shown only once).
@@ -413,7 +422,7 @@
     </div>
 
     {#if pendingDrafts.length > 0}
-      <div class="drafts-box">
+      <div class="drafts-box" bind:this={draftsEl}>
         <h4 class="section-title">Pending approval drafts ({pendingDrafts.length})</h4>
         {#each pendingDrafts as d (d.id)}
           <div class="row-item">

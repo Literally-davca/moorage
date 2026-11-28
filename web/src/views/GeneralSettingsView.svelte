@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, type SettingsConfig } from '../lib/api';
+  import { api, type HostLockRow, type SettingsConfig } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import Select from '../lib/Select.svelte';
 
@@ -65,6 +65,16 @@
       saving = false;
     }
   }
+
+  // Environment locks: column, label and the variable that sets it (shown on hover)
+  const lockCols = [
+    { key: 'readOnly', label: 'Read-only', env: 'MOORAGE_READ_ONLY' },
+    { key: 'manageExternal', label: 'Manage external', env: 'MOORAGE_MANAGE_EXTERNAL' },
+    { key: 'containerTerminal', label: 'Container terminal', env: 'MOORAGE_TERMINAL' },
+    { key: 'hostTerminal', label: 'Host terminal', env: 'MOORAGE_HOST_TERMINAL' },
+    { key: 'exec', label: 'Scheduled exec', env: 'MOORAGE_EXEC' },
+    { key: 'selfUpdate', label: 'Self-update', env: 'MOORAGE_SELF_UPDATE' },
+  ] as const;
 </script>
 
 <div class="page">
@@ -191,36 +201,41 @@
       </div>
 
       {#if cfg.hostLocks?.length}
-        <div class="table-wrap">
+        {#snippet lockPill(on: boolean, c: (typeof lockCols)[number])}
+          <span class="pill {on ? (c.key === 'readOnly' ? 'warn-pill' : 'on') : ''}">{c.key === 'readOnly' ? (on ? 'Locked (RO)' : 'Writable') : on ? 'On' : 'Off'}</span>
+        {/snippet}
+        {#snippet hostCell(hl: HostLockRow)}
+          <span class="hname">{hl.name}</span>
+          <span class="pill">{hl.kind === 'local' ? 'Hub' : hl.connected ? 'Agent' : 'Offline'}</span>
+        {/snippet}
+        <!-- M20A: a table from 768 px, a card per host below -->
+        <div class="lock-table">
           <table>
             <thead>
               <tr>
-                <th>Host</th>
-                <th>Read-only</th>
-                <th>Manage external</th>
-                <th>Container terminal</th>
-                <th>Host terminal</th>
-                <th>Scheduled exec</th>
-                <th>Self-update</th>
+                <th class="hcol">Host</th>
+                {#each lockCols as c (c.key)}<th title={c.env}>{c.label}</th>{/each}
               </tr>
             </thead>
             <tbody>
               {#each cfg.hostLocks as hl (hl.id)}
                 <tr>
-                  <td>
-                    <span class="hname">{hl.name}</span>
-                    <span class="pill">{hl.kind === 'local' ? 'Hub' : hl.connected ? 'Agent' : 'Offline'}</span>
-                  </td>
-                  <td><span class="pill {hl.readOnly ? 'warn-pill' : ''}">{hl.readOnly ? 'Locked (RO)' : 'Writable'}</span></td>
-                  <td><span class="pill {hl.manageExternal ? 'on' : ''}">{hl.manageExternal ? 'On' : 'Off'}</span></td>
-                  <td><span class="pill {hl.containerTerminal ? 'on' : ''}">{hl.containerTerminal ? 'On' : 'Off'}</span></td>
-                  <td><span class="pill {hl.hostTerminal ? 'on' : ''}">{hl.hostTerminal ? 'On' : 'Off'}</span></td>
-                  <td><span class="pill {hl.exec ? 'on' : ''}">{hl.exec ? 'On' : 'Off'}</span></td>
-                  <td><span class="pill {hl.selfUpdate ? 'on' : ''}">{hl.selfUpdate ? 'On' : 'Off'}</span></td>
+                  <td class="hcol">{@render hostCell(hl)}</td>
+                  {#each lockCols as c (c.key)}<td>{@render lockPill(hl[c.key], c)}</td>{/each}
                 </tr>
               {/each}
             </tbody>
           </table>
+        </div>
+        <div class="lock-cards">
+          {#each cfg.hostLocks as hl (hl.id)}
+            <div class="lock-card">
+              <div>{@render hostCell(hl)}</div>
+              {#each lockCols as c (c.key)}
+                <div class="lock-row"><span class="meta" title={c.env}>{c.label}</span>{@render lockPill(hl[c.key], c)}</div>
+              {/each}
+            </div>
+          {/each}
         </div>
       {/if}
     </section>
@@ -334,6 +349,51 @@
     font-weight: 500;
     color: var(--foam);
     margin-right: 6px;
+  }
+  .lock-table table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .lock-table th,
+  .lock-table td {
+    text-align: left;
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--rope);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .lock-table th {
+    color: var(--haze);
+    font-weight: 500;
+  }
+  .lock-table .hcol {
+    width: 26%;
+    white-space: nowrap;
+  }
+  .lock-cards {
+    display: none;
+    gap: 8px;
+  }
+  .lock-card {
+    display: grid;
+    gap: 4px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--rope);
+  }
+  .lock-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  @media (max-width: 767px) {
+    .lock-table {
+      display: none;
+    }
+    .lock-cards {
+      display: grid;
+    }
   }
   .pill {
     display: inline-flex;

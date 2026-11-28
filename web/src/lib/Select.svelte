@@ -8,6 +8,7 @@
 </script>
 
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { dismiss } from './dismiss';
   import Icon from './Icon.svelte';
 
@@ -21,6 +22,7 @@
     customPlaceholder = 'Type a custom value…',
     compact = false,
     onchange,
+    ontoggle,
   }: {
     items: SelectItem[];
     value?: string;
@@ -31,9 +33,15 @@
     customPlaceholder?: string;
     compact?: boolean;
     onchange?: (next: string) => void;
+    /** Called when the list opens or closes (lazy items, M20J). */
+    ontoggle?: (open: boolean) => void;
   } = $props();
 
   let open = $state(false);
+  $effect(() => {
+    const o = open;
+    untrack(() => ontoggle?.(o));
+  });
   let query = $state('');
   let hi = $state(0);
   let searchEl = $state<HTMLInputElement | null>(null);

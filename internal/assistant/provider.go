@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -609,20 +610,40 @@ func ListModels(ctx context.Context, c Config) ([]ModelInfo, error) {
 		hdr["Authorization"] = "Bearer " + c.APIKey
 	}
 	raw, err := get(base+"/models", hdr)
-	if err != nil {
-		return nil, err
-	}
-	var out struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	_ = json.Unmarshal(raw, &out)
 	var ms []ModelInfo
-	for _, d := range out.Data {
-		ms = append(ms, ModelInfo{ID: strings.TrimPrefix(d.ID, "models/")})
+	if err == nil {
+		var out struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		_ = json.Unmarshal(raw, &out)
+		for _, d := range out.Data {
+			ms = append(ms, ModelInfo{ID: strings.TrimPrefix(d.ID, "models/")})
+		}
 	}
-	return ms, nil
+	// M20I: Gemini's OpenAI-compatible list can come back empty or fail; the native
+	// list (models that support generateContent) is the fallback.
+	if c.Provider == ProviderGemini && len(ms) == 0 {
+		nraw, nerr := get(strings.TrimSuffix(base, "/openai")+"/models?pageSize=1000", map[string]string{"x-goog-api-key": c.APIKey})
+		if nerr != nil {
+			return nil, nerr
+		}
+		var out struct {
+			Models []struct {
+				Name    string   `json:"name"`
+				Methods []string `json:"supportedGenerationMethods"`
+			} `json:"models"`
+		}
+		_ = json.Unmarshal(nraw, &out)
+		for _, m := range out.Models {
+			if slices.Contains(m.Methods, "generateContent") {
+				ms = append(ms, ModelInfo{ID: strings.TrimPrefix(m.Name, "models/")})
+			}
+		}
+		return ms, nil
+	}
+	return ms, err
 }
 
 // ollamaTools reads /api/show capabilities; nil when Ollama doesn't say (older version).
@@ -704,7 +725,14 @@ func statusErr(code int, raw []byte) error {
 	var body struct {
 		Error any `json:"error"`
 	}
-	_ = json.Unmarshal(raw, &body)
+	if json.Unmarshal(raw, &body) != nil { // Gemini's compatible endpoint wraps errors in a list
+		var list []struct {
+			Error any `json:"error"`
+		}
+		if json.Unmarshal(raw, &list) == nil && len(list) > 0 {
+			body.Error = list[0].Error
+		}
+	}
 	detail := ""
 	switch v := body.Error.(type) {
 	case string:
@@ -721,7 +749,7 @@ func describeStatus(code int, detail string) *ProviderError {
 	e := &ProviderError{Status: code, Detail: detail, Msg: fmt.Sprintf("The provider answered %d", code)}
 	low := strings.ToLower(detail)
 	switch {
-	case code == 401:
+	case code == 401 || strings.Contains(low, "api key not valid") || strings.Contains(low, "invalid api key"):
 		e.Code, e.Msg = CodeAuth, "The provider refused the API key"
 	case code == 403:
 		e.Code, e.Msg = CodeForbidden, "The provider doesn't allow this key to use the model"

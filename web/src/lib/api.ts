@@ -148,6 +148,8 @@ export interface ImportPreview {
     stacks: { name: string; exists: boolean }[];
   }[];
   skipped?: string[];
+  /** The backup carries the agent CA (format 3, M20K). */
+  hasCA?: boolean;
 }
 
 // ---- imports from other tools (M18C) ----
@@ -1074,6 +1076,8 @@ export interface AssistantProvider {
   type: AssistantProviderType;
   baseUrl?: string;
   models?: string[];
+  /** OpenAI-compatible: offer only the ticked models (M20H). */
+  onlyTicked?: boolean;
 }
 export interface AssistantModelInfo {
   id: string;
@@ -1117,6 +1121,7 @@ export interface AssistantAction {
   undo?: string;
   impact?: string;
   widens?: string[];
+  removes?: string[];
   selfApply?: boolean;
 }
 export interface AssistantEvent {
@@ -1931,13 +1936,16 @@ export const api = {
   saveAssistantSettings: (
     s: AssistantSettings & { apiKey?: string; clearKey?: boolean; keys?: Record<string, string>; clearKeys?: string[] },
   ) => request<AssistantSettings>('PUT', '/api/addons/assistant/settings', s),
-  assistantModels: (provider: string, fresh = false) =>
-    request<{ models: AssistantModelInfo[]; error?: string; at?: string; paid: boolean }>(
-      'GET',
-      `/api/addons/assistant/models?provider=${enc(provider)}${fresh ? '&fresh=1' : ''}`,
-    ),
-  assistantTest: (provider: string, model: string) =>
-    request<{ ok: boolean; error?: string; code?: string; detail?: string }>('POST', '/api/addons/assistant/test', { provider, model }),
+  /** draft/apiKey: unsaved form values, used for this request only (M20H). */
+  assistantModels: (provider: string, fresh = false, draft?: { type: string; baseUrl?: string }, apiKey?: string) =>
+    request<{ models: AssistantModelInfo[]; error?: string; at?: string; paid: boolean }>('POST', '/api/addons/assistant/models', {
+      provider,
+      fresh,
+      draft,
+      apiKey,
+    }),
+  assistantTest: (provider: string, model: string, draft?: { type: string; baseUrl?: string }, apiKey?: string) =>
+    request<{ ok: boolean; error?: string; code?: string; detail?: string }>('POST', '/api/addons/assistant/test', { provider, model, draft, apiKey }),
   assistantCommands: () => request<{ commands: AssistantCommand[]; max: number }>('GET', '/api/assistant/commands'),
   saveAssistantCommand: (name: string, text: string) =>
     request<{ commands: AssistantCommand[]; max: number }>('PUT', `/api/assistant/commands/${enc(name)}`, { text }),
@@ -2299,8 +2307,13 @@ export const api = {
     request<MonitorImportPreview>('POST', '/api/import/monitors/preview', { source, content }),
   monitorImportApply: (source: MonitorImportSource, content: string, selected: string[], pause: boolean) =>
     importRequest<{ results: ImportResult[]; created: Record<string, number> }>('/api/import/monitors/apply', { source, content, selected, pause }),
-  importBackupApply: (token: string, database: boolean, stacks: boolean) =>
-    request<{ restoredStacks: number; failedStacks: string[]; dbStaged: boolean }>('POST', '/api/settings/backup/import/apply', { token, database, stacks }),
+  importBackupApply: (token: string, database: boolean, stacks: boolean, replaceCA = false) =>
+    request<{ restoredStacks: number; failedStacks: string[]; dbStaged: boolean; caReplaced?: boolean }>('POST', '/api/settings/backup/import/apply', {
+      token,
+      database,
+      stacks,
+      replaceCA,
+    }),
   deletedStacks: (host?: string) => request<DeletedStack[]>('GET', `/api/hosts/${enc(host ?? app.host)}/deleted-stacks`),
   restoreDeletedStack: (name: string, hash: string, deploy = false, host?: string) =>
     request<{ deployError?: string }>('POST', `/api/hosts/${enc(host ?? app.host)}/deleted-stacks/${enc(name)}/restore`, { hash, deploy }),

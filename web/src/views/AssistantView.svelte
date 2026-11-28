@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from '../lib/Icon.svelte';
   import AssistantChat from '../lib/AssistantChat.svelte';
+  import ModelPicker from '../lib/ModelPicker.svelte';
   import { chat, reset, loadStatus, loadCommands, open } from '../lib/assistantStore.svelte';
   import { api } from '../lib/api';
 
@@ -8,7 +9,7 @@
   // Below the chat: the user's saved commands (M19I).
 
   $effect(() => {
-    void loadStatus(true);
+    void loadStatus();
     void loadCommands();
     open();
   });
@@ -38,7 +39,7 @@
 <section class="page">
   <header class="head">
     <h1><Icon name="wand" /> Assistant</h1>
-    <span class="meta">{chat.info?.model ?? ''}</span>
+    <ModelPicker />
     <button type="button" class="btn btn-ghost btn-sm" onclick={reset} disabled={chat.items.length === 0}>New chat</button>
     <button type="button" class="btn btn-ghost btn-sm" onclick={() => history.back()}><Icon name="minimize" /> Back to the panel</button>
   </header>

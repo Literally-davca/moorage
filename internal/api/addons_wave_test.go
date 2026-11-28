@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"bytes"
 	"context"
 	"crypto/hmac"
@@ -185,5 +186,31 @@ func TestMCPServerSafetyAndDrafts(t *testing.T) {
 	pendingAfter, err := db.MCPDrafts(ctx, "pending")
 	if err != nil || len(pendingAfter) != 0 {
 		t.Fatalf("expected 0 pending MCP drafts after decision, got %v (err=%v)", pendingAfter, err)
+	}
+
+	// M20L: a token limited to public-* stacks sees neither other checks nor their incidents
+	_, phash := generateRandomToken("mr_mcp_")
+	if _, err := db.CreateMCPToken(ctx, "public", phash, []store.MCPACLRule{{HostID: "*", StackPattern: "public-*", Scope: "read"}}, false, time.Time{}, "admin"); err != nil {
+		t.Fatalf("CreateMCPToken: %v", err)
+	}
+	ptok, _ := db.MCPTokenByHash(ctx, phash)
+	secretCheck, _ := db.SaveCheck(ctx, store.Check{Name: "db", Kind: "http", Target: "http://x", HostID: "local", Stack: "private-db", Interval: 60, Timeout: 5, Enabled: true})
+	urlCheck, _ := db.SaveCheck(ctx, store.Check{Name: "site", Kind: "http", Target: "http://y", Interval: 60, Timeout: 5, Enabled: true})
+	pubCheck, _ := db.SaveCheck(ctx, store.Check{Name: "pub", Kind: "http", Target: "http://z", HostID: "local", Stack: "public-web", Interval: 60, Timeout: 5, Enabled: true})
+	if _, err := db.OpenIncident(ctx, secretCheck, time.Now(), "down", `{"logs":["password=hunter2"]}`); err != nil {
+		t.Fatalf("OpenIncident: %v", err)
+	}
+	for _, id := range []int64{secretCheck, urlCheck} {
+		if _, err := srv.execMCPTool(ctx, req, ptok, "list_incidents", json.RawMessage(fmt.Sprintf(`{"checkId":%d}`, id))); err == nil {
+			t.Fatalf("public-* token read incidents of check %d", id)
+		}
+	}
+	got, err := srv.execMCPTool(ctx, req, ptok, "list_checks", nil)
+	if cs, _ := got.([]store.Check); err != nil || len(cs) != 1 || cs[0].ID != pubCheck {
+		t.Fatalf("list_checks for public-* = %v (err=%v), want only check %d", got, err, pubCheck)
+	}
+	got, err = srv.execMCPTool(ctx, req, tok, "list_incidents", json.RawMessage(fmt.Sprintf(`{"checkId":%d}`, secretCheck)))
+	if inc, _ := got.([]store.Incident); err != nil || len(inc) != 1 || strings.Contains(inc[0].Context, "hunter2") {
+		t.Fatalf("list_incidents for */* = %v (err=%v), want one masked incident", got, err)
 	}
 }

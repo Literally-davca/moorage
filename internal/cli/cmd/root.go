@@ -31,6 +31,9 @@ type rootOpts struct {
 
 type ServerHooks struct {
 	RunServer func(mode string) error
+	// RestoreLocal restores a .mbk into the empty data folder of this machine (M20K),
+	// the same as MOORAGE_RESTORE_FILE on first start.
+	RestoreLocal func(file, passwordFile string) error
 }
 
 // Execute builds and executes the Moorage CLI tree.
@@ -103,7 +106,7 @@ func newRootCmd(version string, hooks ServerHooks) *cobra.Command {
 		newUpdatesCmd(opts),
 		newDepsCmd(opts),
 		newHostsCmd(opts),
-		newBackupCmd(opts),
+		newBackupCmd(opts, hooks),
 		newSystemCmd(opts),
 		newTokenCmd(opts),
 		newAuditCmd(opts),

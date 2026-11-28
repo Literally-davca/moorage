@@ -124,6 +124,7 @@ var auditActions = map[string]string{
 	"PUT /api/assistant/commands/{name}":                          "assistant.command_save",
 	"DELETE /api/assistant/commands/{name}":                       "assistant.command_delete",
 	"POST /api/addons/assistant/test":                             auditSkip, // a test question, nothing changes
+	"POST /api/addons/assistant/models":                           auditSkip, // reads the model list with unsaved form values
 	"POST /api/assistant/actions/{id}/apply":                      auditByHandler,
 	"POST /api/assistant/actions/{id}/reject":                     "assistant.reject",
 	"PUT /api/addons/status-snapshot/config":                      "status_snapshot.config",

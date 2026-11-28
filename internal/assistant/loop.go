@@ -73,6 +73,8 @@ type Action struct {
 	// the host a self-stack change gives Moorage (M19I).
 	Impact string   `json:"impact,omitempty"`
 	Widens []string `json:"widens,omitempty"`
+	// Removes lists mounts, ports and environment a self-stack change drops (M20F).
+	Removes []string `json:"removes,omitempty"`
 	// SelfApply: applying runs Apply & restart of Moorage's own stack (M19I).
 	SelfApply bool `json:"selfApply,omitempty"`
 }

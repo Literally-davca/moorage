@@ -16,6 +16,7 @@
   let preview = $state<ImportPreview | null>(null);
   let restoreDb = $state(true);
   let restoreStacks = $state(true);
+  let replaceCA = $state(false);
   let applying = $state(false);
   let importMsg = $state('');
   let backupErr = $state('');
@@ -180,6 +181,7 @@
     try {
       preview = await api.importBackupPreview(importFile, importPw);
       restoreDb = true;
+      replaceCA = false;
       restoreStacks = preview.hosts.some((h) => h.writable && h.stacks.length > 0);
     } catch (err) {
       backupErr = (err as Error).message;
@@ -193,9 +195,10 @@
     backupErr = '';
     applying = true;
     try {
-      const r = await api.importBackupApply(preview.token, restoreDb, restoreStacks);
+      const r = await api.importBackupApply(preview.token, restoreDb, restoreStacks, replaceCA);
       const parts: string[] = [];
       if (restoreStacks) parts.push(`${r.restoredStacks} ${r.restoredStacks === 1 ? 'stack' : 'stacks'} restored`);
+      if (r.caReplaced) parts.push('the agent CA is replaced when Moorage restarts');
       if (r.dbStaged) parts.push('the database is replaced when Moorage restarts (the current one is kept as moorage.db.bak)');
       importMsg = parts.join('; ') + '.';
       if (r.failedStacks.length) backupErr = `Not restored: ${r.failedStacks.join(', ')}`;
@@ -268,6 +271,12 @@
           <input type="checkbox" bind:checked={restoreStacks} />
           <span>Restore stack definitions now{replaced ? ` (${replaced} existing ${replaced === 1 ? 'stack is' : 'stacks are'} overwritten; their history keeps the old version)` : ''}. Nothing is started.</span>
         </label>
+        {#if preview.hasCA}
+          <label class="check-row align-top">
+            <input type="checkbox" bind:checked={replaceCA} />
+            <span>Replace agent CA. Takes effect after a restart: agents paired with the backup's hub reconnect, agents paired with this hub must join again.</span>
+          </label>
+        {/if}
 
         <ul class="bk-hosts">
           {#each preview.hosts as h (h.id)}

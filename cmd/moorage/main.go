@@ -77,7 +77,7 @@ func main() {
 		return
 	}
 
-	if err := clicmd.Execute(version, os.Args[1:], clicmd.ServerHooks{RunServer: runServer}); err != nil {
+	if err := clicmd.Execute(version, os.Args[1:], clicmd.ServerHooks{RunServer: runServer, RestoreLocal: restoreLocal}); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
@@ -102,6 +102,24 @@ func runServer(mode string) error {
 		}
 	}
 	return nil
+}
+
+// restoreLocal is `moorage backup restore --file … --password-file …` (M20K): the same
+// restore as MOORAGE_RESTORE_FILE, into MOORAGE_DATA_DIR and MOORAGE_STACKS_DIR.
+func restoreLocal(file, passwordFile string) error {
+	cfg, err := config.FromEnv()
+	if err != nil {
+		return err
+	}
+	b, err := os.ReadFile(passwordFile)
+	if err != nil {
+		return err
+	}
+	log, _ := config.NewLogger(os.Stderr)
+	_, err = api.RestoreAtStart(context.Background(), api.RestoreOptions{
+		File: file, Password: strings.TrimRight(string(b), "\r\n"), DataDir: cfg.DataDir, StacksDir: cfg.StacksDir,
+	}, log)
+	return err
 }
 
 func runSelfUpdateHelper(args []string) error {
@@ -258,6 +276,9 @@ func runAgent(parentCtx context.Context, cfg config.Config, log *slog.Logger) (f
 	if cfg.MetricsToken != "" {
 		log.Warn("MOORAGE_METRICS_TOKEN is ignored on an agent; the hub serves /metrics for every host")
 	}
+	if cfg.RestoreFile != "" {
+		log.Warn("MOORAGE_RESTORE_FILE is ignored on an agent: a backup belongs to the hub")
+	}
 	// Remote probes for multi-location checks. A read-only agent probes too: a probe only
 	// reads the network and changes nothing on this host.
 	var prober host.Prober
@@ -300,6 +321,21 @@ func runAgent(parentCtx context.Context, cfg config.Config, log *slog.Logger) (f
 func runHub(parentCtx context.Context, mode string, cfg config.Config, log *slog.Logger) (func() error, error) {
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
+
+	// M20K: an empty data folder is first filled from MOORAGE_RESTORE_FILE; a failure stops
+	// the start (an empty Moorage would offer Setup to anyone)
+	if cfg.RestoreFile != "" {
+		stacksDir := ""
+		if mode == "all-in-one" && !cfg.Demo {
+			stacksDir = cfg.StacksDir
+		}
+		_, err := api.RestoreAtStart(ctx, api.RestoreOptions{File: cfg.RestoreFile, Password: cfg.RestorePassword, DataDir: cfg.DataDir, StacksDir: stacksDir}, log)
+		if errors.Is(err, api.ErrRestoreSkipped) {
+			log.Warn(err.Error())
+		} else if err != nil {
+			return nil, err
+		}
+	}
 
 	db, err := store.Open(cfg.DataDir)
 	if err != nil {

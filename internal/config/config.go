@@ -84,6 +84,12 @@ type Config struct {
 	// the UI shows a banner. Hub / all-in-one only.
 	Demo bool
 
+	// RestoreFile is MOORAGE_RESTORE_FILE (M20K): a .mbk backup restored on the first
+	// start of an empty data folder. RestorePassword comes from MOORAGE_RESTORE_PASSWORD
+	// or the file in MOORAGE_RESTORE_PASSWORD_FILE.
+	RestoreFile     string
+	RestorePassword string
+
 	// Env reads every MOORAGE_* variable of the process (for "Set via environment" in
 	// Settings). Values of secret variables are never sent to the browser.
 	Env map[string]string
@@ -268,6 +274,18 @@ func FromEnv() (Config, error) {
 	c.AgentPublicAddr = strings.TrimSpace(os.Getenv("MOORAGE_AGENT_PUBLIC_ADDR"))
 	c.HostIP = strings.TrimSpace(os.Getenv("MOORAGE_HOST_IP"))
 	c.BaseDomain = strings.TrimSpace(os.Getenv("MOORAGE_BASE_DOMAIN"))
+	c.RestoreFile = strings.TrimSpace(os.Getenv("MOORAGE_RESTORE_FILE"))
+	c.RestorePassword = os.Getenv("MOORAGE_RESTORE_PASSWORD")
+	if f := strings.TrimSpace(os.Getenv("MOORAGE_RESTORE_PASSWORD_FILE")); f != "" {
+		if c.RestorePassword != "" {
+			return c, fmt.Errorf("set MOORAGE_RESTORE_PASSWORD or MOORAGE_RESTORE_PASSWORD_FILE, not both")
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return c, fmt.Errorf("MOORAGE_RESTORE_PASSWORD_FILE: %w", err)
+		}
+		c.RestorePassword = strings.TrimRight(string(b), "\r\n")
+	}
 	c.Env = map[string]string{}
 	for _, kv := range os.Environ() {
 		if k, v, ok := strings.Cut(kv, "="); ok && strings.HasPrefix(k, "MOORAGE_") {

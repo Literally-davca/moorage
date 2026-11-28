@@ -542,7 +542,7 @@
             </button>
           {/if}
           <button type="button" class="chip" class:on={showStandalone} onclick={() => (showStandalone = !showStandalone)}>
-            Show standalone
+            Show standalone{compact && alone.length ? ` (${alone.length})` : ''}
           </button>
           <button type="button" class="chip" class:on={hideIgnored} onclick={() => (hideIgnored = !hideIgnored)}>
             Hide ignored
@@ -880,7 +880,7 @@
           </button>
         {/each}
       </section>
-    {:else if alone.length && !showStandalone}
+    {:else if alone.length && !showStandalone && !compact}
       <p class="meta note">Standalone stacks without dependencies: {aloneText}</p>
     {/if}
   {:else if !error}

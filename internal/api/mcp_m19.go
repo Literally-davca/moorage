@@ -76,12 +76,27 @@ func (s *Server) execMCPToolM19(ctx context.Context, tok store.MCPToken, tool st
 		pr, err := s.stackProblems(ctx, hostID, h, stack)
 		return pr, true, err
 	case "list_incidents":
-		if !mcpAllowed(tok, "", "", "read") {
-			return nil, true, deny
-		}
 		id, _ := args["checkId"].(float64)
-		inc, err := s.store.Incidents(ctx, int64(id), 20)
-		return inc, true, err
+		c, err := s.store.CheckByID(ctx, int64(id))
+		if err != nil || !mcpCheckAllowed(tok, c) {
+			return nil, true, deny // same answer for unknown and forbidden checks
+		}
+		inc, err := s.store.Incidents(ctx, c.ID, 20)
+		if err != nil {
+			return nil, true, err
+		}
+		env := ""
+		if s.reg != nil && c.Stack != "" {
+			if h, _, herr := s.reg.Get(ctx, c.HostID); herr == nil {
+				if st, serr := h.GetStack(ctx, c.Stack); serr == nil {
+					env = st.Env
+				}
+			}
+		}
+		for i := range inc {
+			inc[i].Context = maskSecrets(inc[i].Context, env)
+		}
+		return inc, true, nil
 	case "list_updates":
 		if !mcpAllowed(tok, hostID, "", "read") {
 			return nil, true, deny
@@ -112,6 +127,21 @@ func (s *Server) execMCPToolM19(ctx context.Context, tok store.MCPToken, tool st
 		return st, true, err
 	}
 	return nil, false, nil
+}
+
+// mcpCheckAllowed: a check bound to a stack needs that stack; one without a stack
+// (plain URL or host check) only a rule for every stack.
+func mcpCheckAllowed(tok store.MCPToken, c store.Check) bool {
+	if c.Stack != "" {
+		return mcpAllowed(tok, c.HostID, c.Stack, "read")
+	}
+	for _, rule := range tok.ACL {
+		if (rule.HostID == "*" || rule.HostID == "" || rule.HostID == c.HostID) &&
+			(rule.StackPattern == "" || rule.StackPattern == "*") && scopeRank(rule.Scope) >= scopeRank("read") {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- prompts and resources ----

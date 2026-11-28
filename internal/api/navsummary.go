@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"moorage/internal/engine"
@@ -101,7 +102,11 @@ func (s *Server) navSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	if currentUser(r).Role == "admin" {
 		if drafts, err := s.store.MCPDrafts(ctx, "pending"); err == nil {
-			out.MCPDrafts = len(drafts)
+			for _, d := range drafts {
+				if !strings.HasPrefix(d.TokenName, assistantDraftPrefix) { // M20G: only MCP token drafts
+					out.MCPDrafts++
+				}
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)

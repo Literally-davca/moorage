@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"path"
 	"strconv"
 	"strings"
@@ -499,7 +500,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/assistant/commands", s.user(s.listAssistantCommands))
 	mux.Handle("PUT /api/assistant/commands/{name}", s.user(s.putAssistantCommand))
 	mux.Handle("DELETE /api/assistant/commands/{name}", s.user(s.deleteAssistantCommand))
-	mux.Handle("GET /api/addons/assistant/models", s.admin(s.assistantModels))
+	mux.Handle("POST /api/addons/assistant/models", s.admin(s.assistantModels))
 	mux.Handle("POST /api/addons/assistant/test", s.admin(s.assistantTest))
 	mux.Handle("POST /api/assistant/actions/{id}/apply", s.admin(s.assistantApply))
 	mux.Handle("POST /api/assistant/actions/{id}/reject", s.admin(s.assistantReject))
@@ -567,6 +568,7 @@ func (s *Server) Handler() http.Handler {
 	// never serves it (and the status listener has its own handler without it).
 	metricsHandler := s.metrics.HandlerFunc(func() string { return s.effectiveMetricsToken(context.Background()) })
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = s.withClientIP(r)
 		// Read-only demo (MOORAGE_DEMO): every change is refused here, before any handler,
 		// for the API, the CLI socket, MCP and webhooks alike.
 		if s.cfg.Demo && isMutating(r.Method) {
@@ -1699,11 +1701,50 @@ func sentence(err error) string {
 
 // clientIP uses the TCP peer address; forwarded headers are not trusted.
 func clientIP(r *http.Request) string {
+	if ip, ok := r.Context().Value(clientIPKey{}).(string); ok {
+		return ip
+	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+type clientIPKey struct{}
+
+// withClientIP records the visitor's address for audit and rate limits (M20L): the last
+// X-Forwarded-For entry when the TCP peer is a trusted proxy (MOORAGE_TRUSTED_PROXIES, or
+// loopback with MOORAGE_TAILSCALE_SERVE), otherwise the peer itself. The last entry is
+// the one our proxy added; earlier ones come from the client and prove nothing.
+func (s *Server) withClientIP(r *http.Request) *http.Request {
+	xff := r.Header.Values("X-Forwarded-For")
+	if len(xff) == 0 || !s.trustedProxy(clientIP(r)) {
+		return r
+	}
+	parts := strings.Split(xff[len(xff)-1], ",")
+	a, err := netip.ParseAddr(strings.TrimSpace(parts[len(parts)-1]))
+	if err != nil {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), clientIPKey{}, a.Unmap().String()))
+}
+
+func (s *Server) trustedProxy(peer string) bool {
+	a, err := netip.ParseAddr(peer)
+	if err != nil {
+		return false
+	}
+	a = a.Unmap()
+	if s.cfg.TailscaleServe && a.IsLoopback() {
+		return true
+	}
+	for _, p := range s.cfg.Proxy.Trusted {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // spa serves the embedded UI and falls back to index.html for client routes.

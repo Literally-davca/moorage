@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"moorage/internal/engine"
@@ -422,6 +426,20 @@ func (s *Server) generateMetricsToken(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) buildDiagnostics(ctx context.Context, pubURL string) []diagnosticItem {
 	out := []diagnosticItem{}
+	if s.cfg.RestoreFile != "" { // M20K: one-time variable, later starts ignore it
+		var rep RestoreReport
+		b, _ := os.ReadFile(filepath.Join(s.cfg.DataDir, "restored-from.json"))
+		detail := "The data folder already had a database, so the backup was not restored. Remove MOORAGE_RESTORE_FILE and the password variable."
+		if json.Unmarshal(b, &rep) == nil && !rep.At.IsZero() {
+			detail = fmt.Sprintf("Moorage was restored from %s on %s. Remove MOORAGE_RESTORE_FILE and the password variable; later starts ignore them.",
+				filepath.Base(rep.File), rep.At.Local().Format("2006-01-02 15:04"))
+			if !rep.AgentCA {
+				out = append(out, diagnosticItem{Level: "warn", ID: "restore_no_ca", Title: "Agents must join again",
+					Detail: "This backup has no agent CA: add each agent again in Settings → Hosts (Add host)."})
+			}
+		}
+		out = append(out, diagnosticItem{Level: "warn", ID: "restore_file_set", Title: "MOORAGE_RESTORE_FILE is still set", Detail: detail})
+	}
 	if pubURL == "" {
 		out = append(out, diagnosticItem{
 			Level:  "warn",

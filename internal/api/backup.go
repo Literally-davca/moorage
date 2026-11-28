@@ -25,14 +25,17 @@ import (
 	"moorage/internal/store"
 )
 
-// Backup archive (format 2): encrypted (backupcrypt) gzip'd tar with
+// Backup archive (format 3): encrypted (backupcrypt) gzip'd tar with
 //
 //	moorage.db                         the hub database (VACUUM INTO copy)
 //	stacks/<host id>/<stack>/compose.yaml, .env
 //	history/<host id>.tar              that host's history.git
+//	ca/ca.crt, ca/ca.key               the agent CA, so agents reconnect after a restore (format 3, M20K)
 //	manifest.json                      written last, once the content is known
+//
+// Format 2 (no CA) is still read.
 const (
-	backupFormat     = 2
+	backupFormat     = 3
 	maxImportBytes   = 2 << 30 // 2 GiB, histories included
 	maxImportEntry   = 1 << 30
 	importStagingTTL = 30 * time.Minute
@@ -112,6 +115,13 @@ func (s *Server) writeBackup(ctx context.Context, tw *tar.Writer, tmpDir, dbPath
 	m := backupManifest{Format: backupFormat, ExportedAt: time.Now().UTC(), Version: s.version, SchemaVersion: store.SchemaVersion()}
 	if err := tarFile(tw, "moorage.db", dbPath); err != nil {
 		return err
+	}
+	for _, f := range []string{"ca.crt", "ca.key"} {
+		if p := filepath.Join(s.cfg.DataDir, "ca", f); fileExists(p) {
+			if err := tarFile(tw, "ca/"+f, p); err != nil {
+				return err
+			}
+		}
 	}
 	if s.reg != nil {
 		hosts, err := s.reg.List(ctx)
@@ -225,6 +235,7 @@ type importStaging struct {
 	dir      string
 	manifest backupManifest
 	stacks   map[string]map[string]bool // host id -> stack -> has .env
+	caFiles  int                        // 2 when the backup carries the agent CA
 	expires  time.Time
 }
 
@@ -271,24 +282,105 @@ type importPreview struct {
 	Database   store.BackupInfo    `json:"database"`
 	Hosts      []importPreviewHost `json:"hosts"`
 	Skipped    []string            `json:"skipped,omitempty"`
+	HasCA      bool                `json:"hasCA"` // the backup can replace the agent CA
+}
+
+// badBackup is a problem of the uploaded file (shown to the user), not of the server.
+type badBackup string
+
+func (e badBackup) Error() string { return string(e) }
+
+// readBackup decrypts a .mbk into dir: moorage.db, stacks/<host>/<stack>/{compose.yaml,
+// .env}, history/<host>.tar and (format 3) ca/ca.crt, ca/ca.key. Used by the import in
+// Settings and the restore on first start (M20K).
+func readBackup(r io.Reader, password, dir string) (*importStaging, error) {
+	dec, err := backupcrypt.NewReader(r, password)
+	if err != nil {
+		return nil, badBackup(capitalize(err.Error()) + ".")
+	}
+	gz, err := gzip.NewReader(dec)
+	if err != nil {
+		return nil, badBackup("The backup content is damaged.")
+	}
+	defer gz.Close()
+	sg := &importStaging{dir: dir, stacks: map[string]map[string]bool{}}
+	var haveManifest, haveDB bool
+	tr := tar.NewReader(gz)
+	save := func(rel string, size int64) error {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return err
+		}
+		return saveEntry(tr, p, size)
+	}
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, badBackup("The backup content is damaged: " + err.Error())
+		}
+		if hdr.Typeflag != tar.TypeReg || hdr.Size < 0 || hdr.Size > maxImportEntry {
+			continue
+		}
+		switch name := hdr.Name; {
+		case name == "manifest.json":
+			b, err := io.ReadAll(io.LimitReader(tr, 1<<20))
+			if err != nil || json.Unmarshal(b, &sg.manifest) != nil || sg.manifest.Format < 2 || sg.manifest.Format > backupFormat {
+				return nil, badBackup("The backup has an unsupported format.")
+			}
+			haveManifest = true
+		case name == "moorage.db":
+			if err := save(name, hdr.Size); err != nil {
+				return nil, err
+			}
+			haveDB = true
+		case name == "ca/ca.crt" || name == "ca/ca.key":
+			if hdr.Size > 64<<10 {
+				continue
+			}
+			if err := save(name, hdr.Size); err != nil {
+				return nil, err
+			}
+			sg.caFiles++
+		case strings.HasPrefix(name, "history/"):
+			id := strings.TrimSuffix(strings.TrimPrefix(name, "history/"), ".tar")
+			if !hostIDRe.MatchString(id) || name != "history/"+id+".tar" {
+				continue
+			}
+			if err := save(name, hdr.Size); err != nil {
+				return nil, err
+			}
+		case strings.HasPrefix(name, "stacks/"):
+			parts := strings.Split(strings.TrimPrefix(name, "stacks/"), "/")
+			if len(parts) != 3 || !hostIDRe.MatchString(parts[0]) || !stackNameRe.MatchString(parts[1]) ||
+				(parts[2] != "compose.yaml" && parts[2] != ".env") || hdr.Size > engine.MaxFileSize {
+				continue
+			}
+			if err := save(name, hdr.Size); err != nil {
+				return nil, err
+			}
+			if sg.stacks[parts[0]] == nil {
+				sg.stacks[parts[0]] = map[string]bool{}
+			}
+			if parts[2] == ".env" {
+				sg.stacks[parts[0]][parts[1]] = true
+			} else if _, ok := sg.stacks[parts[0]][parts[1]]; !ok {
+				sg.stacks[parts[0]][parts[1]] = false
+			}
+		}
+	}
+	if !haveManifest || !haveDB {
+		return nil, badBackup("The backup is incomplete (no manifest or database).")
+	}
+	return sg, nil
 }
 
 func (s *Server) importBackupPreview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	password := r.Header.Get("X-Backup-Password")
 	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes)
-
-	dec, err := backupcrypt.NewReader(r.Body, password)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, capitalize(err.Error())+".")
-		return
-	}
-	gz, err := gzip.NewReader(dec)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "The backup content is damaged.")
-		return
-	}
-	defer gz.Close()
 
 	dir, err := os.MkdirTemp(s.cfg.DataDir, "import-")
 	if err != nil {
@@ -301,63 +393,13 @@ func (s *Server) importBackupPreview(w http.ResponseWriter, r *http.Request) {
 			os.RemoveAll(dir)
 		}
 	}()
-
-	sg := &importStaging{dir: dir, stacks: map[string]map[string]bool{}}
-	var haveManifest, haveDB bool
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, "The backup content is damaged: "+err.Error())
-			return
-		}
-		if hdr.Typeflag != tar.TypeReg || hdr.Size < 0 || hdr.Size > maxImportEntry {
-			continue
-		}
-		switch name := hdr.Name; {
-		case name == "manifest.json":
-			b, err := io.ReadAll(io.LimitReader(tr, 1<<20))
-			if err != nil || json.Unmarshal(b, &sg.manifest) != nil || sg.manifest.Format != backupFormat {
-				writeErr(w, http.StatusBadRequest, "The backup has an unsupported format.")
-				return
-			}
-			haveManifest = true
-		case name == "moorage.db":
-			if err := saveEntry(tr, filepath.Join(dir, "moorage.db"), hdr.Size); err != nil {
-				s.engErr(w, err)
-				return
-			}
-			haveDB = true
-		case strings.HasPrefix(name, "stacks/"):
-			parts := strings.Split(strings.TrimPrefix(name, "stacks/"), "/")
-			if len(parts) != 3 || !hostIDRe.MatchString(parts[0]) || !stackNameRe.MatchString(parts[1]) ||
-				(parts[2] != "compose.yaml" && parts[2] != ".env") || hdr.Size > engine.MaxFileSize {
-				continue
-			}
-			if err := os.MkdirAll(filepath.Join(dir, "stacks", parts[0], parts[1]), 0o700); err != nil {
-				s.engErr(w, err)
-				return
-			}
-			if err := saveEntry(tr, filepath.Join(dir, "stacks", parts[0], parts[1], parts[2]), hdr.Size); err != nil {
-				s.engErr(w, err)
-				return
-			}
-			if sg.stacks[parts[0]] == nil {
-				sg.stacks[parts[0]] = map[string]bool{}
-			}
-			if parts[2] == ".env" {
-				sg.stacks[parts[0]][parts[1]] = true
-			} else if _, ok := sg.stacks[parts[0]][parts[1]]; !ok {
-				sg.stacks[parts[0]][parts[1]] = false
-			}
-		}
-		// history/<host>.tar is kept in the file for recovery by hand; it isn't imported.
-	}
-	if !haveManifest || !haveDB {
-		writeErr(w, http.StatusBadRequest, "The backup is incomplete (no manifest or database).")
+	sg, err := readBackup(r.Body, password, dir)
+	var bad badBackup
+	if errors.As(err, &bad) {
+		writeErr(w, http.StatusBadRequest, bad.Error())
+		return
+	} else if err != nil {
+		s.engErr(w, err)
 		return
 	}
 	info, err := store.InspectBackup(ctx, filepath.Join(dir, "moorage.db"))
@@ -366,7 +408,8 @@ func (s *Server) importBackupPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prev := importPreview{ExportedAt: sg.manifest.ExportedAt, Version: sg.manifest.Version, Database: info, Skipped: sg.manifest.Skipped, Hosts: []importPreviewHost{}}
+	prev := importPreview{ExportedAt: sg.manifest.ExportedAt, Version: sg.manifest.Version, Database: info, Skipped: sg.manifest.Skipped, Hosts: []importPreviewHost{},
+		HasCA: sg.caFiles == 2}
 	history := map[string]bool{}
 	names := map[string]string{}
 	for _, mh := range sg.manifest.Hosts {
@@ -470,6 +513,9 @@ func (s *Server) importBackupApply(w http.ResponseWriter, r *http.Request) {
 		Token    string `json:"token"`
 		Database bool   `json:"database"`
 		Stacks   bool   `json:"stacks"`
+		// ReplaceCA puts the backup's agent CA in place (on the next start); agents paired
+		// with the current CA then can't connect, so it is off unless ticked (M20K)
+		ReplaceCA bool `json:"replaceCA"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -541,11 +587,20 @@ func (s *Server) importBackupApply(w http.ResponseWriter, r *http.Request) {
 		}
 		dbStaged = true
 	}
+	caReplaced := false
+	if req.ReplaceCA && sg.caFiles == 2 {
+		if err := restoreCA(sg.dir, s.cfg.DataDir, true); err != nil {
+			s.engErr(w, err)
+			return
+		}
+		caReplaced = true
+	}
 	sort.Strings(failed)
-	setAuditTarget(r, fmt.Sprintf("backup (%d stacks, database %t)", restored, dbStaged))
+	setAuditTarget(r, fmt.Sprintf("backup (%d stacks, database %t, agent CA %t)", restored, dbStaged, caReplaced))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"restoredStacks": restored,
 		"failedStacks":   failed,
 		"dbStaged":       dbStaged,
+		"caReplaced":     caReplaced,
 	})
 }

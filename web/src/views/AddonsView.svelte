@@ -31,7 +31,8 @@
   let targetHosts = $state<string[]>([]);
   let removing = $state<AddonInfo | null>(null);
   let confirmOpen = $state(false);
-  let openPanel = $state<string | null>(null);
+  // #/settings/addons?open=mcp-server (the MCP drafts badge) opens that panel (M20G)
+  let openPanel = $state<string | null>(new URLSearchParams(location.hash.split('?')[1] ?? '').get('open'));
   let openGuide = $state<string | null>(null);
 
   const ADDON_GUIDES: Record<string, { title: string; steps: string[]; envNote?: string }> = {

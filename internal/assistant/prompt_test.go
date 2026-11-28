@@ -22,6 +22,11 @@ func TestRoutesExist(t *testing.T) {
 			t.Errorf("route %q is not in the router", p)
 		}
 	}
+	for _, rule := range []string{"Answer first", "At most 3 sentences", "no summary at the end"} {
+		if !strings.Contains(SystemPrompt(), rule) { // M20D: short answers
+			t.Errorf("prompt lost the rule %q", rule)
+		}
+	}
 	if !strings.Contains(SystemPrompt(), "#/settings/notifications") {
 		t.Error("route map missing from the prompt")
 	}

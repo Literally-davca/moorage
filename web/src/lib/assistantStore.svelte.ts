@@ -13,6 +13,7 @@ export interface ReadEntry {
   result?: string;
   failed?: boolean;
   foreign: boolean;
+  trimmed?: boolean;
 }
 
 export type ChatItem =
@@ -277,7 +278,21 @@ export async function decide(it: ChatItem & { kind: 'action' }, apply: boolean):
   }
 }
 
+/** M20E: results of earlier answers keep their first 4 KiB; the model got them whole. */
+function compactOlder() {
+  for (const it of chat.items) {
+    if (it.kind !== 'assistant') continue;
+    for (const r of it.reads) {
+      if (r.result && r.result.length > 4096 && !r.trimmed) {
+        r.result = r.result.slice(0, 4096) + `\n…(${Math.ceil((r.result.length - 4096) / 1024)} KiB more, shown to the model)`;
+        r.trimmed = true;
+      }
+    }
+  }
+}
+
 async function run() {
+  compactOlder();
   chat.busy = true;
   chat.status = 'Thinking';
   chat.statusSince = Date.now();
@@ -290,6 +305,22 @@ async function run() {
   if (notices.length) cur.reads.push({ tool: 'screen', target: `screen notices (${notices.length})`, result: notices.map((n) => `[${n.severity}] ${n.title}: ${n.text}`).join('\n'), foreign: notices.some((n) => n.foreign) });
   let thinkStart = 0;
   let finished = false;
+  // M20E: deltas are merged into at most ~15 writes a second; every write re-renders
+  let thinking = '';
+  let pendingText: string | null = null;
+  let flushTimer = 0;
+  const flush = () => {
+    flushTimer = 0;
+    if (pendingText !== null) cur.text = pendingText;
+    pendingText = null;
+    if (thinking !== cur.thinking) {
+      cur.thinking = thinking;
+      cur.thinkingMs = Date.now() - thinkStart;
+    }
+  };
+  const later = () => {
+    if (!flushTimer) flushTimer = window.setTimeout(flush, 66);
+  };
   const body: Record<string, unknown> = { messages: history(), context: pageContext(), allow: chat.allow, notices };
   if (chat.info?.admin && chat.pick.provider) {
     body.provider = chat.pick.provider;
@@ -330,20 +361,21 @@ async function run() {
             break;
           case 'thinking':
             if (!thinkStart) thinkStart = Date.now();
-            cur.thinking += ev.text ?? '';
-            cur.thinkingMs = Date.now() - thinkStart;
-            chat.status = 'Thinking';
+            thinking += ev.text ?? '';
+            later();
+            if (chat.status !== 'Thinking') chat.status = 'Thinking';
             break;
           case 'delta':
-            if (thinkStart && !cur.thinkingMs) cur.thinkingMs = Date.now() - thinkStart;
             segment += ev.text ?? '';
-            cur.text = joinText(base, segment);
-            chat.status = 'Writing';
+            pendingText = joinText(base, segment);
+            later();
+            if (chat.status !== 'Writing') chat.status = 'Writing';
             break;
           case 'text':
             // final text of a step: replaces the streamed part (or arrives whole)
             base = joinText(base, ev.text ?? '');
-            cur.text = base;
+            pendingText = base;
+            flush();
             segment = '';
             if (ev.incomplete) cur.incomplete = true;
             break;
@@ -383,6 +415,10 @@ async function run() {
     if ((e as Error).name === 'AbortError') cur.stopped = true;
     else chat.items.push({ kind: 'error', text: (e as Error).message, code: 'unreachable' });
   } finally {
+    clearTimeout(flushTimer);
+    flush();
+    // M20E: only the end of long thinking stays in memory
+    if (cur.thinking.length > 8192) cur.thinking = '…' + cur.thinking.slice(-8192);
     cur.streaming = false;
     if (!cur.text && !cur.reads.length && !cur.thinking && !cur.stopped) {
       const idx = chat.items.indexOf(cur);

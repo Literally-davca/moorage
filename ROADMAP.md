@@ -58,6 +58,7 @@ Vestavěné (`builtin`) funkce a integrace mimo univerzální jádro, zapínatel
 | **Export SLA / incident reportů** | Měsíční přehled výpadků a dostupnosti v Markdownu/JSON. | nápad | agent |
 | **Záložní hub (pasivní standby)** | Standby hub přebírající replikovanou SQLite (např. Litestream) s fencingem. | nápad | uživatel + agent |
 | **Vyhledávání image při zakládání stacku** | Našeptávač názvů image z Docker Hubu / GHCR. | implementováno (`imagefind`) | agent |
+| **Obnova z S3 / WebDAV při prvním spuštění** | `MOORAGE_RESTORE_FILE` z M20K umí jen lokální soubor; varianta stáhne poslední vzdálenou zálohu (S3, WebDAV) podle nastavení v env. | nápad (po M20K); střední, přístupové klíče v env | agent |
 | **Přesun stacku na jiný host pomocí snapshotu** | Snapshot (data + konfigurace) obnovený na jiném hostu = migrace stacku jedním tokem. | nápad (po M18F) | agent |
 | **Databázově vědomé snapshoty (`pg_dump` / `mysqldump` hooky)** | Snapshot databáze bez pauzy a s jistotou obnovy; hook z katalogu receptů M18E. | nápad (po M18F) | agent |
 | **`restic-backup` zálohuje i složku snapshotů** | Snapshoty z M18F se dostanou mimo server a do retence Resticu bez další konfigurace. | nápad (po M18F) | agent |

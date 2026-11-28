@@ -637,8 +637,9 @@ func Open(dataDir string) (*Store, error) {
 		if _, err := os.Stat(dbPath); err == nil {
 			_ = os.Rename(dbPath, dbPath+".bak")
 		}
-		_ = os.Remove(dbPath + "-wal")
-		_ = os.Remove(dbPath + "-shm")
+		// the WAL holds the newest writes of the old database: keep it next to the .bak
+		_ = os.Rename(dbPath+"-wal", dbPath+".bak-wal")
+		_ = os.Rename(dbPath+"-shm", dbPath+".bak-shm")
 		if err := os.Rename(restorePath, dbPath); err != nil {
 			return nil, fmt.Errorf("apply staged restore: %w", err)
 		}

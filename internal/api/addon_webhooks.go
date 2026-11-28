@@ -22,32 +22,12 @@ import (
 type webhookDebounce struct {
 	mu     sync.Mutex
 	timers map[string]*time.Timer
-	ipHits map[string][]time.Time
 }
 
-var whDebouncer = &webhookDebounce{
-	timers: map[string]*time.Timer{},
-	ipHits: map[string][]time.Time{},
-}
+var whDebouncer = &webhookDebounce{timers: map[string]*time.Timer{}}
 
-func (d *webhookDebounce) allowIP(ip string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	now := time.Now()
-	cutoff := now.Add(-time.Minute)
-	var kept []time.Time
-	for _, ts := range d.ipHits[ip] {
-		if ts.After(cutoff) {
-			kept = append(kept, ts)
-		}
-	}
-	if len(kept) >= 30 {
-		d.ipHits[ip] = kept
-		return false
-	}
-	d.ipHits[ip] = append(kept, now)
-	return true
-}
+// whIPRate limits the public webhook endpoint per client address.
+var whIPRate = &mcpLimiter{hits: map[string][]time.Time{}}
 
 func (d *webhookDebounce) schedule(key string, delay time.Duration, fn func()) {
 	d.mu.Lock()
@@ -261,7 +241,7 @@ func (s *Server) handleRegistryWebhook(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "Not found.")
 		return
 	}
-	if !whDebouncer.allowIP(clientIP(r)) {
+	if !whIPRate.allow(clientIP(r), 30) {
 		writeErr(w, http.StatusTooManyRequests, "Too many webhook requests.")
 		return
 	}

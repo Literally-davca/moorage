@@ -747,6 +747,21 @@ func lineDiff(a, b string) []DiffLine {
 	return out
 }
 
+// UnifiedDiff is the text form of the history diff for cards and the CLI: "@@ line N @@"
+// headers, then "  kept", "- removed", "+ added" lines with ctx lines of context.
+// Line endings are normalised first, so CRLF against LF is no change.
+func UnifiedDiff(a, b string, ctx int) string {
+	a, b = strings.ReplaceAll(a, "\r\n", "\n"), strings.ReplaceAll(b, "\r\n", "\n")
+	var out strings.Builder
+	for _, h := range hunks(lineDiff(a, b), ctx) {
+		fmt.Fprintf(&out, "@@ line %d @@\n", max(h.NewStart, 1))
+		for _, l := range h.Lines {
+			out.WriteString(l.Op + " " + l.Text + "\n")
+		}
+	}
+	return out.String()
+}
+
 // hunks keeps changed lines plus ctx lines of context around them.
 func hunks(lines []DiffLine, ctx int) []Hunk {
 	keep := make([]bool, len(lines))

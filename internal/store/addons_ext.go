@@ -505,6 +505,23 @@ func (s *Store) MCPDrafts(ctx context.Context, status string) ([]MCPDraft, error
 	return out, rows.Err()
 }
 
+// RejectPendingMCPDrafts rejects pending drafts whose token name matches the GLOB
+// pattern and that were created before the cutoff (M20G: forgotten assistant proposals).
+func (s *Store) RejectPendingMCPDrafts(ctx context.Context, nameGlob string, before time.Time, by string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE mcp_drafts SET status = 'rejected', decided_by = ?, decided_at = ?
+		WHERE status = 'pending' AND token_name GLOB ? AND created_at < ?`,
+		by, time.Now().Unix(), nameGlob, before.Unix())
+	return err
+}
+
+// PruneMCPDrafts deletes decided drafts older than the cutoff; each one carries a whole
+// compose file and .env.
+func (s *Store) PruneMCPDrafts(ctx context.Context, cutoff time.Time) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM mcp_drafts WHERE status != 'pending' AND decided_at < ?`, cutoff.Unix())
+	return err
+}
+
 func (s *Store) DecideMCPDraft(ctx context.Context, id int64, status, decidedBy string) error {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE mcp_drafts SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'`,

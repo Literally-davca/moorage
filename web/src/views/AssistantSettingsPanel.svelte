@@ -2,6 +2,7 @@
   import { api, type AssistantModelInfo, type AssistantProvider, type AssistantProviderType, type AssistantSettings } from '../lib/api';
   import Icon from '../lib/Icon.svelte';
   import Select from '../lib/Select.svelte';
+  import ModelList from '../lib/ModelList.svelte';
 
   // Assistant settings (M18G, M19E): several providers with their own keys, models found
   // automatically (Ollama and OpenAI-compatible endpoints) or ticked (paid APIs), the
@@ -24,6 +25,12 @@
     { value: 'openai-compatible', label: 'OpenAI-compatible (OpenRouter, Groq, LM Studio…)' },
   ];
   const paid = (t: string) => t === 'anthropic' || t === 'openai' || t === 'gemini';
+  /** Paid APIs offer only ticked models; OpenAI-compatible when switched to Only ticked. */
+  const ticksOnly = (p: AssistantProvider) => paid(p.type) || (p.type === 'openai-compatible' && !!p.onlyTicked);
+  const offerItems = [
+    { value: 'all', label: 'Offer all models' },
+    { value: 'ticked', label: 'Only ticked' },
+  ];
   const catLabel: Record<string, string> = {
     stack: 'Start / restart / stop / pull stacks',
     compose: 'Compose edits & deploy',
@@ -41,9 +48,22 @@
     { value: 'allowed', label: 'Allowed' },
   ];
 
+  // type and endpoint as saved: Load models and Test send the form values only when they
+  // differ, so the server cache (5 min) serves the common case (M20H)
+  let savedProv: Record<string, string> = {};
+  const provSig = (p: AssistantProvider) => p.type + '|' + (p.baseUrl ?? '').trim();
+  function remember() {
+    savedProv = Object.fromEntries((s?.providers ?? []).map((p) => [p.id, provSig(p)]));
+  }
+  function unsaved(p: AssistantProvider) {
+    const draft = savedProv[p.id] === provSig(p) ? undefined : { type: p.type, baseUrl: p.baseUrl };
+    return { draft, key: keys[p.id]?.trim() || undefined };
+  }
+
   async function load() {
     try {
       s = await api.assistantSettings();
+      remember();
       for (const p of s.providers) void detect(p, false);
     } catch (e) {
       error = (e as Error).message;
@@ -54,7 +74,8 @@
   async function detect(p: AssistantProvider, fresh: boolean) {
     found[p.id] = { ...(found[p.id] ?? { models: [] }), loading: true };
     try {
-      const r = await api.assistantModels(p.id, fresh);
+      const u = unsaved(p);
+      const r = await api.assistantModels(p.id, fresh, u.draft, u.key);
       found[p.id] = { models: r.models, error: r.error, at: r.at };
     } catch (e) {
       found[p.id] = { models: found[p.id]?.models ?? [], error: (e as Error).message };
@@ -72,6 +93,7 @@
       s = await api.saveAssistantSettings({ ...s, keys: k, clearKeys });
       keys = {};
       clearKeys = [];
+      remember();
       saved = true;
       window.dispatchEvent(new Event('moorage-assistant-changed'));
       for (const p of s.providers) void detect(p, true);
@@ -102,7 +124,8 @@
     tests[p.id] = 'running';
     const model = s.default.provider === p.id ? s.default.model : (p.models?.[0] ?? found[p.id]?.models[0]?.id ?? '');
     try {
-      const r = await api.assistantTest(p.id, model);
+      const u = unsaved(p);
+      const r = await api.assistantTest(p.id, model, u.draft, u.key);
       tests[p.id] = r.ok ? { ok: true, text: `Works (${model}).` } : { ok: false, text: r.error ?? 'Failed.' };
     } catch (e) {
       tests[p.id] = { ok: false, text: (e as Error).message };
@@ -113,7 +136,7 @@
   const defProvider = $derived(s?.providers.find((p) => p.id === s?.default.provider));
   const defModels = $derived.by(() => {
     if (!defProvider) return [];
-    const list = paid(defProvider.type) ? (defProvider.models ?? []) : (found[defProvider.id]?.models ?? []).map((m) => m.id);
+    const list = ticksOnly(defProvider) ? (defProvider.models ?? []) : (found[defProvider.id]?.models ?? []).map((m) => m.id);
     return list.map((m) => ({ value: m, label: m }));
   });
   const newPaid = (p: AssistantProvider) => (paid(p.type) ? (found[p.id]?.models ?? []).filter((m) => !(p.models ?? []).includes(m.id)).length : 0);
@@ -150,15 +173,19 @@
           {:else if found[p.id]?.error}
             <span class="meta warn">Couldn't load models: {found[p.id].error}</span>
           {/if}
-          {#if paid(p.type)}
-            <span class="meta">Tick the models people can use (they differ in price){newPaid(p) ? ` · ${newPaid(p)} new models` : ''}:</span>
-            <div class="ticks">
-              {#each found[p.id]?.models ?? [] as m (m.id)}
-                <label class="check"><input type="checkbox" checked={(p.models ?? []).includes(m.id)} onchange={() => toggleModel(p, m.id)} /> <span class="mono">{m.id}</span></label>
-              {/each}
+          {#if p.type === 'openai-compatible'}
+            <div class="sel-wrap">
+              <Select label="Models offered" value={p.onlyTicked ? 'ticked' : 'all'} items={offerItems} onchange={(v) => (p.onlyTicked = v === 'ticked')} />
             </div>
-          {:else if found[p.id]?.models.length}
-            <span class="meta">Every model found is offered: {found[p.id].models.map((m) => m.id + (m.tools === false ? ' (advise only)' : '')).join(', ')}</span>
+          {/if}
+          {#if paid(p.type)}
+            <span class="meta">Tick the models people can use (they differ in price){newPaid(p) ? ` · ${newPaid(p)} new models` : ''}.</span>
+          {:else if !ticksOnly(p)}
+            <span class="meta">Every model found is offered.</span>
+          {/if}
+          {#if found[p.id]?.models.length}
+            <ModelList models={found[p.id].models} fallbackGroup={types.find((t) => t.value === p.type)?.label ?? p.type}
+              ticked={p.models ?? []} tickable={ticksOnly(p)} ontoggle={(id) => toggleModel(p, id)} />
           {/if}
         </div>
         <div class="acts">
@@ -255,13 +282,6 @@
   .models {
     display: grid;
     gap: 4px;
-  }
-  .ticks {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 12px;
-    max-height: 160px;
-    overflow: auto;
   }
   .row {
     display: flex;

@@ -91,6 +91,7 @@ func (s *Server) assistantSelfProposal(ctx context.Context, r *http.Request, set
 	}
 	a := assistant.Action{DraftID: saved.ID, Kind: "self_apply", SelfApply: true, Title: "Change Moorage's own compose.yaml and restart Moorage",
 		HostID: hostID, Host: s.hostName(ctx, hostID), Stack: stack, Diff: lineDiff(cur.Compose, compose), Widens: widens,
+		Removes: selfRemoves(oldP.Services[svc], newP.Services[svc]),
 		Impact: "Moorage restarts for a moment; if it doesn't come back, the configuration it runs now is put back.",
 		Undo:   "Restore the previous version in the stack's History tab and use Apply & restart."}
 	if set.Levels["compose"] == levelAuto {
@@ -160,6 +161,41 @@ func selfWidens(old, nw types.ServiceConfig) []string {
 	}
 	if nw.Pid != old.Pid && nw.Pid != "" {
 		out = append(out, "Shares the host's processes (pid: "+nw.Pid+")")
+	}
+	sort.Strings(out)
+	return out
+}
+
+// selfRemoves lists what a self-stack change takes away: a model that rewrites the file
+// can drop a mount it didn't understand, and Moorage then loses its stacks (M20F).
+func selfRemoves(old, nw types.ServiceConfig) []string {
+	var out []string
+	vol := func(v types.ServiceVolumeConfig) string { return v.Source + ":" + v.Target }
+	ports := func(p types.ServicePortConfig) string { return fmt.Sprintf("%s:%d/%s", p.Published, p.Target, p.Protocol) }
+	keep := map[string]bool{}
+	for _, v := range nw.Volumes {
+		keep["v"+vol(v)] = true
+	}
+	for _, p := range nw.Ports {
+		keep["p"+ports(p)] = true
+	}
+	for k := range nw.Environment {
+		keep["e"+k] = true
+	}
+	for _, v := range old.Volumes {
+		if !keep["v"+vol(v)] {
+			out = append(out, "Removes the mount "+vol(v))
+		}
+	}
+	for _, p := range old.Ports {
+		if !keep["p"+ports(p)] {
+			out = append(out, "Removes the port "+ports(p))
+		}
+	}
+	for k := range old.Environment {
+		if !keep["e"+k] {
+			out = append(out, "Removes the variable "+k)
+		}
 	}
 	sort.Strings(out)
 	return out
